@@ -1,0 +1,18 @@
+# Rust
+target/
+Cargo.lock
+*.rs.bk
+
+# iOS / Xcode
+ios/build/
+ios/*.xcworkspace/xcuserdata/
+ios/Pods/
+*.ipa
+*.dSYM.zip
+*.dSYM
+DerivedData/
+
+# General
+.DS_Store
+.env
+*.log
