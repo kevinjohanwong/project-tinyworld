@@ -32,15 +32,24 @@ IP-resolved location (server-side, can't be claimed by the client), and worlds
 outside the node's perception radius are not returned at all — they don't
 exist to you.
 
-Two tiers, both in `GET /api/tinyworld-worlds`:
+Two node tiers in `GET /api/tinyworld-worlds` (precedence: override > gps > ip):
 
-- **IP geo = visibility horizon.** Server reads `x-forwarded-for`, resolves it
-  via ipwho.is (24 h in-memory cache), and filters the list to worlds within
-  **50 km**. Worlds with a `lidar_tower` structure *broadcast* and stay visible
-  out to **500 km** — towers literally extend how far a world can be perceived,
-  tying discovery into the scan economy.
+- **GPS tier** — when the client supplies `lat/lon`, perception is human-scale:
+  **150 m** base (deliberately equal to the access gate — if you can enter it,
+  you can see it; never smaller, or you'd have access to invisible worlds) and
+  **5 km** lidar-tower broadcast. IP can't do this — IP geolocation is
+  city-level (±5–50 km) — so sub-km perception requires real GPS, which the
+  future iOS app will send.
+- **IP tier (fallback)** — no coords shared: server reads `x-forwarded-for`,
+  resolves via ipwho.is (24 h in-memory cache), filters to **50 km**, lidar
+  broadcast **500 km**.
 - **GPS = entry gate.** The existing 150 m check in `/api/tinyworld-access` is
   unchanged and remains the actual access decision.
+
+The web prototype page intentionally sends NO coords (its old NYC anchor was a
+hardcoded constant, not real GPS — sending it would fake-trigger the 150 m
+tier and hide saved worlds). It uses the IP tier and shows a node line on the
+idle screen: `node: <city> (ip) · N worlds beyond perception`.
 
 Behavior details:
 
