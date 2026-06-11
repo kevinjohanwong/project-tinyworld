@@ -25,6 +25,35 @@ This makes geography itself the auth layer: you can be *in* a place, or be
 *connected to* a place through maintained physical effort. No accounts needed
 for the prototype.
 
+## Discovery layer: IP-geo nodes (June 2026)
+
+One central database, but no global world list. A requester's "node" is their
+IP-resolved location (server-side, can't be claimed by the client), and worlds
+outside the node's perception radius are not returned at all — they don't
+exist to you.
+
+Two tiers, both in `GET /api/tinyworld-worlds`:
+
+- **IP geo = visibility horizon.** Server reads `x-forwarded-for`, resolves it
+  via ipwho.is (24 h in-memory cache), and filters the list to worlds within
+  **50 km**. Worlds with a `lidar_tower` structure *broadcast* and stay visible
+  out to **500 km** — towers literally extend how far a world can be perceived,
+  tying discovery into the scan economy.
+- **GPS = entry gate.** The existing 150 m check in `/api/tinyworld-access` is
+  unchanged and remains the actual access decision.
+
+Behavior details:
+
+- Response includes a `node` object (`source: ip | override | unresolved`,
+  resolved city, radii) and `hiddenCount` (how many worlds exist beyond
+  perception — the client may tease this without revealing them).
+- **Fail open**: private/local IPs or lookup failures → `source: "unresolved"`,
+  no filtering. Resolved-but-far IPs DO filter (VPNs and coarse carrier geo
+  will hide worlds — known prototype tradeoff; `?nodeLat=&nodeLon=` is the
+  debug override).
+- Verified: NYC worlds hidden from an Ashburn VA datacenter IP; Philly node
+  (131 km) sees Brooklyn Loft only when it has a lidar tower; LA sees nothing.
+
 ## Live endpoints (zo.space)
 
 - `POST /api/tinyworld-worlds` — register a world `{name, lat, lon, baseBlocks}`
@@ -52,8 +81,16 @@ Verified: baseline bridge decay 8/day → stone anchor 4.8/day → + lidar tower
 Stored in the `structures` table (`target_kind` = world | bridge). Spends are logged as
 `block_events` with `source = 'build'`, so the block economy stays auditable.
 
-## Next
+## Roadmap
 
-- Wire block_events into the page (record grow/remove/cycle from the live sim)
-- Catch-up simulation on world load: elapsed × void rate × weather multipliers
-- Bridge decay notifications ("your bridge to Brooklyn Loft is at 24%")
+1. ~~**Conservation ledger**~~ — done (June 2026): block_events wired, matter
+   budget + four pools (WORLD/STOCKPILE/BUILT/VOID), invariant verified.
+2. **Visible offline catch-up** — apply voidLoss as real edge erosion at a
+   perimeter rift + growth on load, "while you were away" recap card.
+3. **Void creatures v1** — night spawner at unlit perimeter, eats edge blocks,
+   repelled by structure light radius.
+4. **Scan economy + discovery** — scan-charge resource, material rolls on new
+   land. Extends the IP-geo discovery layer: world picker surfaces `hiddenCount`
+   ("3 worlds beyond your node's perception"), bridges extend visibility to the
+   far end's neighborhood, lidar towers already extend broadcast (done).
+5. Bridge decay notifications ("your bridge to Brooklyn Loft is at 24%")
