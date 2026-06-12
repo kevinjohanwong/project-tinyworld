@@ -1282,6 +1282,23 @@ export default function TinyWorld() {
       return top;
     };
 
+    // 3D frontier helpers: the scannable/attackable surface is the whole
+    // exposed boundary of the volume — a block is frontier if ANY of its 6
+    // faces has an empty neighbor (up, down, under overhangs included).
+    // "Floor" is never a primitive, just emergent flat geometry.
+    const hasBlockAt = (vx: number, vy: number, vz: number): boolean => {
+      const s = colMap.get(vx + "," + vz);
+      return !!s && s.has(vy);
+    };
+    const FACE_DIRS: Array<[number, number, number]> = [
+      [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+    ];
+    const exposureAt = (vx: number, vy: number, vz: number): number => {
+      let n = 0;
+      for (const d of FACE_DIRS) if (!hasBlockAt(vx + d[0], vy + d[1], vz + d[2])) n++;
+      return n;
+    };
+
     // Placement-aware top lookup: falls back to the walkable ground map for
     // occlusion-culled interior floor cells that have no rendered block in
     // colMap. Without this, aiming at certain floor spots silently fails.
@@ -1290,6 +1307,53 @@ export default function TinyWorld() {
       if (t !== null) return t;
       const g = groundRef.current?.map.get(vx + "," + vz);
       return g === undefined ? null : g;
+    };
+
+    // ─── 3D frontier (persistence-and-access.md — worlds are volumes) ──────
+    // The frontier is ANY exposed face of the scanned volume: up, down,
+    // sideways, under overhangs. "Floor" is emergent flat geometry, never a
+    // primitive. Scanning claims empty cells adjacent to the frontier; the
+    // void attacks exposed faces — both use these helpers.
+    const solidAt = (vx: number, vy: number, vz: number): boolean => {
+      const s = colMap.get(vx + "," + vz);
+      return !!s && s.has(vy);
+    };
+    // Exposed block ys within one column (any of the 6 faces open).
+    const exposedYsInColumn = (vx: number, vz: number): number[] => {
+      const s = colMap.get(vx + "," + vz);
+      if (!s || s.size === 0) return [];
+      const out: number[] = [];
+      for (const y of s) {
+        for (const [dx, dy, dz] of FACE_DIRS) {
+          if (!solidAt(vx + dx, y + dy, vz + dz)) { out.push(y); break; }
+        }
+      }
+      return out;
+    };
+    // Sample exposed faces across the whole volume surface via random columns.
+    // freeOut counts empty cells probing outward along the face normal, so
+    // callers can prefer faces with open space beyond them.
+    const sampleFrontierFaces = (tries = 300) => {
+      const keys = Array.from(colMap.keys());
+      const faces: Array<{ x: number; y: number; z: number; d: [number, number, number]; freeOut: number }> = [];
+      for (let t = 0; t < tries && keys.length > 0; t++) {
+        const k = keys[Math.floor(Math.random() * keys.length)];
+        const s = colMap.get(k);
+        if (!s || s.size === 0) continue;
+        const parts = k.split(",");
+        const x = +parts[0], z = +parts[1];
+        const ys = Array.from(s);
+        const y = ys[Math.floor(Math.random() * ys.length)] as number;
+        for (const d of FACE_DIRS) {
+          if (solidAt(x + d[0], y + d[1], z + d[2])) continue;
+          let freeOut = 0;
+          for (let p = 1; p <= 5; p++) {
+            if (!solidAt(x + d[0] * p, y + d[1] * p, z + d[2] * p)) freeOut++;
+          }
+          faces.push({ x, y, z, d, freeOut });
+        }
+      }
+      return faces;
     };
 
     const addLayer = (buffer: ArrayBuffer | Int32Array | undefined, color: number, opacity = 1, layerName = "block", hiddenBuf?: ArrayBuffer | Int32Array) => {
@@ -1680,67 +1744,74 @@ export default function TinyWorld() {
         let riftPos = null;
 
         if (est.voidLoss > 0) {
-          const perim = [];
+          // weakestFrontier is declared later in this effect and is not yet
+          // initialized when catch-up runs at load — inline the frontier pick.
+          const perim: Array<{ vx: number; vz: number }> = [];
           for (const k of colMap.keys()) {
-            const [vx, vz] = k.split(",").map(Number);
-            let isPerim = false;
-            for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-              if (!colMap.has((vx + dx) + "," + (vz + dz))) {
-                isPerim = true;
-                break;
-              }
+            const cs = colMap.get(k);
+            if (!cs || cs.size === 0) continue;
+            const parts = k.split(",");
+            const vx = +parts[0], vz = +parts[1];
+            let open = false;
+            for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+              const ncs = colMap.get((vx + dx) + "," + (vz + dz));
+              if (!ncs || ncs.size === 0) { open = true; break; }
             }
-            if (isPerim) perim.push({ vx, vz });
+            if (!open) {
+              let yMin = Infinity, yMax = -Infinity;
+              for (const y of cs) { if (y < yMin) yMin = y; if (y > yMax) yMax = y; }
+              if (cs.size < yMax - yMin + 1) open = true;
+            }
+            if (open) perim.push({ vx, vz });
           }
-          if (perim.length > 0) {
-            // Rift opens at the weakest point: lowest local protection on the
-            // perimeter (mass-and-density.md — deterministic, not random).
-            let rift = perim[0];
-            let worstProt = Infinity;
-            const stride = Math.max(1, Math.floor(perim.length / 600));
-            for (let i = 0; i < perim.length; i += stride) {
-              const p = protectionAt(perim[i].vx, perim[i].vz);
-              if (p < worstProt) { worstProt = p; rift = perim[i]; }
+          let rift: { vx: number; vy: number; vz: number } | null = null;
+          let worstP = Infinity;
+          const rStride = Math.max(1, Math.floor(perim.length / 600));
+          for (let i = 0; i < perim.length; i += rStride) {
+            const { vx, vz } = perim[i];
+            let maxExp = 1, bestY = 0, first = true;
+            const cs = colMap.get(vx + "," + vz);
+            if (cs) for (const y of cs) {
+              const e = exposureAt(vx, y, vz);
+              if (first || e > maxExp || (e === maxExp && y > bestY)) { maxExp = Math.max(e, 1); bestY = y; first = false; }
             }
-            const rtop = colTop(rift.vx, rift.vz) ?? 0;
-            riftPos = { x: rift.vx, y: rtop, z: rift.vz };
+            const p = protectionAt(vx, vz) / (1 + 0.5 * (maxExp - 1));
+            if (p < worstP) { worstP = p; rift = { vx, vy: bestY, vz }; }
+          }
+          if (rift) {
+            riftPos = { x: rift.vx, y: rift.vy, z: rift.vz };
             
-            const queue = [{vx: rift.vx, vz: rift.vz, dist: 0}];
+            const queue = [{vx: rift.vx, vy: rift.vy, vz: rift.vz, dist: 0}];
             const seen = new Set<string>();
-            seen.add(rift.vx + "," + rift.vz);
+            seen.add(rift.vx + "," + rift.vy + "," + rift.vz);
             let head = 0;
             
             while (head < queue.length && actualVoidLoss < est.voidLoss) {
               const curr = queue[head++];
-              const k = curr.vx + "," + curr.vz;
-              const colSet = colMap.get(k);
-              if (colSet && colSet.size > 0) {
-                let top = -Infinity;
-                for (const y of colSet) if (y > top) top = y;
-                
-                const slotKey = curr.vx + "," + top + "," + curr.vz;
-                let foundMesh = null;
-                for (const m of meshesRef.current) {
-                  if (m.userData?.slotMap?.has(slotKey)) {
-                    foundMesh = m;
-                    break;
-                  }
+              let foundMesh = null;
+              for (const m of meshesRef.current) {
+                if (m.userData?.slotMap?.has(curr.vx + "," + curr.vy + "," + curr.vz)) {
+                  foundMesh = m;
+                  break;
                 }
-                if (foundMesh) {
-                  if (removeBlockFrom(foundMesh, curr.vx, top, curr.vz, "void_catchup")) {
-                    actualVoidLoss++;
-                    if (actualVoidLoss < est.voidLoss) queue.push(curr);
-                  }
+              }
+              if (foundMesh) {
+                if (removeBlockFrom(foundMesh, curr.vx, curr.vy, curr.vz, "void_catchup")) {
+                  actualVoidLoss++;
+                  if (actualVoidLoss < est.voidLoss) queue.push(curr);
                 }
               }
               
               if (actualVoidLoss < est.voidLoss) {
-                for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-                  const nx = curr.vx + dx, nz = curr.vz + dz;
-                  const nk = nx + "," + nz;
-                  if (!seen.has(nk) && colMap.has(nk)) {
-                    seen.add(nk);
-                    queue.push({vx: nx, vz: nz, dist: curr.dist + 1});
+                for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+                  const nx = curr.vx + dx, ny = curr.vy + dy, nz = curr.vz + dz;
+                  const nk = nx + "," + ny + "," + nz;
+                  if (!seen.has(nk)) {
+                    const s = colMap.get(nx + "," + nz);
+                    if (s && s.has(ny)) {
+                      seen.add(nk);
+                      queue.push({vx: nx, vy: ny, vz: nz, dist: curr.dist + 1});
+                    }
                   }
                 }
               }
@@ -1765,7 +1836,7 @@ export default function TinyWorld() {
     if (catchUpSummary?.rift) {
       const { x, y, z } = catchUpSummary.rift;
       const riftGroup = new THREE.Group();
-      riftGroup.position.set((x - cxRound) * voxel, (y + 1.5) * voxel, (z - czRound) * voxel);
+      riftGroup.position.set((x - cxRound) * voxel, y * voxel, (z - czRound) * voxel);
       
       const riftOuter = new THREE.Mesh(
         new THREE.OctahedronGeometry(voxel * 1.2),
@@ -2041,16 +2112,16 @@ export default function TinyWorld() {
       const gCurr = groundRef.current.map.get(gKey);
       if (gCurr === undefined || vy > gCurr) groundRef.current.map.set(gKey, vy);
     };
-    const aStarOnGround = (sx: number, sz: number, gx: number, gz: number, maxIter = 1500): Array<[number, number]> | null => {
-      const ground = groundRef.current;
-      if (!ground) return null;
-      const startKey = sx + "," + sz;
-      const goalKey = gx + "," + gz;
-      if (!ground.map.has(startKey) || !ground.map.has(goalKey)) return null;
+
+    // 3D A* pathfinding. Finds a path across any walkable block (block with empty space above it).
+    // Can step up/down by 1 voxel.
+    const aStarOnGround = (sx: number, sy: number, sz: number, gx: number, gy: number, gz: number, maxIter = 1500): Array<[number, number, number]> | null => {
+      const startKey = sx + "," + sy + "," + sz;
+      const goalKey = gx + "," + gy + "," + gz;
       const gScore = new Map<string, number>();
       const parent = new Map<string, string | null>();
       const open = new Set<string>();
-      const h = (x: number, z: number) => Math.abs(x - gx) + Math.abs(z - gz);
+      const h = (x: number, y: number, z: number) => Math.abs(x - gx) + Math.abs(y - gy) + Math.abs(z - gz);
       gScore.set(startKey, 0);
       parent.set(startKey, null);
       open.add(startKey);
@@ -2061,16 +2132,16 @@ export default function TinyWorld() {
         for (const k of open) {
           const cs = k.split(",");
           const g = gScore.get(k)!;
-          const f = g + h(+cs[0], +cs[1]);
+          const f = g + h(+cs[0], +cs[1], +cs[2]);
           if (f < bestF) { bestF = f; bestKey = k; }
         }
         if (!bestKey) return null;
         if (bestKey === goalKey) {
-          const path: Array<[number, number]> = [];
+          const path: Array<[number, number, number]> = [];
           let k: string | null = bestKey;
           while (k) {
             const cs = k.split(",");
-            path.push([+cs[0], +cs[1]]);
+            path.push([+cs[0], +cs[1], +cs[2]]);
             k = parent.get(k) ?? null;
           }
           path.reverse();
@@ -2078,27 +2149,32 @@ export default function TinyWorld() {
         }
         open.delete(bestKey);
         const cs = bestKey.split(",");
-        const cx = +cs[0], cz = +cs[1];
-        const cY = ground.map.get(bestKey)!;
+        const cx = +cs[0], cy = +cs[1], cz = +cs[2];
         const curG = gScore.get(bestKey)!;
         const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
         for (const [dx, dz] of dirs) {
           const nx = cx + dx, nz = cz + dz;
-          const nk = nx + "," + nz;
-          const nY = ground.map.get(nk);
-          if (nY === undefined) continue;
-          if (Math.abs(nY - cY) > 1) continue; // step-up of 1 max, no jumping walls
-          const tg = curG + 1;
-          if (tg < (gScore.get(nk) ?? Infinity)) {
-            gScore.set(nk, tg);
-            parent.set(nk, bestKey);
-            open.add(nk);
+          const ncol = colMap.get(nx + "," + nz);
+          if (!ncol) continue;
+          // Look for walkable heights near cy
+          for (let dy = -1; dy <= 1; dy++) {
+            const ny = cy + dy;
+            if (!ncol.has(ny)) continue;
+            // Must have air above it to walk on
+            if (ncol.has(ny + 1) || ncol.has(ny + 2)) continue;
+            const nk = nx + "," + ny + "," + nz;
+            const tg = curG + 1 + Math.abs(dy); // Stepping up/down costs a bit more
+            if (tg < (gScore.get(nk) ?? Infinity)) {
+              gScore.set(nk, tg);
+              parent.set(nk, bestKey);
+              open.add(nk);
+            }
           }
         }
       }
       return null;
     };
-    const findSoftBlockNearW = (vx: number, vz: number, r: number) => {
+    const findSoftBlockNearW = (vx: number, vy: number, vz: number, r: number) => {
       const cands: Array<{ vx: number; vy: number; vz: number; mesh: any; slot: number; d2: number }> = [];
       for (const [colKey, ySet] of colMap) {
         const cs = colKey.split(",");
@@ -2106,44 +2182,57 @@ export default function TinyWorld() {
         const dx = cx - vx, dz = cz - vz;
         const d2 = dx * dx + dz * dz;
         if (d2 > r * r) continue;
-        let top = -Infinity;
-        for (const y of ySet) if (y > top) top = y;
-        if (!isFinite(top)) continue;
-        const k = cx + "," + top + "," + cz;
-        for (const m of meshesRef.current) {
-          const slot = (m.userData?.slotMap as Map<string, number> | undefined)?.get(k);
-          if (slot !== undefined && SOFT_WORKER_LAYERS.has(m.userData.layer)) {
-            cands.push({ vx: cx, vy: top, vz: cz, mesh: m, slot, d2 });
-            break;
+        // Check all heights in the column
+        for (const y of ySet) {
+          if (Math.abs(y - vy) > r) continue;
+          const k = cx + "," + y + "," + cz;
+          for (const m of meshesRef.current) {
+            const slot = (m.userData?.slotMap as Map<string, number> | undefined)?.get(k);
+            if (slot !== undefined && SOFT_WORKER_LAYERS.has(m.userData.layer)) {
+              // Soft block must be exposed on top to pick it up easily
+              if (!ySet.has(y + 1)) {
+                cands.push({ vx: cx, vy: y, vz: cz, mesh: m, slot, d2: d2 + (y - vy) * (y - vy) });
+              }
+              break;
+            }
           }
         }
       }
       if (!cands.length) return null;
-      // Pick a random one from the closest third — feels less robotic than
-      // always choosing the nearest.
       cands.sort((a, b) => a.d2 - b.d2);
       const slice = cands.slice(0, Math.max(1, Math.ceil(cands.length / 3)));
       return slice[Math.floor(Math.random() * slice.length)];
     };
-    const findAdjacentWalkableW = (vx: number, vz: number): [number, number] | null => {
-      const ground = groundRef.current;
-      if (!ground) return null;
-      for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-        const k = (vx + dx) + "," + (vz + dz);
-        if (ground.map.has(k)) return [vx + dx, vz + dz];
+
+    const findAdjacentWalkableW = (vx: number, vy: number, vz: number): [number, number, number] | null => {
+      for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1],[0,0]]) {
+        const nx = vx + dx;
+        const nz = vz + dz;
+        const col = colMap.get(nx + "," + nz);
+        if (!col) continue;
+        for (let dy = -1; dy <= 1; dy++) {
+          const ny = vy + dy;
+          if (col.has(ny) && !col.has(ny + 1) && !col.has(ny + 2)) {
+            return [nx, ny, nz];
+          }
+        }
       }
       return null;
     };
-    const randomGroundCellNearW = (vx: number, vz: number, r: number): [number, number] | null => {
-      const ground = groundRef.current;
-      if (!ground) return null;
-      const cands: Array<[number, number]> = [];
-      for (const k of ground.map.keys()) {
-        const cs = k.split(",");
+
+    const randomGroundCellNearW = (vx: number, vy: number, vz: number, r: number): [number, number, number] | null => {
+      const cands: Array<[number, number, number]> = [];
+      for (const [colKey, ySet] of colMap) {
+        const cs = colKey.split(",");
         const x = +cs[0], z = +cs[1];
         if (Math.abs(x - vx) > r || Math.abs(z - vz) > r) continue;
         if (x === vx && z === vz) continue;
-        cands.push([x, z]);
+        for (const y of ySet) {
+          if (Math.abs(y - vy) > r) continue;
+          if (!ySet.has(y + 1) && !ySet.has(y + 2)) {
+            cands.push([x, y, z]);
+          }
+        }
       }
       if (!cands.length) return null;
       return cands[Math.floor(Math.random() * cands.length)];
@@ -2210,7 +2299,7 @@ export default function TinyWorld() {
       return out;
     };
 
-    const findSourceBlockForLayer = (vx: number, vz: number, layer: string) => {
+    const findSourceBlockForLayer = (vx: number, vy: number, vz: number, layer: string) => {
       let best: { vx: number; vy: number; vz: number; mesh: any; slot: number; d2: number } | null = null;
       for (const m of meshesRef.current) {
         if (m.userData?.layer !== layer) continue;
@@ -2219,15 +2308,12 @@ export default function TinyWorld() {
         for (const k of slotMap.keys()) {
           const cs = k.split(",");
           const cx = +cs[0], cy = +cs[1], cz = +cs[2];
-          const dx = cx - vx, dz = cz - vz;
-          const d2 = dx * dx + dz * dz;
+          const dx = cx - vx, dy = cy - vy, dz = cz - vz;
+          const d2 = dx * dx + dy * dy + dz * dz;
           if (best && d2 >= best.d2) continue;
-          // Must be the top of its column — workers don't dig through.
+          // Must be the top of its column stack — workers don't dig through.
           const colSet = colMap.get(cx + "," + cz);
-          if (!colSet) continue;
-          let top = -Infinity;
-          for (const y of colSet) if (y > top) top = y;
-          if (top !== cy) continue;
+          if (!colSet || colSet.has(cy + 1)) continue;
           best = { vx: cx, vy: cy, vz: cz, mesh: m, slot: slotMap.get(k)!, d2 };
         }
       }
@@ -2245,7 +2331,7 @@ export default function TinyWorld() {
       return null;
     };
 
-    const computeVisionFor = (vx: number, vz: number, R = 25) => {
+    const computeVisionFor = (vx: number, vy: number, vz: number, R = 25) => {
       const resources: Record<string, number> = {};
       for (const layer of SOFT_WORKER_LAYERS) resources[layer] = 0;
       for (const m of meshesRef.current) {
@@ -2255,32 +2341,33 @@ export default function TinyWorld() {
         if (!slotMap) continue;
         for (const k of slotMap.keys()) {
           const cs = k.split(",");
-          const x = +cs[0], z = +cs[2];
-          const dx = x - vx, dz = z - vz;
-          if (dx * dx + dz * dz > R * R) continue;
+          const x = +cs[0], y = +cs[1], z = +cs[2];
+          const dx = x - vx, dy = y - vy, dz = z - vz;
+          if (dx * dx + dy * dy + dz * dz > R * R) continue;
           resources[layer] = (resources[layer] || 0) + 1;
         }
       }
-      const walkable: Array<[number, number]> = [];
-      const ground = groundRef.current;
-      if (ground) {
-        for (const k of ground.map.keys()) {
-          const cs = k.split(",");
-          const x = +cs[0], z = +cs[1];
-          const dx = x - vx, dz = z - vz;
-          if (dx * dx + dz * dz <= R * R) walkable.push([x, z]);
+      const walkable: Array<[number, number, number]> = [];
+      for (const [colKey, ySet] of colMap) {
+        const cs = colKey.split(",");
+        const x = +cs[0], z = +cs[1];
+        for (const y of ySet) {
+          if (!ySet.has(y + 1)) {
+            const dx = x - vx, dy = y - vy, dz = z - vz;
+            if (dx * dx + dy * dy + dz * dz <= R * R) walkable.push([x, y, z]);
+          }
         }
       }
       return { resources, walkable };
     };
 
-    const fetchWorkerPlan = async (vx: number, vz: number): Promise<WorkerPlan | null> => {
+    const fetchWorkerPlan = async (vx: number, vy: number, vz: number): Promise<WorkerPlan | null> => {
       try {
-        const vision = computeVisionFor(vx, vz, 25);
+        const vision = computeVisionFor(vx, vy, vz, 25);
         const r = await fetch("/api/tinyworld-plan", {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ worker: { vx, vz }, vision }),
+          body: JSON.stringify({ worker: { vx, vy, vz }, vision }),
         });
         const data = await r.json();
         if (!data?.ok || !Array.isArray(data?.plan?.steps)) return null;
@@ -2304,17 +2391,17 @@ export default function TinyWorld() {
     };
 
     type WorkerState = {
-      vx: number; vz: number;
-      targetVX: number; targetVZ: number;
+      vx: number; vy: number; vz: number;
+      targetVX: number; targetVY: number; targetVZ: number;
       worldX: number; worldY: number; worldZ: number;
       moveStartMs: number; moveEndMs: number;
-      path: Array<[number, number]>;
+      path: Array<[number, number, number]>;
       pathIdx: number;
       mode: "idle" | "walking" | "pickingUp" | "placing" | "planning";
       modeStartMs: number;
       carrying: { mesh: any; color: any; layer: string } | null;
       pickupTarget: { vx: number; vy: number; vz: number; mesh: any; slot: number } | null;
-      placeTarget: { vx: number; vz: number; planTargetRef?: PlanTarget } | null;
+      placeTarget: { vx: number; vy: number; vz: number; planTargetRef?: PlanTarget } | null;
       group: any;
       carriedMesh: any;
       plan: WorkerPlan | null;
@@ -2324,22 +2411,28 @@ export default function TinyWorld() {
     const workers: WorkerState[] = [];
     // Spawn 1 worker on a real floor cell near the centroid.
     {
-      const ground = groundRef.current;
-      let spawn: [number, number] | null = null;
-      if (ground && ground.map.size > 0) {
-        let sumX = 0, sumZ = 0, n = 0;
-        for (const k of ground.map.keys()) {
+      let spawn: [number, number, number] | null = null;
+      if (colMap.size > 0) {
+        let sumX = 0, sumY = 0, sumZ = 0, n = 0;
+        for (const [k, ySet] of colMap.entries()) {
           const cs = k.split(",");
-          sumX += +cs[0]; sumZ += +cs[1]; n++;
+          for (const y of ySet) {
+            sumX += +cs[0]; sumY += y; sumZ += +cs[1]; n++;
+          }
         }
-        const cx = sumX / n, cz = sumZ / n;
-        let bestD2 = Infinity;
-        for (const k of ground.map.keys()) {
-          const cs = k.split(",");
-          const x = +cs[0], z = +cs[1];
-          const dx = x - cx, dz = z - cz;
-          const d2 = dx * dx + dz * dz;
-          if (d2 < bestD2) { bestD2 = d2; spawn = [x, z]; }
+        if (n > 0) {
+          const cx = sumX / n, cy = sumY / n, cz = sumZ / n;
+          let bestD2 = Infinity;
+          for (const [k, ySet] of colMap.entries()) {
+            const cs = k.split(",");
+            const x = +cs[0], z = +cs[1];
+            for (const y of ySet) {
+              if (ySet.has(y + 1)) continue; // Must be top
+              const dx = x - cx, dy = y - cy, dz = z - cz;
+              const d2 = dx * dx + dy * dy + dz * dz;
+              if (d2 < bestD2) { bestD2 = d2; spawn = [x, y, z]; }
+            }
+          }
         }
       }
       if (spawn) {
@@ -2400,12 +2493,12 @@ export default function TinyWorld() {
         beacon.position.y = voxel * 20;
         group.add(beacon);
 
-        console.log("[tinyworld] worker spawned at cell", spawn[0], spawn[1]);
+        console.log("[tinyworld] worker spawned at cell", spawn[0], spawn[1], spawn[2]);
         
         scene.add(group);
         workers.push({
-          vx: spawn[0], vz: spawn[1],
-          targetVX: spawn[0], targetVZ: spawn[1],
+          vx: spawn[0], vy: spawn[1], vz: spawn[2],
+          targetVX: spawn[0], targetVY: spawn[1], targetVZ: spawn[2],
           worldX: 0, worldY: 0, worldZ: 0,
           moveStartMs: 0, moveEndMs: 0,
           path: [], pathIdx: 0,
@@ -2436,7 +2529,7 @@ export default function TinyWorld() {
               w.planRequested = true;
               w.mode = "planning";
               w.modeStartMs = now;
-              fetchWorkerPlan(w.vx, w.vz).then((plan) => {
+              fetchWorkerPlan(w.vx, w.vy, w.vz).then((plan) => {
                 w.planRequested = false;
                 if (plan) {
                   w.plan = plan;
@@ -2455,28 +2548,26 @@ export default function TinyWorld() {
             }
             continue;
           }
-          // Has a plan — find next undone target.
           const next = w.plan.targets.find((t) => !t.done);
           if (!next) {
             w.plan = null;
             continue;
           }
-          // If carrying the wrong layer, drop it here first.
           if (w.carrying && w.carrying.layer !== next.layer) {
-            w.placeTarget = { vx: w.vx, vz: w.vz };
+            w.placeTarget = { vx: w.vx, vy: w.vy, vz: w.vz };
             w.mode = "placing";
             w.modeStartMs = now;
             continue;
           }
           if (w.carrying && w.carrying.layer === next.layer) {
-            // Walk to target column and place.
-            const dest = adjacentOrSelfWalkable(next.vx, next.vz);
+            const destVY = (colTop(next.vx, next.vz) ?? 0);
+            const dest = findAdjacentWalkableW(next.vx, destVY, next.vz);
             if (!dest) { next.done = true; continue; }
-            const path = aStarOnGround(w.vx, w.vz, dest[0], dest[1]);
+            const path = aStarOnGround(w.vx, w.vy, w.vz, dest[0], dest[1], dest[2]);
             if (path && path.length >= 1) {
               w.path = path;
               w.pathIdx = 0;
-              w.placeTarget = { vx: next.vx, vz: next.vz, planTargetRef: next };
+              w.placeTarget = { vx: next.vx, vy: destVY, vz: next.vz, planTargetRef: next };
               w.pickupTarget = null;
               w.mode = "walking";
               w.moveEndMs = now;
@@ -2484,12 +2575,11 @@ export default function TinyWorld() {
               next.done = true;
             }
           } else {
-            // Need to pick up the right layer first.
-            const src = findSourceBlockForLayer(w.vx, w.vz, next.layer);
+            const src = findSourceBlockForLayer(w.vx, w.vy, w.vz, next.layer);
             if (!src) { next.done = true; continue; }
-            const dest = adjacentOrSelfWalkable(src.vx, src.vz);
+            const dest = findAdjacentWalkableW(src.vx, src.vy, src.vz);
             if (!dest) { next.done = true; continue; }
-            const path = aStarOnGround(w.vx, w.vz, dest[0], dest[1]);
+            const path = aStarOnGround(w.vx, w.vy, w.vz, dest[0], dest[1], dest[2]);
             if (path && path.length >= 1) {
               w.path = path;
               w.pathIdx = 0;
@@ -2509,14 +2599,17 @@ export default function TinyWorld() {
           if (w.pathIdx + 1 < w.path.length) {
             w.pathIdx++;
             w.vx = w.path[w.pathIdx][0];
-            w.vz = w.path[w.pathIdx][1];
+            w.vy = w.path[w.pathIdx][1];
+            w.vz = w.path[w.pathIdx][2];
             if (w.pathIdx + 1 < w.path.length) {
               w.targetVX = w.path[w.pathIdx + 1][0];
-              w.targetVZ = w.path[w.pathIdx + 1][1];
+              w.targetVY = w.path[w.pathIdx + 1][1];
+              w.targetVZ = w.path[w.pathIdx + 1][2];
               w.moveStartMs = now;
               w.moveEndMs = now + W_CELL_MS;
             } else {
               w.targetVX = w.vx;
+              w.targetVY = w.vy;
               w.targetVZ = w.vz;
               w.moveStartMs = now;
               w.moveEndMs = now;
@@ -2553,17 +2646,14 @@ export default function TinyWorld() {
           if (now - w.modeStartMs < W_PLACE_MS) continue;
           let placed = false;
           if (w.carrying && w.placeTarget) {
-            const top = colTop(w.placeTarget.vx, w.placeTarget.vz)
-              ?? (groundRef.current?.map.get(w.placeTarget.vx + "," + w.placeTarget.vz) ?? null);
-            if (top !== null) {
-              const placeVy = top + 1;
-              if (spawnBlockInto(w.carrying.mesh, w.placeTarget.vx, placeVy, w.placeTarget.vz, "tinyperson")) {
-                syncGroundAfterPlace(w.placeTarget.vx, placeVy, w.placeTarget.vz, w.carrying.layer);
-                const wGrade = lowestGrade(w.carrying.layer);
-                ledgerMove("stockpile", "void", 1, "tinyperson", w.carrying.layer, wGrade);
-                if (wGrade !== "raw") blockGradesRef.current.set(w.placeTarget.vx + "," + placeVy + "," + w.placeTarget.vz, wGrade);
-                placed = true;
-              }
+            const top = colTop(w.placeTarget.vx, w.placeTarget.vz) ?? w.placeTarget.vy;
+            const placeVy = top + 1;
+            if (spawnBlockInto(w.carrying.mesh, w.placeTarget.vx, placeVy, w.placeTarget.vz, "tinyperson")) {
+              syncGroundAfterPlace(w.placeTarget.vx, placeVy, w.placeTarget.vz, w.carrying.layer);
+              const wGrade = lowestGrade(w.carrying.layer);
+              ledgerMove("stockpile", "void", 1, "tinyperson", w.carrying.layer, wGrade);
+              if (wGrade !== "raw") blockGradesRef.current.set(w.placeTarget.vx + "," + placeVy + "," + w.placeTarget.vz, wGrade);
+              placed = true;
             }
           }
           if (placed && w.placeTarget?.planTargetRef) {
@@ -2583,22 +2673,25 @@ export default function TinyWorld() {
     };
     const renderWorkers = (now: number) => {
       for (const w of workers) {
-        let wx: number, wz: number;
+        let wx: number, wy: number, wz: number;
         const isWalking = w.mode === "walking" && w.moveEndMs > w.moveStartMs;
         if (isWalking) {
           const t = Math.max(0, Math.min(1, (now - w.moveStartMs) / (w.moveEndMs - w.moveStartMs)));
           const fromX = (w.vx - cxRound) * voxel;
+          const fromY = w.vy * voxel;
           const fromZ = (w.vz - czRound) * voxel;
           const toX = (w.targetVX - cxRound) * voxel;
+          const toY = w.targetVY * voxel;
           const toZ = (w.targetVZ - czRound) * voxel;
           wx = fromX + (toX - fromX) * t;
+          wy = fromY + (toY - fromY) * t;
           wz = fromZ + (toZ - fromZ) * t;
         } else {
           wx = (w.vx - cxRound) * voxel;
+          wy = w.vy * voxel;
           wz = (w.vz - czRound) * voxel;
         }
-        const gy = sampleGround(wx, wz);
-        w.worldX = wx; w.worldY = gy + voxel * 0.45; w.worldZ = wz;
+        w.worldX = wx; w.worldY = wy + voxel * 1.45; w.worldZ = wz;
         
         // Bobbing is handled per limb now, so the root stays anchored
         w.group.position.set(wx, w.worldY, wz);
@@ -3006,14 +3099,16 @@ export default function TinyWorld() {
 
     // ─── Void creatures (Chunk 3): night wraiths that erode weak edges ─────
     // No pathfinding — they hover and drift toward targets. Spawn at the
-    // lowest-protection perimeter cells during active/aggressive void phases
-    // (caps: aggressive 3, active 1, passive 0 → despawn at dawn). They eat
-    // the top block of their cell via removeBlockFrom(...,"void_creature"),
-    // so every bite is ledger-conserving (world → void). Eat rate slows with
-    // local protection; strong protection repels them back to weak ground.
+    // lowest-protection exposed faces of the 3D frontier during active/
+    // aggressive void phases (caps: aggressive 3, active 1, passive 0 →
+    // despawn at dawn). They bite the exact block they reach — any exposed
+    // face, including undersides and overhangs — via
+    // removeBlockFrom(...,"void_creature"), so every bite is
+    // ledger-conserving (world → void). Eat rate slows with local
+    // protection; strong protection repels them back to weak ground.
     type VoidCreature = {
-      vx: number; vz: number;
-      tx: number; tz: number;
+      vx: number; vy: number; vz: number;
+      tx: number; ty: number; tz: number;
       group: any;
       lastEatMs: number;
       eaten: number;
@@ -3026,34 +3121,57 @@ export default function TinyWorld() {
     const __seasonName = String((weatherData as any)?.season || "").toLowerCase();
     const VOID_SEASON_MULT = __seasonName.includes("winter") ? 1.25 : (__seasonName.includes("fall") || __seasonName.includes("autumn")) ? 1.1 : __seasonName.includes("summer") ? 0.9 : 1;
 
-    let voidPerimCache: { picks: Array<{ vx: number; vz: number; p: number }>; median: number; at: number } = { picks: [], median: 1, at: -Infinity };
-    const weakestPerimeter = (n: number, now = performance.now()) => {
-      if (now - voidPerimCache.at > 5000 || voidPerimCache.picks.length < n) {
-        const perim: Array<{ vx: number; vz: number }> = [];
-        // removeCol can leave empty Sets behind in colMap ("ghost columns") —
-        // skip them or creatures chase cells with nothing left to eat.
-        const hasBlocks = (key: string) => {
-          const s = colMap.get(key);
-          return !!s && s.size > 0;
+    let voidFrontierCache: { picks: Array<{ vx: number; vy: number; vz: number; p: number }>; median: number; at: number } = { picks: [], median: 1, at: -Infinity };
+    const weakestFrontier = (n: number, now = performance.now()) => {
+      if (now - voidFrontierCache.at > 5000 || voidFrontierCache.picks.length < n) {
+        const frontier: Array<{ vx: number; vy: number; vz: number }> = [];
+        const hasBlocks = (k: string) => {
+          const colSet = colMap.get(k);
+          return !!colSet && colSet.size > 0;
         };
         for (const k of colMap.keys()) {
           if (!hasBlocks(k)) continue;
           const parts = k.split(",");
           const vx = +parts[0], vz = +parts[1];
+          let open = false;
           for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            if (!hasBlocks((vx + dx) + "," + (vz + dz))) { perim.push({ vx, vz }); break; }
+            if (!hasBlocks((vx + dx) + "," + (vz + dz))) { open = true; break; }
           }
+          if (!open) {
+            // Frontier rule: columns with vertical gaps (bridge undersides,
+            // overhangs, interior shafts) are exposed surface too — the void
+            // attacks any exposed face, not just horizontal edges.
+            const colSet = colMap.get(k)!;
+            let yMin = Infinity, yMax = -Infinity;
+            for (const y of colSet) { if (y < yMin) yMin = y; if (y > yMax) yMax = y; }
+            if (colSet.size < yMax - yMin + 1) open = true;
+          }
+          if (open) frontier.push({ vx, vy: -Infinity, vz });
         }
-        const scored: Array<{ vx: number; vz: number; p: number }> = [];
-        const stride = Math.max(1, Math.floor(perim.length / 400));
-        for (let i = 0; i < perim.length; i += stride) {
-          scored.push({ vx: perim[i].vx, vz: perim[i].vz, p: protectionAt(perim[i].vx, perim[i].vz) });
+        const scored: Array<{ vx: number; vy: number; vz: number; p: number }> = [];
+        const stride = Math.max(1, Math.floor(frontier.length / 400));
+        for (let i = 0; i < frontier.length; i += stride) {
+          const { vx, vz } = frontier[i];
+          // Weight protection down by exposure: a block with 4–5 open faces
+          // (spindle, overhang underside) is far weaker surface than a flat
+          // top with 1 — necking falls out of this for free.
+          let maxExp = 1;
+          let bestY = 0;
+          const colSet = colMap.get(vx + "," + vz);
+          if (colSet) {
+            let first = true;
+            for (const y of colSet) {
+              const e = exposureAt(vx, y, vz);
+              if (first || e > maxExp || (e === maxExp && y > bestY)) { maxExp = Math.max(e, 1); bestY = y; first = false; }
+            }
+          }
+          scored.push({ vx, vy: bestY, vz, p: protectionAt(vx, vz) / (1 + 0.5 * (maxExp - 1)) });
         }
         scored.sort((a, b) => a.p - b.p);
         const median = scored.length > 0 ? scored[Math.floor(scored.length / 2)].p : 1;
-        voidPerimCache = { picks: scored.slice(0, Math.max(n, 6)), median, at: now };
+        voidFrontierCache = { picks: scored.slice(0, Math.max(n, 6)), median, at: now };
       }
-      return voidPerimCache;
+      return voidFrontierCache;
     };
 
     const makeVoidBody = () => {
@@ -3081,12 +3199,12 @@ export default function TinyWorld() {
       return group;
     };
 
-    const spawnVoidCreature = (vx: number, vz: number) => {
+    const spawnVoidCreature = (vx: number, vy: number, vz: number) => {
       const group = makeVoidBody();
       scene.add(group);
-      const c: VoidCreature = { vx, vz, tx: vx, tz: vz, group, lastEatMs: performance.now(), eaten: 0, bobPhase: Math.random() * Math.PI * 2 };
+      const c: VoidCreature = { vx, vy, vz, tx: vx, ty: vy, tz: vz, group, lastEatMs: performance.now(), eaten: 0, bobPhase: Math.random() * Math.PI * 2 };
       voidCreatures.push(c);
-      console.log("[tinyworld] void creature spawned at", vx, vz);
+      console.log("[tinyworld] void creature spawned at", vx, vy, vz);
       return c;
     };
     const despawnVoidCreature = (c: VoidCreature) => {
@@ -3102,25 +3220,21 @@ export default function TinyWorld() {
       const cap = phase === "aggressive" ? 3 : phase === "active" ? 1 : 0;
       while (voidCreatures.length > cap) despawnVoidCreature(voidCreatures[voidCreatures.length - 1]);
       if (cap > 0) {
-        const { picks, median } = weakestPerimeter(cap, now);
+        const { picks, median } = weakestFrontier(cap, now);
         if (voidCreatures.length < cap && picks.length > 0) {
           const pick = picks[voidCreatures.length % picks.length];
-          spawnVoidCreature(pick.vx, pick.vz);
+          spawnVoidCreature(pick.vx, pick.vy, pick.vz);
         }
         const repelThreshold = Math.max(0.5, median * 2.5);
         for (const c of voidCreatures) {
-          // Frame-rate independent drift: step toward target each 1s tick
-          // (render fps can be 1 in headless tabs — never move per-frame).
-          const ddx = c.tx - c.vx, ddz = c.tz - c.vz;
-          const dist = Math.hypot(ddx, ddz);
+          const ddx = c.tx - c.vx, ddy = c.ty - c.vy, ddz = c.tz - c.vz;
+          const dist = Math.hypot(ddx, ddy, ddz);
           if (dist > 0.01) {
             const step = Math.min(dist, 2.0);
             c.vx += (ddx / dist) * step;
+            c.vy += (ddy / dist) * step;
             c.vz += (ddz / dist) * step;
           }
-          // Armed bombs are concentrated mass — creatures hunt them (§9.4
-          // bait), and a bite strikes the slug, which Returns. Detonation can
-          // dissipate creatures mid-iteration, so bail out of this tick.
           const nearBomb = bombs.find((b) => Math.hypot(b.vx - c.vx, b.vz - c.vz) < 14);
           if (nearBomb) {
             if (Math.hypot(nearBomb.vx - c.vx, nearBomb.vz - c.vz) < 1.3) {
@@ -3128,29 +3242,40 @@ export default function TinyWorld() {
               break;
             }
             c.tx = nearBomb.vx;
+            c.ty = nearBomb.vy;
             c.tz = nearBomb.vz;
           }
-          const cx = Math.round(c.vx), cz = Math.round(c.vz);
+          const cx = Math.round(c.vx), cy = Math.round(c.vy), cz = Math.round(c.vz);
           const prot = protectionAt(cx, cz);
           if (prot > repelThreshold && picks.length > 0) {
             const pick = picks[Math.floor(Math.random() * picks.length)];
             c.tx = pick.vx;
+            c.ty = pick.vy;
             c.tz = pick.vz;
-          } else if (Math.hypot(c.tx - c.vx, c.tz - c.vz) < 0.4) {
-            // Protection slows eating relative to the perimeter median, so the
-            // absolute magnitude of the field doesn't matter — weakest cells
-            // get bitten every ~6s, median-protected cells every ~24s.
+          } else if (Math.hypot(c.tx - c.vx, c.ty - c.vy, c.tz - c.vz) < 0.8) {
             const relProt = median > 0 ? prot / median : 1;
             const eatMs = (VOID_EAT_BASE_MS * (1 + 3 * relProt)) / VOID_SEASON_MULT;
             if (now - c.lastEatMs > eatMs) {
               let ate = false;
-              const vtop = colTop(cx, cz);
-              if (vtop !== null) {
-                const slotKey = cx + "," + vtop + "," + cz;
+              // Frontier rule: bite the MOST exposed block in this column —
+              // not just the top. Undersides of bridges and overhangs (5
+              // open faces) erode before flat ground (1), so thin geometry
+              // necks and severs exactly as mass-and-density.md describes.
+              let vtarget: number | null = null;
+              let bestExp = 0;
+              const colSet = colMap.get(cx + "," + cz);
+              if (colSet) {
+                for (const y of colSet) {
+                  const e = exposureAt(cx, y, cz);
+                  if (e > bestExp || (e === bestExp && (vtarget === null || y > vtarget))) { bestExp = e; vtarget = y; }
+                }
+              }
+              if (vtarget !== null) {
+                const slotKey = cx + "," + vtarget + "," + cz;
                 for (const m of meshesRef.current) {
                   if (m.userData?.slotMap?.has(slotKey)) {
-                    if (removeBlockFrom(m, cx, vtop, cz, "void_creature")) {
-                      syncGroundAfterRemove(cx, vtop, cz, m.userData.layer);
+                    if (removeBlockFrom(m, cx, vtarget, cz, "void_creature")) {
+                      syncGroundAfterRemove(cx, vtarget, cz, m.userData.layer);
                       c.eaten += 1;
                       voidEatenTotal += 1;
                       ate = true;
@@ -3159,12 +3284,11 @@ export default function TinyWorld() {
                   }
                 }
               }
-              // Always reset the timer; a failed bite (hidden/exhausted column)
-              // retargets instead of stalling forever.
               c.lastEatMs = now;
               if (!ate && picks.length > 0) {
                 const pick = picks[Math.floor(Math.random() * picks.length)];
                 c.tx = pick.vx;
+                c.ty = pick.vy;
                 c.tz = pick.vz;
               }
             }
@@ -3179,9 +3303,7 @@ export default function TinyWorld() {
 
     const renderVoidCreatures = (now: number) => {
       for (const c of voidCreatures) {
-        const cx = Math.round(c.vx), cz = Math.round(c.vz);
-        const vtop = colTop(cx, cz);
-        const hoverY = ((vtop ?? 0) + 2.1) * voxel + Math.sin(now * 0.0022 + c.bobPhase) * voxel * 0.35;
+        const hoverY = (c.vy + 1.1) * voxel + Math.sin(now * 0.0022 + c.bobPhase) * voxel * 0.35;
         c.group.position.set((c.vx - cxRound) * voxel, hoverY, (c.vz - czRound) * voxel);
         c.group.rotation.y = now * 0.0009 + c.bobPhase;
       }
@@ -3252,92 +3374,149 @@ export default function TinyWorld() {
       }
     };
 
+    // 3D frontier scan: scanning adds BLOCKS, not "land". The frontier is
+    // ANY exposed face of the scanned volume (docs/persistence-and-access.md)
+    // — sideways off an edge, up a wall, down under an overhang. Pick a
+    // random exposed face with open space along its normal and grow a
+    // connected blob of new matter from it; the old horizontal patch is just
+    // the special case where the face normal is horizontal.
     const scanNewLand = () => {
       if (scanSecondsRef.current < SCAN_COST_SEC) return { ok: false, reason: "need " + SCAN_COST_SEC + "s banked, have " + Math.floor(scanSecondsRef.current) + "s" };
-      const colHasBlocks = (key: string) => {
-        const s = colMap.get(key);
-        return !!s && s.size > 0;
-      };
-      // Anchor on a random perimeter column with an open side. Prefer true
-      // outer edges: probe outward — interior notches (1-cell holes also have
-      // "open sides") produce cramped patches, so they're only a fallback.
+      // Sample random occupied blocks; take the first exposed face with room
+      // to grow (≥4 of 5 probe cells empty along the outward normal). A
+      // cramped face (interior notch) is kept only as a fallback.
       const keys = Array.from(colMap.keys());
-      let anchor: { x: number; z: number } | null = null;
-      let dir: [number, number] = [1, 0];
-      let fallback: { a: { x: number; z: number }; d: [number, number] } | null = null;
-      for (let tries = 0; tries < 300 && !anchor; tries++) {
+      let seed: { x: number; y: number; z: number } | null = null;
+      let normal: [number, number, number] = [1, 0, 0];
+      let fallbackSeed: { s: { x: number; y: number; z: number }; n: [number, number, number] } | null = null;
+      for (let tries = 0; tries < 400 && !seed; tries++) {
         const k = keys[Math.floor(Math.random() * keys.length)];
-        if (!colHasBlocks(k)) continue;
+        const colSet = colMap.get(k);
+        if (!colSet || colSet.size === 0) continue;
         const parts = k.split(",");
         const x = +parts[0], z = +parts[1];
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          if (colHasBlocks((x + dx) + "," + (z + dz))) continue;
+        const ys = Array.from(colSet);
+        const y = ys[Math.floor(Math.random() * ys.length)];
+        const dirs = FACE_DIRS.slice();
+        for (let i = dirs.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          const t = dirs[i]; dirs[i] = dirs[j]; dirs[j] = t;
+        }
+        for (const d of dirs) {
+          if (hasBlockAt(x + d[0], y + d[1], z + d[2])) continue;
           let freeOut = 0;
           for (let probe = 1; probe <= 5; probe++) {
-            if (!colHasBlocks((x + dx * probe) + "," + (z + dz * probe))) freeOut++;
+            if (!hasBlockAt(x + d[0] * probe, y + d[1] * probe, z + d[2] * probe)) freeOut++;
           }
+          const cand = { x: x + d[0], y: y + d[1], z: z + d[2] };
           if (freeOut >= 4) {
-            anchor = { x, z };
-            dir = [dx, dz];
-          } else if (!fallback) {
-            fallback = { a: { x, z }, d: [dx, dz] };
+            seed = cand;
+            normal = [d[0], d[1], d[2]];
+          } else if (!fallbackSeed) {
+            fallbackSeed = { s: cand, n: [d[0], d[1], d[2]] };
           }
           break;
         }
       }
-      if (!anchor && fallback) {
-        anchor = fallback.a;
-        dir = fallback.d;
-      }
-      if (!anchor) return { ok: false, reason: "no open edge found" };
-      const baseY = colTop(anchor.x, anchor.z) ?? 0;
-      const perp: [number, number] = [-dir[1], dir[0]];
+      if (!seed && fallbackSeed) { seed = fallbackSeed.s; normal = fallbackSeed.n; }
+      if (!seed) return { ok: false, reason: "no exposed frontier face found" };
+      // Blob shape: ellipsoid reaching outward along the face normal. A
+      // horizontal normal reproduces the old slab (long × wide × ~3 thick);
+      // a vertical normal grows a shaft/cap — same rule, no special case.
       const D = 8 + Math.floor(Math.random() * 4);
-      const HALF_W = 5 + Math.floor(Math.random() * 2);
-      // Collect target cells with gentle height noise.
-      const cells: Array<{ x: number; z: number; h: number }> = [];
-      for (let out = 1; out <= D; out++) {
-        for (let lat = -HALF_W; lat <= HALF_W; lat++) {
-          if (Math.abs(lat) === HALF_W && Math.random() < 0.5) continue;
-          const x = anchor.x + dir[0] * out + perp[0] * lat;
-          const z = anchor.z + dir[1] * out + perp[1] * lat;
-          if (colHasBlocks(x + "," + z)) continue;
-          const h = baseY + (Math.random() < 0.22 ? (Math.random() < 0.5 ? -1 : 1) : 0);
-          cells.push({ x, z, h });
+      const semiN = D / 2;
+      const verticalScan = normal[1] !== 0;
+      const semiW = verticalScan ? 3.5 : 5 + Math.random();
+      const semiT = verticalScan ? 3.5 : 1.4 + Math.random() * 0.8;
+      const c0 = {
+        x: seed.x + normal[0] * (semiN - 0.5),
+        y: seed.y + normal[1] * (semiN - 0.5),
+        z: seed.z + normal[2] * (semiN - 0.5),
+      };
+      // Decompose offsets into (along-normal, lateral, thickness) components.
+      const blobVal = (bx: number, by: number, bz: number): number => {
+        const ox = bx - c0.x, oy = by - c0.y, oz = bz - c0.z;
+        let a: number, p1: number, p2: number;
+        if (normal[0] !== 0) { a = ox; p1 = oz; p2 = oy; }
+        else if (normal[2] !== 0) { a = oz; p1 = ox; p2 = oy; }
+        else { a = oy; p1 = ox; p2 = oz; }
+        return (a / semiN) * (a / semiN) + (p1 / semiW) * (p1 / semiW) + (p2 / semiT) * (p2 / semiT);
+      };
+      // Collect empty candidate cells inside the (noisy) ellipsoid, then BFS
+      // from the seed so the blob is one connected piece attached to the
+      // face it grew from — no floating fragments behind existing geometry.
+      const candidates = new Set<string>();
+      const rx = Math.ceil(normal[0] !== 0 ? semiN : (normal[2] !== 0 ? semiW : semiW)) + 1;
+      const ry = Math.ceil(normal[1] !== 0 ? semiN : semiT) + 1;
+      const rz = Math.ceil(normal[2] !== 0 ? semiN : (normal[0] !== 0 ? semiW : semiW)) + 1;
+      const cxc = Math.round(c0.x), cyc = Math.round(c0.y), czc = Math.round(c0.z);
+      for (let bx = cxc - rx; bx <= cxc + rx; bx++) {
+        for (let by = cyc - ry; by <= cyc + ry; by++) {
+          for (let bz = czc - rz; bz <= czc + rz; bz++) {
+            if (hasBlockAt(bx, by, bz)) continue;
+            if (blobVal(bx, by, bz) <= 1 + (Math.random() * 0.3 - 0.15)) candidates.add(bx + "," + by + "," + bz);
+          }
         }
       }
-      if (cells.length === 0) return { ok: false, reason: "edge had no room" };
-      // Material rolls: rare pure-metal vein, very rare core find.
-      const veinCells = new Set<number>();
-      if (Math.random() < 0.18) {
-        const veinSize = 4 + Math.floor(Math.random() * 4);
-        const start = Math.floor(Math.random() * cells.length);
-        for (let i = 0; i < veinSize; i++) veinCells.add((start + i) % cells.length);
+      candidates.add(seed.x + "," + seed.y + "," + seed.z);
+      const blob: Array<{ x: number; y: number; z: number }> = [];
+      const blobSet = new Set<string>();
+      const queue = [seed.x + "," + seed.y + "," + seed.z];
+      blobSet.add(queue[0]);
+      while (queue.length > 0) {
+        const ck = queue.shift()!;
+        const cp = ck.split(",");
+        const bx = +cp[0], by = +cp[1], bz = +cp[2];
+        blob.push({ x: bx, y: by, z: bz });
+        for (const d of FACE_DIRS) {
+          const nk = (bx + d[0]) + "," + (by + d[1]) + "," + (bz + d[2]);
+          if (candidates.has(nk) && !blobSet.has(nk)) { blobSet.add(nk); queue.push(nk); }
+        }
       }
-      const coreIdx = Math.random() < 0.03 ? Math.floor(Math.random() * cells.length) : -1;
+      if (blob.length === 0) return { ok: false, reason: "frontier face had no room" };
+      // Classify cells: a cell whose up-neighbor is open (outside the blob
+      // AND empty in the world) reads as surface — it gets grass/dirt and a
+      // ground-map sync. Everything else is body matter (dirt/stone by how
+      // buried it is). Vein/core rolls land in body cells only.
+      const isTop: boolean[] = blob.map((c) => !blobSet.has(c.x + "," + (c.y + 1) + "," + c.z) && !hasBlockAt(c.x, c.y + 1, c.z));
+      const bodyIdx: number[] = [];
+      for (let i = 0; i < blob.length; i++) if (!isTop[i]) bodyIdx.push(i);
+      const veinCells = new Set<number>();
+      if (bodyIdx.length > 0 && Math.random() < 0.18) {
+        const veinSize = 4 + Math.floor(Math.random() * 4);
+        const start = Math.floor(Math.random() * bodyIdx.length);
+        for (let i = 0; i < veinSize; i++) veinCells.add(bodyIdx[(start + i) % bodyIdx.length]);
+      }
+      const coreIdx = bodyIdx.length > 0 && Math.random() < 0.03 ? bodyIdx[Math.floor(Math.random() * bodyIdx.length)] : -1;
       let added = 0;
       let veinBlocks = 0;
       let coreFound = false;
-      for (let i = 0; i < cells.length; i++) {
-        const { x, z, h } = cells[i];
-        let deepMesh = stoneMesh;
-        if (i === coreIdx) deepMesh = coreScanMesh;
-        else if (veinCells.has(i)) deepMesh = metalMesh;
-        if (deepMesh && spawnBlockInto(deepMesh, x, h - 2, z, "scan")) {
+      for (let i = 0; i < blob.length; i++) {
+        const { x, y, z } = blob[i];
+        if (isTop[i]) {
+          const topMesh = Math.random() < 0.5 ? scanGrassMesh : scanDirtMesh;
+          const topLayer = topMesh === scanGrassMesh ? "grass" : "dirt";
+          if (topMesh && spawnBlockInto(topMesh, x, y, z, "scan")) {
+            added++;
+            syncGroundAfterPlace(x, y, z, topLayer);
+          }
+          continue;
+        }
+        let bodyMesh = scanDirtMesh;
+        if (i === coreIdx) bodyMesh = coreScanMesh;
+        else if (veinCells.has(i)) bodyMesh = metalMesh;
+        else {
+          const buried = blobSet.has(x + "," + (y + 1) + "," + z) && blobSet.has(x + "," + (y - 1) + "," + z);
+          if (buried || Math.random() < 0.25) bodyMesh = stoneMesh;
+        }
+        if (bodyMesh && spawnBlockInto(bodyMesh, x, y, z, "scan")) {
           added++;
-          if (deepMesh === metalMesh) {
-            blockGrades.set(x + "," + (h - 2) + "," + z, "pure");
+          if (bodyMesh === metalMesh) {
+            blockGrades.set(x + "," + y + "," + z, "pure");
             veinBlocks++;
-          } else if (deepMesh === coreScanMesh) {
+          } else if (bodyMesh === coreScanMesh) {
             coreFound = true;
           }
-        }
-        if (spawnBlockInto(scanDirtMesh, x, h - 1, z, "scan")) added++;
-        const topMesh = Math.random() < 0.5 ? scanGrassMesh : scanDirtMesh;
-        const topLayer = topMesh === scanGrassMesh ? "grass" : "dirt";
-        if (topMesh && spawnBlockInto(topMesh, x, h, z, "scan")) {
-          added++;
-          syncGroundAfterPlace(x, h, z, topLayer);
         }
       }
       if (added === 0) return { ok: false, reason: "no blocks spawned (capacity?)" };
@@ -3351,22 +3530,24 @@ export default function TinyWorld() {
       scanSecondsRef.current -= SCAN_COST_SEC;
       scanCount += 1;
       setScanUi({ charge: Math.floor(scanSecondsRef.current), scans: scanCount });
-      console.log("[tinyworld] scanned new land:", added, "blocks at", anchor.x, anchor.z, veinBlocks ? "(pure metal vein ×" + veinBlocks + ")" : "", coreFound ? "(CORE FOUND)" : "");
-      return { ok: true, added, anchor, veinBlocks, coreFound };
+      const dirName = normal[1] === 1 ? "up" : normal[1] === -1 ? "down" : normal[0] === 1 ? "+x" : normal[0] === -1 ? "-x" : normal[2] === 1 ? "+z" : "-z";
+      console.log("[tinyworld] frontier scan (" + dirName + "):", added, "blocks at", seed.x, seed.y, seed.z, veinBlocks ? "(pure metal vein ×" + veinBlocks + ")" : "", coreFound ? "(CORE FOUND)" : "");
+      return { ok: true, added, anchor: { x: seed.x, z: seed.z }, seed, normal: dirName, veinBlocks, coreFound };
     };
 
     // Purge: LiDAR is directed perception and the void is unperceived space —
     // re-sweeping owned territory expels void-pool mass back as RAW matter
     // (mass conserved, grades lost, per the entropy law).
-    const purgeSweep = (vx?: number, vz?: number) => {
+    const purgeSweep = (vx?: number, vy?: number, vz?: number) => {
       if (scanSecondsRef.current < PURGE_COST_SEC) return { ok: false, reason: "need " + PURGE_COST_SEC + "s banked, have " + Math.floor(scanSecondsRef.current) + "s" };
       const cx = typeof vx === "number" ? vx : Math.round(camera.position.x / voxel) + cxRound;
+      const cy = typeof vy === "number" ? vy : Math.round(camera.position.y / voxel);
       const cz = typeof vz === "number" ? vz : Math.round(camera.position.z / voxel) + czRound;
       scanSecondsRef.current -= PURGE_COST_SEC;
       let expelledCreatures = 0;
       for (let i = voidCreatures.length - 1; i >= 0; i--) {
         const c = voidCreatures[i];
-        if (Math.hypot(c.vx - cx, c.vz - cz) <= PURGE_RADIUS) {
+        if (Math.hypot(c.vx - cx, c.vy - cy, c.vz - cz) <= PURGE_RADIUS) {
           despawnVoidCreature(c);
           expelledCreatures++;
         }
@@ -3374,22 +3555,33 @@ export default function TinyWorld() {
       const L = ledgerRef.current as any;
       let reclaimed = 0;
       for (let tries = 0; tries < 80 && reclaimed < PURGE_MAX_BLOCKS && L.void >= 1; tries++) {
-        const a = Math.random() * Math.PI * 2;
-        const r = Math.random() * PURGE_RADIUS;
-        const x = cx + Math.round(Math.cos(a) * r);
-        const z = cz + Math.round(Math.sin(a) * r);
-        const top = colTop(x, z);
-        if (top === null) continue; // purge only works over owned territory
-        if (spawnBlockInto(scanDirtMesh, x, top + 1, z, "purge")) {
-          syncGroundAfterPlace(x, top + 1, z, "dirt");
+        const r1 = Math.random() * 2 - 1;
+        const r2 = Math.random() * 2 - 1;
+        const r3 = Math.random() * 2 - 1;
+        const len = Math.hypot(r1, r2, r3) || 1;
+        const rad = Math.random() * PURGE_RADIUS;
+        const x = cx + Math.round((r1 / len) * rad);
+        const y = cy + Math.round((r2 / len) * rad);
+        const z = cz + Math.round((r3 / len) * rad);
+
+        let hasNeighbor = false;
+        for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+           const s = colMap.get((x + dx) + "," + (z + dz));
+           if (s && s.has(y + dy)) { hasNeighbor = true; break; }
+        }
+        const s = colMap.get(x + "," + z);
+        if (!hasNeighbor || (s && s.has(y))) continue;
+
+        if (spawnBlockInto(scanDirtMesh, x, y, z, "purge")) {
+          syncGroundAfterPlace(x, y, z, "dirt");
           reclaimed++;
         }
       }
       purgeCount += 1;
       if (reclaimed > 0) queueBlockEvent("purge", reclaimed, "purge_sweep");
       setScanUi({ charge: Math.floor(scanSecondsRef.current), scans: scanCount });
-      console.log("[tinyworld] purge sweep at", cx, cz, "—", reclaimed, "reclaimed,", expelledCreatures, "creatures expelled");
-      return { ok: true, at: [cx, cz], reclaimed, creaturesExpelled: expelledCreatures, secondsLeft: Math.floor(scanSecondsRef.current) };
+      console.log("[tinyworld] purge sweep at", cx, cy, cz, "—", reclaimed, "reclaimed,", expelledCreatures, "creatures expelled");
+      return { ok: true, at: [cx, cy, cz], reclaimed, creaturesExpelled: expelledCreatures, secondsLeft: Math.floor(scanSecondsRef.current) };
     };
 
     const PRESS_LADDER: Record<string, string> = { dirt: "stone", stone: "metal", metal: "densium", densium: "core" };
@@ -3649,7 +3841,7 @@ export default function TinyWorld() {
     // loose as net-zero rescatter: nothing destroyed, everything disordered.
     // Creatures in radius dissipate (their bound mass returns void → world),
     // and bombs inside a blast also Return — chains.
-    type Bomb = { vx: number; vz: number; size: number; tier: string; group: any };
+    type Bomb = { vx: number; vy: number; vz: number; size: number; tier: string; group: any };
     const bombs: Bomb[] = [];
     let detonationsTotal = 0;
     const DOWN_LADDER: Record<string, string> = { stone: "dirt", metal: "stone", densium: "metal", core: "densium" };
@@ -3705,22 +3897,19 @@ export default function TinyWorld() {
       return group;
     };
 
-    const placeBomb = (vx: number, vz: number, size: number, tier = "stone") => {
+    const placeBomb = (vx: number, vy: number, vz: number, size: number, tier = "stone") => {
       if (size !== 1 && size !== 8 && size !== 27) return { ok: false, reason: "size must be 1, 8 or 27" };
       const sp = stockpileByLayerRef.current as any;
       const have = sp["slug_" + tier] || 0;
       if (have < size) return { ok: false, reason: "need " + size + " " + tier + " slugs, have " + have };
       sp["slug_" + tier] = have - size;
-      // slug_ keys live outside ledgerMove's per-layer bookkeeping, so move
-      // the aggregate only.
       ledgerMove("stockpile", "built", size, "bomb_place");
       const group = makeBombBody(size);
-      const top = colTop(Math.round(vx), Math.round(vz));
-      group.position.set((vx - cxRound) * voxel, ((top ?? 0) + 1.4) * voxel, (vz - czRound) * voxel);
+      group.position.set((vx - cxRound) * voxel, (vy + 0.4) * voxel, (vz - czRound) * voxel);
       scene.add(group);
-      bombs.push({ vx, vz, size, tier, group });
+      bombs.push({ vx, vy, vz, size, tier, group });
       updateBombUi();
-      return { ok: true, vx, vz, size, tier, strain: size };
+      return { ok: true, vx, vy, vz, size, tier, strain: size };
     };
 
     const detonate = (bomb: Bomb, visited: Set<Bomb>): any => {
@@ -3730,7 +3919,7 @@ export default function TinyWorld() {
       if (bi < 0) return null;
       bombs.splice(bi, 1);
       scene.remove(bomb.group);
-      const { vx, vz, size, tier } = bomb;
+      const { vx, vy, vz, size, tier } = bomb;
       const L = ledgerRef.current as any;
       const strain = size;
       const rMax = 2 + Math.cbrt(size);
@@ -3763,36 +3952,44 @@ export default function TinyWorld() {
         queueBlockEvent("detonate", mint, "bomb_" + tier);
       }
 
-      // 2. Shockwave — crack the top block of every column where incident
+      // 2. Shockwave — crack blocks within the 3D radius where incident
       // force ≥ its density; remove + rescatter just outside the radius
       // (world→void then void→world: net-zero, disorder not destruction).
       const blastR = Math.ceil(Math.sqrt(Math.max(0, strain / 0.25 - 1)));
       let cracked = 0;
       for (let dx = -blastR; dx <= blastR; dx++) {
-        for (let dz = -blastR; dz <= blastR; dz++) {
-          const force = strain / (1 + dx * dx + dz * dz);
-          const bx = Math.round(vx) + dx, bz = Math.round(vz) + dz;
-          const btop = colTop(bx, bz);
-          if (btop === null) continue;
-          const bkey = bx + "," + btop + "," + bz;
-          let bmesh: any = null;
-          for (const m of meshesRef.current) if (m.userData?.slotMap?.has(bkey)) { bmesh = m; break; }
-          if (!bmesh) continue;
-          const blayer = bmesh.userData.layer as string;
-          if (force < densityOf(blayer)) continue;
-          if (removeBlockFrom(bmesh, bx, btop, bz, "detonate")) {
-            syncGroundAfterRemove(bx, btop, bz, blayer);
-            for (let a = 0; a < 10; a++) {
-              const ang = Math.random() * Math.PI * 2;
-              const rad = blastR + 1 + Math.random() * 3;
-              const sx = Math.round(vx + Math.cos(ang) * rad);
-              const sz = Math.round(vz + Math.sin(ang) * rad);
-              const sy = (colTop(sx, sz) ?? -1) + 1;
-              const m2 = meshWithRoom(blayer) || bmesh;
-              if (spawnBlockInto(m2, sx, sy, sz, "detonate")) {
-                syncGroundAfterPlace(sx, sy, sz, blayer);
-                cracked++;
-                break;
+        for (let dy = -blastR; dy <= blastR; dy++) {
+          for (let dz = -blastR; dz <= blastR; dz++) {
+            const d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 > blastR * blastR) continue;
+            const force = strain / (1 + d2);
+            const bx = Math.round(bomb.vx) + dx;
+            const by = Math.round(bomb.vy) + dy;
+            const bz = Math.round(bomb.vz) + dz;
+            
+            const bkey = bx + "," + by + "," + bz;
+            let bmesh: any = null;
+            for (const m of meshesRef.current) if (m.userData?.slotMap?.has(bkey)) { bmesh = m; break; }
+            if (!bmesh) continue;
+            
+            const blayer = bmesh.userData.layer as string;
+            if (force < densityOf(blayer)) continue;
+            if (removeBlockFrom(bmesh, bx, by, bz, "detonate")) {
+              syncGroundAfterRemove(bx, by, bz, blayer);
+              for (let a = 0; a < 10; a++) {
+                const ang1 = Math.random() * Math.PI * 2;
+                const ang2 = Math.random() * Math.PI;
+                const rad = blastR + 1 + Math.random() * 3;
+                const sx = Math.round(bomb.vx + Math.sin(ang2) * Math.cos(ang1) * rad);
+                const sy = Math.round(bomb.vy + Math.cos(ang2) * rad);
+                const sz = Math.round(bomb.vz + Math.sin(ang2) * Math.sin(ang1) * rad);
+                
+                const m2 = meshWithRoom(blayer) || bmesh;
+                if (spawnBlockInto(m2, sx, sy, sz, "detonate")) {
+                  syncGroundAfterPlace(sx, sy, sz, blayer);
+                  cracked++;
+                  break;
+                }
               }
             }
           }
@@ -3803,7 +4000,7 @@ export default function TinyWorld() {
       // radius dissipate, their bound stolen mass scattering back void→world.
       let dissipated = 0, massReturned = 0;
       for (const c of [...voidCreatures]) {
-        if (Math.hypot(c.vx - vx, c.vz - vz) > blastR + 2) continue;
+        if (Math.hypot(c.vx - bomb.vx, c.vy - bomb.vy, c.vz - bomb.vz) > blastR + 2) continue;
         for (let g = 0; g < c.eaten; g++) {
           for (let a = 0; a < 8; a++) {
             const ang = Math.random() * Math.PI * 2;
@@ -3827,7 +4024,7 @@ export default function TinyWorld() {
       let chained = 0;
       for (const other of [...bombs]) {
         if (visited.has(other)) continue;
-        const od2 = (other.vx - vx) ** 2 + (other.vz - vz) ** 2;
+        const od2 = (other.vx - bomb.vx) ** 2 + (other.vy - bomb.vy) ** 2 + (other.vz - bomb.vz) ** 2;
         if (strain / (1 + od2) >= 1) {
           if (detonate(other, visited)) chained++;
         }
@@ -3871,7 +4068,9 @@ export default function TinyWorld() {
           "fps " + __twFps +
           " | cam " + camera.position.x.toFixed(2) + "," + camera.position.y.toFixed(2) + "," + camera.position.z.toFixed(2) +
           " | jitter " + (window as any).__tw.jitter().toFixed(4) +
-          (w0 ? "\nworker " + w0.vx + "," + w0.vz + " " + w0.mode + (w0.plan ? " plan:" + w0.plan.name : "") : "\nworker: none");
+          (w0 ? "\
+worker " + w0.vx + "," + w0.vz + " " + w0.mode + (w0.plan ? " plan:" + w0.plan.name : "") : "\
+worker: none");
       }
     };
     (window as any).__tw = {
@@ -3948,14 +4147,14 @@ export default function TinyWorld() {
         phase: voidPhaseNow(),
         seasonMult: VOID_SEASON_MULT,
         eatenTotal: voidEatenTotal,
-        perimMedian: weakestPerimeter(1).median,
-        creatures: voidCreatures.map((c) => ({ vx: c.vx, vz: c.vz, tx: c.tx, tz: c.tz, eaten: c.eaten })),
+        perimMedian: weakestFrontier(1).median,
+        creatures: voidCreatures.map((c) => ({ vx: c.vx, vy: c.vy, vz: c.vz, tx: c.tx, ty: c.ty, tz: c.tz, eaten: c.eaten })),
       }),
-      spawnCreature: (vx?: number, vz?: number) => {
-        if (typeof vx === "number" && typeof vz === "number") { spawnVoidCreature(vx, vz); return true; }
-        const { picks } = weakestPerimeter(1);
+      spawnCreature: (vx?: number, vy?: number, vz?: number) => {
+        if (typeof vx === "number" && typeof vy === "number" && typeof vz === "number") { spawnVoidCreature(vx, vy, vz); return true; }
+        const { picks } = weakestFrontier(1);
         if (picks.length === 0) return false;
-        spawnVoidCreature(picks[0].vx, picks[0].vz);
+        spawnVoidCreature(picks[0].vx, picks[0].vy, picks[0].vz);
         return true;
       },
       clearCreatures: () => { while (voidCreatures.length > 0) despawnVoidCreature(voidCreatures[0]); },
@@ -3975,7 +4174,7 @@ export default function TinyWorld() {
         return { colYs: ys, top, inSlot, inHidden, prot: protectionAt(vx, vz) };
       },
       scan: () => scanNewLand(),
-      purge: (vx?: number, vz?: number) => purgeSweep(vx, vz),
+      purge: (vx?: number, vy?: number, vz?: number) => purgeSweep(vx, vy, vz),
       scanInfo: () => ({ seconds: Math.floor(scanSecondsRef.current), cap: SCAN_SEC_CAP, scanCost: SCAN_COST_SEC, purgeCost: PURGE_COST_SEC, scans: scanCount, purges: purgeCount }),
       compress: (layer: string) => pressCompress(layer),
       buildPress: (vx?: number, vz?: number) => buildPress(vx, vz),
@@ -4015,10 +4214,10 @@ export default function TinyWorld() {
       scrapShip: (idx = 0) => scrapShip(idx),
       shipInfo: () => ships.map((s) => ({ x: s.x, z: s.z, tx: s.tx, tz: s.tz, flying: s.flying, fuel: s.fuel })),
       makeSlug: (layer: string) => makeSlug(layer),
-      placeBomb: (vx: number, vz: number, size = 1, tier = "stone") => placeBomb(vx, vz, size, tier),
+      placeBomb: (vx: number, vy: number, vz: number, size = 1, tier = "stone") => placeBomb(vx, vy, vz, size, tier),
       detonate: (idx = 0) => (bombs[idx] ? detonate(bombs[idx], new Set()) : { ok: false, reason: "no bomb " + idx }),
       bombInfo: () => ({
-        bombs: bombs.map((b) => ({ vx: b.vx, vz: b.vz, size: b.size, tier: b.tier })),
+        bombs: bombs.map((b) => ({ vx: b.vx, vy: b.vy, vz: b.vz, size: b.size, tier: b.tier })),
         slugs: Object.fromEntries(Object.entries(stockpileByLayerRef.current as any).filter(([k]) => k.startsWith("slug_"))),
         detonations: detonationsTotal,
       }),
@@ -4310,6 +4509,7 @@ export default function TinyWorld() {
       await buildWorld(saved);
       setLoadNote(`loaded ${saved.blockCount.toLocaleString()} blocks from ${world?.name ?? "saved world"}`);
     } catch (error) {
+      console.error("[tinyworld] world load failed:", error);
       setLoadNote(error instanceof Error ? error.message : String(error));
     }
   }, [buildWorld, loadWorldToScene, persistWorldMeta, selectedWorldId, worlds]);

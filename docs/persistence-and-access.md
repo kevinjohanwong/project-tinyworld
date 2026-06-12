@@ -109,12 +109,14 @@ Rules:
 
 Schema delta (v0 → v0.1): `worlds` gains nullable `alt_hint` REAL (relative
 meters, candidate-ordering only); `/api/tinyworld-access` returns the
-candidate *set* at a colliding anchor instead of nearest-only. Prototype gap,
-noted: `scanNewLand` is misnamed and under-scoped — it should be "scan new
-blocks": pick exposed faces anywhere on the volume's surface, not just the
-horizontal perimeter. Same fix on the antagonist side: the void should
-attack any exposed face (overhangs, undersides, ceilings) the way it
-attacks edges today.
+candidate *set* at a colliding anchor instead of nearest-only. ~~Prototype
+gap~~ **shipped (2026-06-12)**: `scanNewLand` is now a 3D frontier scan — it
+samples any exposed face on the volume's surface and grows an ellipsoid blob
+along that face's normal (vertical scans become shafts/caps, horizontal ones
+keep the old slab footprint). The antagonist matches: `weakestFrontier`
+treats columns with vertical gaps (overhangs, undersides, bridges) as
+exposed surface, weights protection down by per-block face exposure, and
+creatures bite the most-exposed block in a column rather than its top.
 
 ## The globe is the void (sparse planet registry)
 
