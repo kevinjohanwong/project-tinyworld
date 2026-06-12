@@ -63,42 +63,53 @@ Behavior details:
 - Verified: NYC worlds hidden from an Ashburn VA datacenter IP; Philly node
   (131 km) sees Brooklyn Loft only when it has a lidar tower; LA sees nothing.
 
-## Vertical anchoring (same lat/lon, different floors)
+## Vertical anchoring (worlds are volumes, not floor plates)
 
-*Decision (June 2026): height is never a key, only a hint. The mesh is the
-key.*
+*Decision (June 2026): no conventional "floors." A world is a contiguous
+scanned VOLUME; verticality is just another direction it grows in. Height is
+never a key, only a hint — the mesh is the key.*
 
-GPS altitude cannot separate floors: vertical error is 2–3× horizontal
-(±10–30 m, worse indoors — and scanning always happens indoors), and a
-floor-to-floor gap is ~3 m. The signals, ranked:
+The voxel grid is already 3D. Scanning upward or downward extends the *same
+world* the way scanning outward does — towers, basements, stairwells,
+balconies are world geometry, not world boundaries. Costs the same
+scan-seconds; rolls the same materials; the protection field, void, and
+ledger already operate on the volume.
+
+Why geo can't do this anyway — GPS altitude is noise at building scale
+(vertical error 2–3× horizontal, ±10–30 m, worse indoors; a story is ~3 m):
 
 | Signal | Precision | Role |
 |---|---|---|
-| **ARWorldMap relocalization** | cm, binary "am I in this world?" | **The decider.** Same lat/lon + relocalizes against World A's map → it IS World A. Fails → new sibling world. |
-| Barometer (CMAltimeter) | ±0.5–1 m *relative*, drifts with weather | `floor_hint` — narrows candidates ("you're ~6 m above where you passed the geo gate") |
-| CLFloor (Apple indoor venues) | exact floor | rare (malls/airports); use when present |
+| **ARWorldMap relocalization** | cm, binary "am I in this volume?" | **The decider.** Same anchor + relocalizes against World A's map → you are inside World A, at whatever height. |
+| Barometer (CMAltimeter) | ±0.5–1 m *relative*, drifts with weather | `alt_hint` — orders candidates ("~6 m above where you passed the geo gate"). NOT a floor index. |
 | GPS altitude | ±10–30 m, ellipsoidal | ignore |
 
 Rules:
 
-1. **Stacked worlds are siblings** sharing one anchor: same lat/lon, joined by
-   a `building_group` id. The geo gate admits you to the *group*; mesh
-   relocalization (native) or an explicit world picker (web/App Clip) selects
-   the member. `floor_hint` (nullable, relative meters) only orders the
-   candidate list.
-2. **Vertical bridges are stairwells.** The existing bridge rule already
-   covers floors: connecting two worlds requires scanning the physical path
-   between them — vertically, that path is the staircase. Two apartments in
-   one building are separate unlinked worlds until someone scans the stairs,
-   exactly like two buildings until someone scans the sidewalk. No new
-   mechanic.
-3. **Never auto-merge on geo alone.** Same anchor + new mesh = new sibling
-   world. Merging is only ever mesh-driven (relocalization proves same space)
-   or bridge-driven (player proves the path).
+1. **One anchor, N volumes.** Worlds at the same lat/lon are disjoint scanned
+   volumes (your apartment, the neighbor's, the roof). The geo gate admits you
+   to the anchor; relocalization (native) or a picker (web/App Clip) selects
+   the volume. No `building_group`, no floor numbering — disjointness itself
+   is the only structure.
+2. **Connecting scans fuse volumes.** Scan the stairwell from your volume and
+   keep going: when the new mesh relocalizes against a volume you have access
+   to AND physically connects to it, the volumes become one world — voxel
+   volumes union, ledgers/baselines add. This is growth, not bridging.
+3. **Bridges are for volumes you DON'T own.** The bridge mechanic survives as
+   the *ownership* boundary, not a geometric one: a maintained link to someone
+   else's volume (horizontal to the next building, or vertical to the
+   neighbor under you — same rule).
+4. **Never fuse on geo alone.** Fusion requires the mesh to prove both
+   identity (relocalization) and connection (contiguous scan path). Same
+   anchor + unconnected mesh = new disjoint volume.
 
-Schema delta (v0 → v0.1): `worlds` gains nullable `floor_hint` REAL and
-`building_group` TEXT; `/api/tinyworld-access` returns a candidate *set* when
-anchors collide horizontally instead of nearest-only.
+Schema delta (v0 → v0.1): `worlds` gains nullable `alt_hint` REAL (relative
+meters, candidate-ordering only); `/api/tinyworld-access` returns the
+candidate *set* at a colliding anchor instead of nearest-only. Prototype gap,
+noted: `scanNewLand` currently expands only horizontally at the perimeter —
+vertical expansion (scan up a wall / down a stairwell) is the natural next
+extension, and the void should attack overhangs and undersides the same way
+it attacks edges.
 
 ## The globe is the void (sparse planet registry)
 
