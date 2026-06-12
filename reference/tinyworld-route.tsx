@@ -762,11 +762,19 @@ export default function TinyWorld() {
   type LedgerPool = "world" | "stockpile" | "built" | "void";
   const ledgerRef = useRef({ world: 0, stockpile: 0, built: 0, void: 0, baseline: 0 });
   const stockpileByLayerRef = useRef<Record<string, number>>({});
+  // Refinement grades (docs/scan-economy.md): every stockpiled block has a
+  // grade. Density is what the void sees; grade is what the press wants.
+  type Grade = "raw" | "worked" | "pure";
+  const stockGradesRef = useRef<Record<string, { raw: number; worked: number; pure: number }>>({});
+  const blockGradesRef = useRef<Map<string, Grade>>(new Map());
+  const scanSecondsRef = useRef(12);
+  const pressPersistRef = useRef<{ built: boolean; vx: number; vz: number } | null>(null);
   const pendingEventsRef = useRef<Map<string, number>>(new Map());
   const lastLedgerUiRef = useRef(0);
   const [ledger, setLedger] = useState({ world: 0, stockpile: 0, built: 0, void: 0, baseline: 0 });
   const [voidUi, setVoidUi] = useState({ phase: "passive", creatures: 0, eaten: 0 });
   const [scanUi, setScanUi] = useState({ charge: 1, scans: 0 });
+  const [pressUi, setPressUi] = useState({ built: false, queued: 0, refined: 0 });
   const [shipUi, setShipUi] = useState({ count: 0, flying: 0 });
   const [bombUi, setBombUi] = useState({ slugs: 0, bombs: 0, detonations: 0 });
 
@@ -775,24 +783,51 @@ export default function TinyWorld() {
     pendingEventsRef.current.set(key, (pendingEventsRef.current.get(key) || 0) + count);
   }, []);
 
-  const ledgerMove = useCallback((from: LedgerPool, to: LedgerPool, n: number, source: string, layer?: string) => {
+  const gradePool = useCallback((layer: string) => {
+    const g = stockGradesRef.current;
+    if (!g[layer]) g[layer] = { raw: 0, worked: 0, pure: 0 };
+    return g[layer];
+  }, []);
+  // Lowest grade available for a layer (what placement consumes first —
+  // refined matter is saved for the press unless explicitly requested).
+  const lowestGrade = useCallback((layer: string): Grade => {
+    const p = gradePool(layer);
+    return p.raw > 0 ? "raw" : p.worked > 0 ? "worked" : p.pure > 0 ? "pure" : "raw";
+  }, [gradePool]);
+
+  const ledgerMove = useCallback((from: LedgerPool, to: LedgerPool, n: number, source: string, layer?: string, grade?: Grade) => {
     if (n <= 0 || from === to) return;
     const L = ledgerRef.current as any;
     L[from] -= n;
     L[to] += n;
     if (layer) {
       const sp = stockpileByLayerRef.current;
-      if (to === "stockpile") sp[layer] = (sp[layer] || 0) + n;
-      else if (from === "stockpile") sp[layer] = Math.max(0, (sp[layer] || 0) - n);
+      if (to === "stockpile") {
+        sp[layer] = (sp[layer] || 0) + n;
+        gradePool(layer)[grade || "raw"] += n;
+      } else if (from === "stockpile") {
+        sp[layer] = Math.max(0, (sp[layer] || 0) - n);
+        const p = gradePool(layer);
+        for (let i = 0; i < n; i++) {
+          const g = grade && p[grade] > 0 ? grade : lowestGrade(layer);
+          p[g] = Math.max(0, p[g] - 1);
+        }
+      }
     }
     const kind = from === "world" && to === "void" ? "remove" : from === "void" && to === "world" ? "grow" : "cycle";
+    if (kind === "grow" && source === "sim") {
+      // Bloom feeds the scanner: only ORGANIC growth charges the scan bank
+      // (docs/scan-economy.md). Scans/purges/placements also move void→world
+      // but must not refund themselves.
+      scanSecondsRef.current = Math.min(60, scanSecondsRef.current + 0.02 * n);
+    }
     queueBlockEvent(kind, n, source);
     const nowMs = Date.now();
     if (nowMs - lastLedgerUiRef.current > 300) {
       lastLedgerUiRef.current = nowMs;
       setLedger({ ...ledgerRef.current });
     }
-  }, [queueBlockEvent]);
+  }, [queueBlockEvent, gradePool, lowestGrade]);
 
   const flushBlockEvents = useCallback((useBeacon = false) => {
     const worldId = savedWorldRef.current?.id;
@@ -963,7 +998,14 @@ export default function TinyWorld() {
       built: ledgerRef.current.built,
       stockpile: ledgerRef.current.stockpile,
     };
-    const meta = { ...data.meta, worldName, blockCount: data.blockCount, resolution: data.resolution, playerState, ledger: ledgerState };
+    const chunk4State = {
+      scanSeconds: Math.round(scanSecondsRef.current * 100) / 100,
+      stockpileByLayer: { ...stockpileByLayerRef.current },
+      stockGrades: JSON.parse(JSON.stringify(stockGradesRef.current)),
+      blockGrades: Array.from(blockGradesRef.current.entries()).filter(([, g]) => g !== "raw"),
+      press: pressPersistRef.current,
+    };
+    const meta = { ...data.meta, worldName, blockCount: data.blockCount, resolution: data.resolution, playerState, ledger: ledgerState, chunk4: chunk4State };
     const saved = await saveWorldBlocks(worldId, data.layers, meta, data.blockCount, data.resolution);
     persistWorldMeta(worldId, worldName);
     flushBlockEvents();
@@ -1395,6 +1437,7 @@ export default function TinyWorld() {
       mesh.instanceMatrix.needsUpdate = true;
       (mesh.userData.freeSlots as number[]).push(slot);
       slotMap.delete(k);
+      blockGradesRef.current.delete(k);
       removeCol(vx, vy, vz);
       ledgerMove("world", "void", 1, source);
       protAdd(vx, vz, mesh.userData.layer, -1);
@@ -2493,9 +2536,10 @@ export default function TinyWorld() {
         } else if (w.mode === "pickingUp") {
           if (now - w.modeStartMs < W_PICK_MS) continue;
           const t = w.pickupTarget!;
+          const pickGrade = blockGradesRef.current.get(t.vx + "," + t.vy + "," + t.vz) || "raw";
           if (removeBlockFrom(t.mesh, t.vx, t.vy, t.vz, "tinyperson")) {
             syncGroundAfterRemove(t.vx, t.vy, t.vz, t.mesh.userData.layer);
-            ledgerMove("void", "stockpile", 1, "tinyperson", t.mesh.userData.layer);
+            ledgerMove("void", "stockpile", 1, "tinyperson", t.mesh.userData.layer, pickGrade);
             w.carrying = { mesh: t.mesh, color: t.mesh.material.color.clone(), layer: t.mesh.userData.layer };
             if (w.carriedMesh) {
               (w.carriedMesh.material as any).color.copy(w.carrying.color);
@@ -2515,7 +2559,9 @@ export default function TinyWorld() {
               const placeVy = top + 1;
               if (spawnBlockInto(w.carrying.mesh, w.placeTarget.vx, placeVy, w.placeTarget.vz, "tinyperson")) {
                 syncGroundAfterPlace(w.placeTarget.vx, placeVy, w.placeTarget.vz, w.carrying.layer);
-                ledgerMove("stockpile", "void", 1, "tinyperson", w.carrying.layer);
+                const wGrade = lowestGrade(w.carrying.layer);
+                ledgerMove("stockpile", "void", 1, "tinyperson", w.carrying.layer, wGrade);
+                if (wGrade !== "raw") blockGradesRef.current.set(w.placeTarget.vx + "," + placeVy + "," + w.placeTarget.vz, wGrade);
                 placed = true;
               }
             }
@@ -2603,7 +2649,7 @@ export default function TinyWorld() {
     };
 
     type ChargeState = { startMs: number; mesh: any; idx: number; hardMs: number; vx: number; vy: number; vz: number; color: any };
-    type Carry = { mesh: any; originVX: number; originVY: number; originVZ: number; color: any; hardMs: number; layer: string };
+    type Carry = { mesh: any; originVX: number; originVY: number; originVZ: number; color: any; hardMs: number; layer: string; grade?: string };
     let chargeState: ChargeState | null = null;
     let carryState: Carry | null = null;
 
@@ -2679,8 +2725,11 @@ export default function TinyWorld() {
           else groundRef.current.map.delete(gKey);
         }
       }
-      carryState = { mesh, originVX: vx, originVY: vy, originVZ: vz, color, hardMs, layer };
-      ledgerMove("world", "stockpile", 1, "user", layer);
+      const pgKey = vx + "," + vy + "," + vz;
+      const pGrade = blockGradesRef.current.get(pgKey) || "raw";
+      blockGradesRef.current.delete(pgKey);
+      carryState = { mesh, originVX: vx, originVY: vy, originVZ: vz, color, hardMs, layer, grade: pGrade };
+      ledgerMove("world", "stockpile", 1, "user", layer, pGrade);
       chargeState = null;
       ghostMesh.visible = false;
       setCarryLayer(layer);
@@ -2740,7 +2789,9 @@ export default function TinyWorld() {
       (carryState.mesh.userData.slotMap as Map<string, number>).set(vx + "," + snappedY + "," + vz, slot);
       addCol(vx, snappedY, vz);
       protAdd(vx, vz, carryState.layer, 1);
-      ledgerMove("stockpile", "world", 1, "user", carryState.layer);
+      const cGrade = (carryState as any).grade || "raw";
+      ledgerMove("stockpile", "world", 1, "user", carryState.layer, cGrade);
+      if (cGrade !== "raw") blockGradesRef.current.set(vx + "," + snappedY + "," + vz, cGrade);
       // If we placed a floor-ish block within step range, raise walkable ground.
       if (groundRef.current && (carryState.layer === "grass" || carryState.layer === "dryGrass" || carryState.layer === "snow" || carryState.layer === "wet" || carryState.layer === "dirt")) {
         const gKey = vx + "," + vz;
@@ -2936,7 +2987,19 @@ export default function TinyWorld() {
       const bPool = typeof savedLedger.built === "number" ? (savedLedger.built as number) : 0;
       const sPool = typeof savedLedger.stockpile === "number" ? (savedLedger.stockpile as number) : 0;
       ledgerRef.current = { world: totalWorld, stockpile: sPool, built: bPool, void: vPool, baseline: totalWorld + sPool + bPool + vPool };
-      stockpileByLayerRef.current = {};
+      const c4 = (((worldDataRef.current?.meta as any)?.chunk4) || {}) as any;
+      stockpileByLayerRef.current = c4.stockpileByLayer && typeof c4.stockpileByLayer === "object" ? { ...c4.stockpileByLayer } : {};
+      stockGradesRef.current = c4.stockGrades && typeof c4.stockGrades === "object" ? JSON.parse(JSON.stringify(c4.stockGrades)) : {};
+      blockGradesRef.current.clear();
+      if (Array.isArray(c4.blockGrades)) {
+        for (const e of c4.blockGrades) {
+          if (Array.isArray(e) && e.length === 2) blockGradesRef.current.set(String(e[0]), e[1]);
+        }
+      }
+      if (typeof c4.scanSeconds === "number") scanSecondsRef.current = Math.max(0, c4.scanSeconds);
+      else scanSecondsRef.current = 12;
+      pressPersistRef.current = c4.press && c4.press.built ? { built: true, vx: c4.press.vx, vz: c4.press.vz } : null;
+      setPressUi({ built: !!pressPersistRef.current, queued: 0, refined: 0 });
       pendingEventsRef.current.clear();
       setLedger({ ...ledgerRef.current });
     }
@@ -3138,7 +3201,7 @@ export default function TinyWorld() {
     const metalMesh = makeGrowable(0x9fb4c0, 384, "metal");
     const densiumMesh = makeGrowable(0x4b2e6f, 96, "densium");
     const coreScanMesh = makeGrowable(0xffd75e, 16, "core");
-    const blockGrades = new Map<string, "raw" | "worked" | "pure">();
+    const blockGrades = blockGradesRef.current;
 
     // Restore saved scan-economy layers — snapshotLiveLayers persists them
     // under their layer names but buildWorld's addLayer calls only rebuild
@@ -3165,30 +3228,32 @@ export default function TinyWorld() {
       }
     }
 
-    const SCAN_REGEN_MS = 600000;
-    const SCAN_CHARGE_CAP = 3;
-    let scanCharge = (() => {
-      if (typeof window === "undefined") return 1;
-      const ov = new URLSearchParams(window.location.search).get("scancharge");
-      return ov !== null ? Math.max(0, Math.min(99, parseInt(ov, 10) || 0)) : 1;
-    })();
+    // Scan-seconds: one banked currency (docs/scan-economy.md). Bloom feeds
+    // the bank via ledgerMove's grow accrual; spending is expand (scan new
+    // land) or purge (re-sweep owned territory to expel the void).
+    const SCAN_SEC_CAP = 60;
+    const SCAN_COST_SEC = 10;
+    const PURGE_COST_SEC = 5;
+    const PURGE_RADIUS = 8;
+    const PURGE_MAX_BLOCKS = 16;
+    if (typeof window !== "undefined") {
+      const ovSec = new URLSearchParams(window.location.search).get("scansec");
+      if (ovSec !== null) scanSecondsRef.current = Math.max(0, Math.min(999, parseInt(ovSec, 10) || 0));
+    }
     let scanCount = 0;
-    let lastChargeRegenMs = performance.now();
+    let purgeCount = 0;
     let lastScanTickMs = 0;
     let lastScanUiSent = -1;
     const tickScan = (now: number) => {
-      if (scanCharge < SCAN_CHARGE_CAP && now - lastChargeRegenMs > SCAN_REGEN_MS) {
-        scanCharge += 1;
-        lastChargeRegenMs = now;
-      }
-      if (scanCharge !== lastScanUiSent) {
-        lastScanUiSent = scanCharge;
-        setScanUi({ charge: scanCharge, scans: scanCount });
+      const secs = Math.floor(scanSecondsRef.current);
+      if (secs !== lastScanUiSent) {
+        lastScanUiSent = secs;
+        setScanUi({ charge: secs, scans: scanCount });
       }
     };
 
     const scanNewLand = () => {
-      if (scanCharge < 1) return { ok: false, reason: "no scan charge" };
+      if (scanSecondsRef.current < SCAN_COST_SEC) return { ok: false, reason: "need " + SCAN_COST_SEC + "s banked, have " + Math.floor(scanSecondsRef.current) + "s" };
       const colHasBlocks = (key: string) => {
         const s = colMap.get(key);
         return !!s && s.size > 0;
@@ -3283,29 +3348,174 @@ export default function TinyWorld() {
       L.baseline += added;
       queueBlockEvent("scan", added, "scan_land");
       setLedger({ ...L });
-      scanCharge -= 1;
+      scanSecondsRef.current -= SCAN_COST_SEC;
       scanCount += 1;
-      setScanUi({ charge: scanCharge, scans: scanCount });
+      setScanUi({ charge: Math.floor(scanSecondsRef.current), scans: scanCount });
       console.log("[tinyworld] scanned new land:", added, "blocks at", anchor.x, anchor.z, veinBlocks ? "(pure metal vein ×" + veinBlocks + ")" : "", coreFound ? "(CORE FOUND)" : "");
       return { ok: true, added, anchor, veinBlocks, coreFound };
     };
 
+    // Purge: LiDAR is directed perception and the void is unperceived space —
+    // re-sweeping owned territory expels void-pool mass back as RAW matter
+    // (mass conserved, grades lost, per the entropy law).
+    const purgeSweep = (vx?: number, vz?: number) => {
+      if (scanSecondsRef.current < PURGE_COST_SEC) return { ok: false, reason: "need " + PURGE_COST_SEC + "s banked, have " + Math.floor(scanSecondsRef.current) + "s" };
+      const cx = typeof vx === "number" ? vx : Math.round(camera.position.x / voxel) + cxRound;
+      const cz = typeof vz === "number" ? vz : Math.round(camera.position.z / voxel) + czRound;
+      scanSecondsRef.current -= PURGE_COST_SEC;
+      let expelledCreatures = 0;
+      for (let i = voidCreatures.length - 1; i >= 0; i--) {
+        const c = voidCreatures[i];
+        if (Math.hypot(c.vx - cx, c.vz - cz) <= PURGE_RADIUS) {
+          despawnVoidCreature(c);
+          expelledCreatures++;
+        }
+      }
+      const L = ledgerRef.current as any;
+      let reclaimed = 0;
+      for (let tries = 0; tries < 80 && reclaimed < PURGE_MAX_BLOCKS && L.void >= 1; tries++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = Math.random() * PURGE_RADIUS;
+        const x = cx + Math.round(Math.cos(a) * r);
+        const z = cz + Math.round(Math.sin(a) * r);
+        const top = colTop(x, z);
+        if (top === null) continue; // purge only works over owned territory
+        if (spawnBlockInto(scanDirtMesh, x, top + 1, z, "purge")) {
+          syncGroundAfterPlace(x, top + 1, z, "dirt");
+          reclaimed++;
+        }
+      }
+      purgeCount += 1;
+      if (reclaimed > 0) queueBlockEvent("purge", reclaimed, "purge_sweep");
+      setScanUi({ charge: Math.floor(scanSecondsRef.current), scans: scanCount });
+      console.log("[tinyworld] purge sweep at", cx, cz, "—", reclaimed, "reclaimed,", expelledCreatures, "creatures expelled");
+      return { ok: true, at: [cx, cz], reclaimed, creaturesExpelled: expelledCreatures, secondsLeft: Math.floor(scanSecondsRef.current) };
+    };
+
     const PRESS_LADDER: Record<string, string> = { dirt: "stone", stone: "metal", metal: "densium", densium: "core" };
+    const drainPoolLow = (layer: string, n: number) => {
+      const pool = gradePool(layer);
+      for (const g of ["raw", "worked", "pure"] as const) {
+        const t = Math.min(pool[g], n);
+        pool[g] -= t;
+        n -= t;
+        if (n <= 0) break;
+      }
+    };
+    const PRESS_COST_STONE = 12;
+    let pressGroup: any = null;
+    const makePressBody = () => {
+      const group = new THREE.Group();
+      const matBase = new THREE.MeshPhongMaterial({ color: 0x6e7178, shininess: 10 });
+      const base = new THREE.Mesh(new THREE.BoxGeometry(voxel * 1.8, voxel * 0.8, voxel * 1.8), matBase);
+      base.position.y = voxel * 0.4;
+      const matMetal = new THREE.MeshPhongMaterial({ color: 0x9fb4c0, shininess: 60 });
+      const ram = new THREE.Mesh(new THREE.BoxGeometry(voxel * 1.2, voxel * 0.5, voxel * 1.2), matMetal);
+      ram.position.y = voxel * 1.3;
+      const pillarL = new THREE.Mesh(new THREE.BoxGeometry(voxel * 0.25, voxel * 1.6, voxel * 0.25), matMetal);
+      pillarL.position.set(-voxel * 0.75, voxel * 0.9, 0);
+      const pillarR = pillarL.clone();
+      pillarR.position.x = voxel * 0.75;
+      const crystal = new THREE.Mesh(new THREE.OctahedronGeometry(voxel * 0.3), new THREE.MeshBasicMaterial({ color: 0xffb347 }));
+      crystal.position.y = voxel * 1.85;
+      group.add(base); group.add(ram); group.add(pillarL); group.add(pillarR); group.add(crystal);
+      return group;
+    };
+    const placePressMesh = (x: number, z: number) => {
+      if (pressGroup) scene.remove(pressGroup);
+      const top = colTop(x, z) ?? (groundRef.current?.map.get(x + "," + z) ?? 0);
+      pressGroup = makePressBody();
+      pressGroup.position.set((x - cxRound) * voxel, (top + 1) * voxel, (z - czRound) * voxel);
+      scene.add(pressGroup);
+    };
+    const buildPress = (vx?: number, vz?: number) => {
+      if (pressPersistRef.current && pressPersistRef.current.built) return { ok: false, reason: "press already built" };
+      const sp = stockpileByLayerRef.current;
+      if ((sp.stone || 0) < PRESS_COST_STONE) return { ok: false, reason: "need " + PRESS_COST_STONE + " stockpiled stone, have " + (sp.stone || 0) };
+      const x = typeof vx === "number" ? vx : cxRound + 3;
+      const z = typeof vz === "number" ? vz : czRound + 3;
+      ledgerMove("stockpile", "built", PRESS_COST_STONE, "press_build", "stone");
+      placePressMesh(x, z);
+      pressPersistRef.current = { built: true, vx: x, vz: z };
+      setPressUi((u) => ({ ...u, built: true }));
+      console.log("[tinyworld] press built at", x, z);
+      return { ok: true, vx: x, vz: z };
+    };
+    if (pressPersistRef.current && pressPersistRef.current.built) {
+      placePressMesh(pressPersistRef.current.vx, pressPersistRef.current.vz);
+    }
     const pressCompress = (layer: string) => {
       const next = PRESS_LADDER[layer];
       if (!next) return { ok: false, reason: layer + " is not compressible" };
+      if (!pressPersistRef.current || !pressPersistRef.current.built) return { ok: false, reason: "no press built — buildPress() first (" + PRESS_COST_STONE + " stone)" };
       const sp = stockpileByLayerRef.current;
       const have = sp[layer] || 0;
       if (have < 4) return { ok: false, reason: "need 4 stockpiled " + layer + ", have " + have };
+      const pool = gradePool(layer);
+      const clean = pool.pure >= 4;
+      if (clean) pool.pure -= 4;
+      else drainPoolLow(layer, 4);
       sp[layer] = have - 4;
-      sp[next] = (sp[next] || 0) + 1;
       const L = ledgerRef.current as any;
       L.stockpile -= 3;
       L.baseline -= 3;
-      queueBlockEvent("compress", 3, "press_" + layer);
+      if (clean) {
+        sp[next] = (sp[next] || 0) + 1;
+        gradePool(next).raw += 1;
+        queueBlockEvent("compress", 3, "press_" + layer);
+        setLedger({ ...L });
+        console.log("[tinyworld] press: 4 pure " + layer + " → 1×" + next);
+        return { ok: true, clean: true, from: layer, to: next, stockpile: { ...sp } };
+      }
+      // Impure feed — the lattice shears under load (mass-and-density §6):
+      // output is an unstable slug, not a usable block.
+      sp["slug_" + next] = (sp["slug_" + next] || 0) + 1;
+      queueBlockEvent("compress", 3, "slug_" + layer);
       setLedger({ ...L });
-      console.log("[tinyworld] press: 4×" + layer + " → 1×" + next);
-      return { ok: true, from: layer, to: next, stockpile: { ...sp } };
+      updateBombUi();
+      console.log("[tinyworld] press: impure " + layer + " feed → 1 unstable " + next + " slug");
+      return { ok: true, clean: false, from: layer, slug: next, slugs: sp["slug_" + next], stockpile: { ...sp } };
+    };
+
+    // Bloom-fed refinement: the press upgrades one stockpiled block per cycle
+    // (raw→worked→pure), burning 1 stockpiled fruit per grade step.
+    const REFINE_MS = 20000;
+    let refineQueue: { layer: string; queued: number } | null = null;
+    let refinedTotal = 0;
+    let lastRefineMs = 0;
+    const startRefine = (layer: string, n = 1) => {
+      if (!PRESS_LADDER[layer]) return { ok: false, reason: layer + " is not refinable" };
+      if (!pressPersistRef.current || !pressPersistRef.current.built) return { ok: false, reason: "no press built — buildPress() first (" + PRESS_COST_STONE + " stone)" };
+      const sp = stockpileByLayerRef.current;
+      if ((sp[layer] || 0) < 1) return { ok: false, reason: "no stockpiled " + layer };
+      if (refineQueue && refineQueue.layer !== layer) return { ok: false, reason: "press busy refining " + refineQueue.layer };
+      if (!refineQueue) lastRefineMs = typeof performance !== "undefined" ? performance.now() : 0;
+      refineQueue = { layer, queued: (refineQueue ? refineQueue.queued : 0) + Math.max(1, n) };
+      setPressUi((u) => ({ ...u, queued: refineQueue!.queued }));
+      return { ok: true, layer, queued: refineQueue.queued };
+    };
+    const tickRefine = (now: number) => {
+      if (!refineQueue || now - lastRefineMs < REFINE_MS) return;
+      lastRefineMs = now;
+      const q = refineQueue;
+      const sp = stockpileByLayerRef.current as any;
+      const pool = gradePool(q.layer);
+      const from = pool.raw > 0 ? "raw" : pool.worked > 0 ? "worked" : null;
+      if (from === null || (sp[q.layer] || 0) < 1) {
+        refineQueue = null;
+        setPressUi((u) => ({ ...u, queued: 0 }));
+        return;
+      }
+      if ((sp.fruit || 0) < 1) return; // starved — wait for bloom to restock fruit
+      ledgerMove("stockpile", "void", 1, "press_refine", "fruit");
+      const to = from === "raw" ? "worked" : "pure";
+      pool[from] -= 1;
+      (pool as any)[to] += 1;
+      refinedTotal += 1;
+      q.queued -= 1;
+      if (q.queued <= 0) refineQueue = null;
+      setPressUi((u) => ({ ...u, queued: refineQueue ? refineQueue.queued : 0, refined: refinedTotal }));
+      console.log("[tinyworld] press refined 1 " + q.layer + " " + from + "→" + to + " (fruit burned)");
     };
 
     // ─── Keel core ships (Chunk 5) ──────────────────────────────────────────
@@ -3461,11 +3671,13 @@ export default function TinyWorld() {
     const makeSlug = (layer: string) => {
       const next = PRESS_LADDER[layer];
       if (!next) return { ok: false, reason: layer + " is not compressible" };
+      if (!pressPersistRef.current || !pressPersistRef.current.built) return { ok: false, reason: "no press built — buildPress() first (" + PRESS_COST_STONE + " stone)" };
       const sp = stockpileByLayerRef.current as any;
       const have = sp[layer] || 0;
       if (have < 4) return { ok: false, reason: "need 4 stockpiled " + layer + ", have " + have };
       sp[layer] = have - 4;
       sp["slug_" + next] = (sp["slug_" + next] || 0) + 1;
+      drainPoolLow(layer, 4);
       const L = ledgerRef.current as any;
       L.stockpile -= 3;
       L.baseline -= 3;
@@ -3763,8 +3975,21 @@ export default function TinyWorld() {
         return { colYs: ys, top, inSlot, inHidden, prot: protectionAt(vx, vz) };
       },
       scan: () => scanNewLand(),
-      scanInfo: () => ({ charge: scanCharge, cap: SCAN_CHARGE_CAP, scans: scanCount, regenMs: SCAN_REGEN_MS }),
-      press: (layer: string) => pressCompress(layer),
+      purge: (vx?: number, vz?: number) => purgeSweep(vx, vz),
+      scanInfo: () => ({ seconds: Math.floor(scanSecondsRef.current), cap: SCAN_SEC_CAP, scanCost: SCAN_COST_SEC, purgeCost: PURGE_COST_SEC, scans: scanCount, purges: purgeCount }),
+      compress: (layer: string) => pressCompress(layer),
+      buildPress: (vx?: number, vz?: number) => buildPress(vx, vz),
+      refine: (layer: string, n = 1) => startRefine(layer, n),
+      pressInfo: () => ({
+        built: !!(pressPersistRef.current && pressPersistRef.current.built),
+        at: pressPersistRef.current ? [pressPersistRef.current.vx, pressPersistRef.current.vz] : null,
+        costStone: PRESS_COST_STONE,
+        ladder: PRESS_LADDER,
+        refining: refineQueue ? refineQueue.layer : null,
+        queued: refineQueue ? refineQueue.queued : 0,
+        refined: refinedTotal,
+        pool: JSON.parse(JSON.stringify(stockGradesRef.current)),
+      }),
       grade: (vx: number, vy: number, vz: number) => blockGrades.get(vx + "," + vy + "," + vz) || "raw",
       stock: (layer: string, n = 4) => {
         let moved = 0;
@@ -3820,6 +4045,7 @@ export default function TinyWorld() {
         tickScan(now);
         lastScanTickMs = now;
       }
+      tickRefine(now);
       if (now - lastShipTickMs > 1000) {
         tickShips(now);
         lastShipTickMs = now;
@@ -4251,10 +4477,29 @@ export default function TinyWorld() {
               {voidUi.eaten ? `  ·  ${voidUi.eaten} eaten` : ""}
             </p>
             <p style={ui.hudStat}>
-              scan charge {scanUi.charge}/3
+              scan ◈ {scanUi.charge}s banked
               {scanUi.scans ? `  ·  ${scanUi.scans} scanned` : ""}
               {"  "}
-              <button style={ui.saveBtn} onClick={() => (window as any).__tw?.scan?.()}>SCAN ◈</button>
+              <button style={ui.saveBtn} onClick={() => (window as any).__tw?.scan?.()}>SCAN · 10s</button>
+              <button style={ui.saveBtn} onClick={() => (window as any).__tw?.purge?.()}>PURGE · 5s</button>
+            </p>
+            <p style={ui.hudStat}>
+              {pressUi.built ? (
+                <>
+                  press ◆
+                  {pressUi.queued ? `  ·  refining ${pressUi.queued}` : ""}
+                  {pressUi.refined ? `  ·  ${pressUi.refined} refined` : ""}
+                  {"  "}
+                  <button style={ui.saveBtn} onClick={() => (window as any).__tw?.compress?.("dirt")}>PRESS 4·dirt</button>
+                  <button style={ui.saveBtn} onClick={() => (window as any).__tw?.refine?.("dirt")}>REFINE</button>
+                </>
+              ) : (
+                <>
+                  no press
+                  {"  "}
+                  <button style={ui.saveBtn} onClick={() => (window as any).__tw?.buildPress?.()}>BUILD PRESS · 12 stone</button>
+                </>
+              )}
             </p>
             {shipUi.count > 0 && (
               <p style={ui.hudStat}>
