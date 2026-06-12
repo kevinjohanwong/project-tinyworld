@@ -46,6 +46,9 @@ become the world's surveyors (asymmetric role, not a missing feature).
 
 ## Capture paths
 
+**Decision (June 2026): App Clip is the committed capture path.** The
+scanning-app relay stays as the working stopgap until the Clip ships.
+
 Safari/WebKit cannot access LiDAR or ARKit depth APIs. Native capture
 options, in order of commitment:
 
@@ -92,6 +95,23 @@ A native app (or App Clip) gates *exactly*:
   detected and priced at its own tier the same way.
 - ARCore equivalently reports depth capability
   (`Config.DepthMode.AUTOMATIC` support) on Android.
+
+## Multi-modal horizon: one world, many lenses
+
+The server already owns everything (worlds are data, not processes;
+balances and grades are server-side), so every client is just a
+*lens* onto the same world record:
+
+| Lens | Role | Perception grade |
+|---|---|---|
+| **Web (Safari/desktop)** | management, idle play, ship orders, purge-by-map | none (cannot originate land) |
+| **App Clip** | capture + hardware gatekeeper (signs the device tier) | LiDAR ×1 / photogrammetry ×3 |
+| **Native iOS app** | AR overlay — see Tiny People standing in the real room | LiDAR ×1 |
+| **Meta Quest** | immersive presence — walk *inside* the terrarium; Quest 3's Scene Mesh/Depth API doubles as a scanner tier; WebXR means the existing web build is the starting point | scene mesh ≈ ToF ×1.5 |
+
+Rule: lenses never fork the simulation. All clients read/write the
+same ledger and the same block_events log; a Quest player and a
+Safari player visiting the same world see the same blocks.
 
 ## Press structure (chunk 4 remainder)
 
