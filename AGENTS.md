@@ -45,13 +45,17 @@ These read/write `data/tinyworld.db` in this folder.
 
 ## Roadmap (next steps, in order)
 
-1. ~~Wire `block_events` into the live sim page~~ — done Jun 11 (conservation ledger)
-2. Visible catch-up simulation on world load (apply void loss as perimeter erosion + rift marker, growth as real blocks, recap card)
-3. Bridge decay notifications ("your bridge to Brooklyn Loft is at 24%")
-4. Framerate: adaptive pixel ratio + FPS counter (deferred — not yet)
-5. Rust input module: ARKit mesh (.usdz/.obj) → dda-voxelize → block grid (`src/`)
-6. iOS LiDAR capture app: scan → export mesh → POST to backend (`ios/`)
-7. Tiny People behavior sim (Rust)
+1. ~~Wire `block_events` into the live sim page~~ — done Jun 11 (Chunk 1, conservation ledger)
+2. ~~Visible catch-up simulation on world load~~ — done Jun 12 (Chunk 2: BFS rift erosion, recap card, `?catchup=N` debug)
+3. ~~Local protection field + void creatures~~ — done Jun 12 (Chunk 3)
+4. ~~Scan economy + compression press~~ — done Jun 12 (Chunk 4)
+5. ~~Keel ships + Return slugs~~ — done Jun 12 (Chunk 5)
+6. **Prototype hardening** (gaps noted in chunk entries above): grade enforcement + grade persistence (§9 raw/worked/pure); slug/bomb persistence across reload; player-facing UI for press/ships/bombs (currently `__tw` harness-only — scan has a HUD button, the rest don't)
+7. Bridge decay notifications ("your bridge to Brooklyn Loft is at 24%")
+8. Framerate: adaptive pixel ratio + FPS counter (deferred — not yet)
+9. Rust input module: ARKit mesh (.usdz/.obj) → dda-voxelize → block grid (`src/`)
+10. iOS LiDAR capture app: scan → export mesh → POST to backend (`ios/`)
+11. Tiny People behavior sim (Rust)
 
 ## Conventions
 
