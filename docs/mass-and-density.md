@@ -133,12 +133,60 @@ is a core block taught to *broadcast* (discovery range) instead of just
 | Cell size (8³) | precision vs cost |
 | Concrete Null aggro radius on cores | risk of concentrating mass |
 
+## 8. Ships — keel cores and flight
+
+The third use of a core block. A **shield core** protects a place, a
+**lidar core** broadcasts from a place, a **keel core** *forgets its
+place* — it binds nearby blocks to itself instead of to the earth, and
+the bound group moves as one rigid body.
+
+**Binding (all emergent from the field math):**
+
+- **Ship size = field radius.** Every block must sit inside the keel's
+  protection field. Bigger ship ⇒ more keels, spaced like pylons — a
+  capital ship is a flying bridge, with the same necking risk between
+  cores. Overload the field and outer blocks shear off in flight
+  (visible debris — the feedback *is* the failure).
+- **Mass = speed.** Heavy armor protects but slows. Density becomes a
+  third trade-off in ship design.
+
+**Travel rule (protects geography-as-auth):**
+
+Ships can only cross **perceived space** — the node's perception radius
+plus along live bridges. Unperceived void is unnavigable darkness. So
+the range hierarchy is strict: **feet → bridges → ships**, each layer
+extending the one below, never bypassing it. Bridges become shipping
+lanes; lidar towers become ports.
+
+**Costs — flight feeds the void.** The keel stays aloft by burning mass,
+and conservation demands a sink: burned mass transfers **directly to the
+void pool**. One rule, three consequences:
+
+1. **Susceptibility** — a ship is islanded by definition (no ground
+   connection) *and* it streams mass into the void as it flies. That
+   stream is a beacon: void pressure on a ship in flight gets a flight
+   multiplier (~×3), worse at night, and creatures preferentially
+   intercept ships over gnawing settled edges.
+2. **Burn rate** — fuel cost scales with bound mass × distance. The
+   burned mass is gone from your budget until you raid it back from the
+   void. Every flight measurably strengthens the antagonist.
+3. **No repairs aloft** — reclamation requires an anchored ground
+   connection. Blocks lost in flight scatter where they fall or go
+   straight to the void pool. Repairs and refits happen only docked at
+   an anchored settlement.
+
+Net effect: ships are endgame, occasional, and expensive — a deliberate
+expedition with a real bill, not a traversal upgrade. Walking is free,
+bridges are cheap-but-maintained, flight is powerful-but-costly. The
+idle loop stays grounded.
+
 ## Sequencing
 
 Builds on Chunk 1 (ledger — done). The local-pressure field lands with
 **Chunk 3 (void creatures)**, since that's when pressure becomes visible
 behavior. Core block acquisition rolls land with **Chunk 4 (scan
-economy)**.
+economy)**. Ships are **Chunk 5** — they require the pressure field,
+core blocks, and the scan economy all in place.
 
 ---
 
