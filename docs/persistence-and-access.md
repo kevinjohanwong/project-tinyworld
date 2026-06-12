@@ -63,6 +63,69 @@ Behavior details:
 - Verified: NYC worlds hidden from an Ashburn VA datacenter IP; Philly node
   (131 km) sees Brooklyn Loft only when it has a lidar tower; LA sees nothing.
 
+## Vertical anchoring (same lat/lon, different floors)
+
+*Decision (June 2026): height is never a key, only a hint. The mesh is the
+key.*
+
+GPS altitude cannot separate floors: vertical error is 2–3× horizontal
+(±10–30 m, worse indoors — and scanning always happens indoors), and a
+floor-to-floor gap is ~3 m. The signals, ranked:
+
+| Signal | Precision | Role |
+|---|---|---|
+| **ARWorldMap relocalization** | cm, binary "am I in this world?" | **The decider.** Same lat/lon + relocalizes against World A's map → it IS World A. Fails → new sibling world. |
+| Barometer (CMAltimeter) | ±0.5–1 m *relative*, drifts with weather | `floor_hint` — narrows candidates ("you're ~6 m above where you passed the geo gate") |
+| CLFloor (Apple indoor venues) | exact floor | rare (malls/airports); use when present |
+| GPS altitude | ±10–30 m, ellipsoidal | ignore |
+
+Rules:
+
+1. **Stacked worlds are siblings** sharing one anchor: same lat/lon, joined by
+   a `building_group` id. The geo gate admits you to the *group*; mesh
+   relocalization (native) or an explicit world picker (web/App Clip) selects
+   the member. `floor_hint` (nullable, relative meters) only orders the
+   candidate list.
+2. **Vertical bridges are stairwells.** The existing bridge rule already
+   covers floors: connecting two worlds requires scanning the physical path
+   between them — vertically, that path is the staircase. Two apartments in
+   one building are separate unlinked worlds until someone scans the stairs,
+   exactly like two buildings until someone scans the sidewalk. No new
+   mechanic.
+3. **Never auto-merge on geo alone.** Same anchor + new mesh = new sibling
+   world. Merging is only ever mesh-driven (relocalization proves same space)
+   or bridge-driven (player proves the path).
+
+Schema delta (v0 → v0.1): `worlds` gains nullable `floor_hint` REAL and
+`building_group` TEXT; `/api/tinyworld-access` returns a candidate *set* when
+anchors collide horizontally instead of nearest-only.
+
+## The globe is the void (sparse planet registry)
+
+Is there an "empty globe" waiting to be filled in? **Conceptually yes,
+materially no.** A pre-allocated globe would be 510M km² of nothing; instead
+the *worlds are data* decision extends planet-wide:
+
+- **The globe is an address space, not a data structure.** Every world row
+  already carries its anchor. Add a spatial cell id per row (geohash now —
+  computable in SQLite; H3/S2 at Postgres scale) and "the globe" becomes a
+  query: *which cells contain scanned mass?* Unscanned Earth costs zero bytes.
+- **The globe view is a rendering of that index** — dark planet, glowing
+  islands where mesh has been scanned in, bridge threads between them,
+  lidar-tower broadcast halos. It composes with the IP-geo discovery layer:
+  your node's perception radius decides which islands your globe shows at
+  human scale; far worlds render as anonymous glow (`hiddenCount` made
+  visual — "something exists there", not what).
+- **Lore alignment is exact**: the void is unperceived space, so the
+  unscanned planet IS the void — one dark ocean of it. Scanning carves
+  islands of perceived existence out of the antagonist. The empty globe
+  isn't missing; it's the enemy's territory, and the map shows the war.
+
+Schema delta: `worlds` gains `geocell` TEXT (indexed); a
+`GET /api/tinyworld-worlds?globe=1` aggregate returns `{cell, worldCount,
+totalMass, hasTower}` per non-empty cell — never world identities, so the
+globe view leaks nothing the perception model wouldn't.
+
 ## Live endpoints (zo.space)
 
 - `POST /api/tinyworld-worlds` — register a world `{name, lat, lon, baseBlocks}`
