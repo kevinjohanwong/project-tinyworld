@@ -121,6 +121,12 @@ haulage, visibly consuming 4-in/1-out. Grades (raw/worked/pure) get
 enforced in the ledger at the same time — "only pure compresses
 cleanly" is what makes unstable slugs emerge.
 
+**Status (Jun 12): shipped in the web prototype** — press built for 12
+stone, grade enforcement (impure feed → unstable slug), bloom-fed
+refine queue (1 fruit per grade step), scan-seconds + purge sweep, and
+full persistence are live. Still open: worker haulage feeding the
+press and the visible 4-in/1-out consumption animation.
+
 ---
 
 *Project TinyWorld — internal spec, June 2026*
