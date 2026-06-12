@@ -69,9 +69,13 @@ Behavior details:
 scanned VOLUME; verticality is just another direction it grows in. Height is
 never a key, only a hint — the mesh is the key.*
 
-The voxel grid is already 3D. Scanning upward or downward extends the *same
-world* the way scanning outward does — towers, basements, stairwells,
-balconies are world geometry, not world boundaries. Costs the same
+The voxel grid is already 3D, and **scanning adds blocks, not "land."**
+The scan frontier is the entire exposed surface of the volume — any face
+with unperceived space behind it. A sweep can extend the volume in any
+direction: up a wall, under an overhang, down a stairwell, out along the
+ground. Towers, basements, balconies are world geometry, not world
+boundaries. "Floor" appears nowhere in the model — it's just what you call
+geometry that happens to be flat and parallel to the ground. Costs the same
 scan-seconds; rolls the same materials; the protection field, void, and
 ledger already operate on the volume.
 
@@ -106,10 +110,11 @@ Rules:
 Schema delta (v0 → v0.1): `worlds` gains nullable `alt_hint` REAL (relative
 meters, candidate-ordering only); `/api/tinyworld-access` returns the
 candidate *set* at a colliding anchor instead of nearest-only. Prototype gap,
-noted: `scanNewLand` currently expands only horizontally at the perimeter —
-vertical expansion (scan up a wall / down a stairwell) is the natural next
-extension, and the void should attack overhangs and undersides the same way
-it attacks edges.
+noted: `scanNewLand` is misnamed and under-scoped — it should be "scan new
+blocks": pick exposed faces anywhere on the volume's surface, not just the
+horizontal perimeter. Same fix on the antagonist side: the void should
+attack any exposed face (overhangs, undersides, ceilings) the way it
+attacks edges today.
 
 ## The globe is the void (sparse planet registry)
 
