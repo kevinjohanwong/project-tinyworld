@@ -3277,7 +3277,7 @@ export default function TinyWorld() {
                   const tvz = w.vz + dz;
                   const tvy = topAt(tvx, tvz);
                   if (tvy === null) continue;
-                  const path = aStarOnGround(w.vx, w.vy, w.vz, tvx, tvy + 1, tvz);
+                  const path = aStarOnGround(w.vx, w.vy, w.vz, tvx, tvy, tvz);
                   if (path && path.length >= 1) {
                     w.path = path; w.pathIdx = 0;
                     w.placeTarget = null; w.pickupTarget = null; (w as any).currentAction = null;
@@ -3327,7 +3327,7 @@ export default function TinyWorld() {
                         const tvy = topAt(tvx, tvz);
                         if (tvy === null) continue;
                         const d2 = dx * dx + dz * dz;
-                        if (!best || d2 < best.d2) best = { vx: tvx, vy: tvy + 1, vz: tvz, d2 };
+                        if (!best || d2 < best.d2) best = { vx: tvx, vy: tvy, vz: tvz, d2 };
                       }
                     }
                     if (best) {
