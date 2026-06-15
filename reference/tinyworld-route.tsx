@@ -3,7 +3,8 @@ import {
   Wind, Sun, CloudRain, Moon, Zap, Heart, Compass, 
   Box, Ship, Bomb, Hammer, Cpu, Crosshair, X, 
   ArrowUpCircle, Info, Save, FolderOpen, Play, 
-  Eye, EyeOff, Thermometer, Clock, Camera, Maximize2, Minimize2
+  Eye, EyeOff, Thermometer, Clock, Camera, Maximize2, Minimize2,
+  Mic, MicOff
 } from "lucide-react";
 
 const THREE_URL = "https://esm.sh/three@0.165.0";
@@ -40,9 +41,9 @@ const PAL = {
   sapling: 0x5fb84a,
 };
 
-// ─── Mass & density ladder (docs/mass-and-density.md §9) ────────────────────
-// Tier 0 bloom 0.25 · Tier 1 loam 1 · Tier 2 stone 4 · Tier 3 metal 16 ·
-// Tier 4 densium 64 · Tier 5 core 256. Existing scan layers map onto tiers.
+// âââ Mass & density ladder (docs/mass-and-density.md Â§9) ââââââââââââââââââââ
+// Tier 0 bloom 0.25 Â· Tier 1 loam 1 Â· Tier 2 stone 4 Â· Tier 3 metal 16 Â·
+// Tier 4 densium 64 Â· Tier 5 core 256. Existing scan layers map onto tiers.
 const DENSITY: Record<string, number> = {
   leaves: 0.25, fruit: 0.25, seed: 0.25, sapling: 0.25, grass: 0.25, dryGrass: 0.25,
   dirt: 1, snow: 1, wet: 1, water: 1, trunks: 1,
@@ -107,8 +108,8 @@ const WORKER_CODE = String.raw`
 self.onmessage = async (event) => {
   const { buffer, weather } = event.data;
   try {
-    const THREE = await import(\'${THREE_URL}\');
-    const { GLTFLoader } = await import(\'${GLTF_URL}\');
+    const THREE = await import('${THREE_URL}');
+    const { GLTFLoader } = await import('${GLTF_URL}');
 
     const MAX_TRIANGLES = ${MAX_TRIANGLES};
     const TARGET_DIVS = ${TARGET_DIVS};
@@ -118,18 +119,18 @@ self.onmessage = async (event) => {
 
     const hash2 = (x, z) => (Math.imul(x, 73856093) ^ Math.imul(z, 19349663)) >>> 0;
     const getSeason = (month) => {
-      if (month === 12 || month <= 2) return \'winter\';
-      if (month <= 5) return \'spring\';
-      if (month <= 8) return \'summer\';
-      return \'fall\';
+      if (month === 12 || month <= 2) return 'winter';
+      if (month <= 5) return 'spring';
+      if (month <= 8) return 'summer';
+      return 'fall';
     };
     const season = (weather && weather.season) || getSeason(new Date().getMonth() + 1);
     const rain = !!(weather && weather.modifiers && (weather.modifiers.isRaining || weather.modifiers.rain));
-    const snowLayers = (weather && weather.modifiers && weather.modifiers.snowLayers) || (season === \'winter\' ? 1 : 0);
-    const dryGrassPct = (weather && weather.modifiers && weather.modifiers.dryGrassPct) || (season === \'summer\' ? 20 : 0);
+    const snowLayers = (weather && weather.modifiers && weather.modifiers.snowLayers) || (season === 'winter' ? 1 : 0);
+    const dryGrassPct = (weather && weather.modifiers && weather.modifiers.dryGrassPct) || (season === 'summer' ? 20 : 0);
 
     const gltf = await new Promise((resolve, reject) => {
-      new GLTFLoader().parse(buffer, \'\', resolve, reject);
+      new GLTFLoader().parse(buffer, '', resolve, reject);
     });
     gltf.scene.updateMatrixWorld(true);
 
@@ -141,7 +142,7 @@ self.onmessage = async (event) => {
       if (!node.isMesh || triangles.length >= MAX_TRIANGLES) return;
       const geom = node.geometry.clone();
       geom.applyMatrix4(node.matrixWorld);
-      const pos = geom.getAttribute(\'position\');
+      const pos = geom.getAttribute('position');
       const idx = geom.getIndex();
       const triCount = idx ? idx.count / 3 : Math.floor(pos.count / 3);
       for (let i = 0; i < triCount && triangles.length < MAX_TRIANGLES; i++) {
@@ -239,7 +240,7 @@ self.onmessage = async (event) => {
           const vy = Math.round(y / voxel);
           const vz = Math.round(z / voxel);
           if (upFacing) {
-            const key = vx + \',\' + vz;
+            const key = vx + ',' + vz;
             const prev = floorMap.get(key);
             if (prev === undefined || vy < prev) floorMap.set(key, vy);
           } else if (downFacing) {
@@ -255,13 +256,13 @@ self.onmessage = async (event) => {
     for (let pass = 0; pass < 2; pass++) {
       const additions = [];
       for (const [key, y] of filledFloor.entries()) {
-        const [x, z] = key.split(\',\').map(Number);
+        const [x, z] = key.split(',').map(Number);
         for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const nk = (x + dx) + \',\' + (z + dz);
+          const nk = (x + dx) + ',' + (z + dz);
           if (filledFloor.has(nk)) continue;
           let sum = 0, count = 0;
           for (const [adx, adz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            const ny = filledFloor.get((x + dx + adx) + \',\' + (z + dz + adz));
+            const ny = filledFloor.get((x + dx + adx) + ',' + (z + dz + adz));
             if (ny !== undefined) { sum += ny; count += 1; }
           }
           additions.push([nk, count ? Math.round(sum / count) : y]);
@@ -270,18 +271,18 @@ self.onmessage = async (event) => {
       for (const [k, y] of additions) filledFloor.set(k, y);
     }
 
-    // ── Rectification pass 1: floor median smoothing ──────────────────────────
+    // ââ Rectification pass 1: floor median smoothing ââââââââââââââââââââââââââ
     // Real floors are flat; scan noise creates bumps. Two passes of a 3x3
     // median filter flattens noise while preserving genuine height steps.
     for (let pass = 0; pass < 2; pass++) {
       const smoothed = new Map();
       for (const [key, y] of filledFloor.entries()) {
-        const [x, z] = key.split(\',\').map(Number);
+        const [x, z] = key.split(',').map(Number);
         const samples = [y];
         for (let dx = -1; dx <= 1; dx++) {
           for (let dz = -1; dz <= 1; dz++) {
             if (!dx && !dz) continue;
-            const ny = filledFloor.get((x + dx) + \',\' + (z + dz));
+            const ny = filledFloor.get((x + dx) + ',' + (z + dz));
             if (ny !== undefined) samples.push(ny);
           }
         }
@@ -305,13 +306,13 @@ self.onmessage = async (event) => {
       }
     }
 
-    // ── Rectification pass 2: wall solidification ─────────────────────────────
+    // ââ Rectification pass 2: wall solidification âââââââââââââââââââââââââââââ
     // Group wall voxels into (x,z) columns. Columns with enough samples become
     // solid vertical walls from their base to their top; sparse columns are
     // scan noise and are dropped entirely.
     const wallCols = new Map();
     for (const p of wall) {
-      const k = p[0] + \',\' + p[2];
+      const k = p[0] + ',' + p[2];
       let col = wallCols.get(k);
       if (!col) { col = { minY: p[1], maxY: p[1], count: 0 }; wallCols.set(k, col); }
       if (p[1] < col.minY) col.minY = p[1];
@@ -321,7 +322,7 @@ self.onmessage = async (event) => {
     const solidWall = [];
     for (const [k, col] of wallCols) {
       if (col.count < 3) continue;
-      const [x, z] = k.split(\',\').map(Number);
+      const [x, z] = k.split(',').map(Number);
       let base = col.minY;
       const floorY = filledFloor.get(k);
       if (floorY !== undefined && floorY < base) base = floorY + 1;
@@ -330,11 +331,11 @@ self.onmessage = async (event) => {
     wall.length = 0;
     for (const p of solidWall) wall.push(p);
 
-    // ── Rectification pass 3: ceiling flattening ──────────────────────────────
+    // ââ Rectification pass 3: ceiling flattening ââââââââââââââââââââââââââââââ
     // Collapse ceiling noise to one clean voxel per column at the median height.
     const ceilCols = new Map();
     for (const p of ceiling) {
-      const k = p[0] + \',\' + p[2];
+      const k = p[0] + ',' + p[2];
       let arr = ceilCols.get(k);
       if (!arr) { arr = []; ceilCols.set(k, arr); }
       arr.push(p[1]);
@@ -351,7 +352,7 @@ self.onmessage = async (event) => {
       for (const [y, count] of histogram) if (count > domCount) { domY = y; domCount = count; }
       const snapCeil = domCount >= ceilCols.size * 0.5;
       for (const [k, ys] of ceilCols) {
-        const [x, z] = k.split(\',\').map(Number);
+        const [x, z] = k.split(',').map(Number);
         const med = ys[Math.floor(ys.length / 2)];
         const y = snapCeil && Math.abs(med - domY) <= 2 ? domY : med;
         flatCeil.push([x, y, z]);
@@ -382,7 +383,7 @@ self.onmessage = async (event) => {
 
     let fx0 = Infinity, fx1 = -Infinity, fz0 = Infinity, fz1 = -Infinity;
     for (const key of filledFloor.keys()) {
-      const [x, z] = key.split(\',\').map(Number);
+      const [x, z] = key.split(',').map(Number);
       if (x < fx0) fx0 = x;
       if (x > fx1) fx1 = x;
       if (z < fz0) fz0 = z;
@@ -392,9 +393,9 @@ self.onmessage = async (event) => {
     const minTreeSpacing = Math.max(3, Math.floor(floorSpan / 26));
     const treeCandidates = [];
     for (const [key, y] of filledFloor.entries()) {
-      const [x, z] = key.split(\',\').map(Number);
+      const [x, z] = key.split(',').map(Number);
       const h = hash2(x, z);
-      if ((h % 1000) < Math.round(((season === \'spring\' ? 0.22 : season === \'summer\' ? 0.16 : 0.1) * 1000))) {
+      if ((h % 1000) < Math.round(((season === 'spring' ? 0.22 : season === 'summer' ? 0.16 : 0.1) * 1000))) {
         treeCandidates.push({ x, z, y, h });
       }
     }
@@ -405,7 +406,7 @@ self.onmessage = async (event) => {
       if (chosenTrees.length >= MAX_TREES) break;
       const gx = Math.floor(cand.x / minTreeSpacing);
       const gz = Math.floor(cand.z / minTreeSpacing);
-      const cellKey = gx + \',\' + gz;
+      const cellKey = gx + ',' + gz;
       if (treeOccupied.has(cellKey)) continue;
       treeOccupied.add(cellKey);
       chosenTrees.push(cand);
@@ -425,20 +426,20 @@ self.onmessage = async (event) => {
     {
       const queue = [];
       for (const key of filledFloor.keys()) {
-        const parts = key.split(\',\');
+        const parts = key.split(',');
         const x = Number(parts[0]), z = Number(parts[1]);
         let isEdge = false;
         for (const d of neighbors4) {
-          if (!filledFloor.has((x + d[0]) + \',\' + (z + d[1]))) { isEdge = true; break; }
+          if (!filledFloor.has((x + d[0]) + ',' + (z + d[1]))) { isEdge = true; break; }
         }
         if (isEdge) { distToEdge.set(key, 0); queue.push([x, z]); }
       }
       let head = 0;
       while (head < queue.length) {
         const cur = queue[head++];
-        const dHere = distToEdge.get(cur[0] + \',\' + cur[1]);
+        const dHere = distToEdge.get(cur[0] + ',' + cur[1]);
         for (const d of neighbors4) {
-          const nk = (cur[0] + d[0]) + \',\' + (cur[1] + d[1]);
+          const nk = (cur[0] + d[0]) + ',' + (cur[1] + d[1]);
           if (filledFloor.has(nk) && !distToEdge.has(nk)) {
             distToEdge.set(nk, dHere + 1);
             queue.push([cur[0] + d[0], cur[1] + d[1]]);
@@ -449,10 +450,10 @@ self.onmessage = async (event) => {
     let maxEdgeDist = 1;
     for (const v of distToEdge.values()) if (v > maxEdgeDist) maxEdgeDist = v;
 
-    // Underside: inverted-cone mass — deepest at the CENTER, tapering to thin rim,
+    // Underside: inverted-cone mass â deepest at the CENTER, tapering to thin rim,
     // plus deep hanging "taproots" near the core (Laputa style)
     for (const [key, floorY] of filledFloor) {
-      const parts = key.split(\',\');
+      const parts = key.split(',');
       const x = Number(parts[0]), z = Number(parts[1]);
       const dist = distToEdge.get(key) || 0;
       const t = dist / maxEdgeDist;
@@ -470,7 +471,7 @@ self.onmessage = async (event) => {
     // Pools are CARVED INTO the floor (sunken), not stacked on top.
     const poolSeeds = [];
     for (const [key, y] of filledFloor.entries()) {
-      const [x, z] = key.split(\',\').map(Number);
+      const [x, z] = key.split(',').map(Number);
       const h = hash2(x, z);
       const exposed = openSides.get(key) ?? 4;
       const basinChance = rain ? 0.12 : 0.07;
@@ -488,7 +489,7 @@ self.onmessage = async (event) => {
       let cells = 0;
       while (queue.length) {
         const [x, z, dist] = queue.shift();
-        const k = x + \',\' + z;
+        const k = x + ',' + z;
         if (seen.has(k) || dist > seed.r) continue;
         seen.add(k);
         if (!filledFloor.has(k)) continue;
@@ -510,12 +511,12 @@ self.onmessage = async (event) => {
     }
 
     for (const [key, y] of filledFloor.entries()) {
-      const [x, z] = key.split(\',\').map(Number);
-      if (poolTaken.has(x + \',\' + z)) continue;
+      const [x, z] = key.split(',').map(Number);
+      if (poolTaken.has(x + ',' + z)) continue;
       const h = hash2(x, z);
-      const isSummerDry = season === \'summer\' && (h % 100) < dryGrassPct;
-      const isWet = false; // rain puddles disabled — confusing as "WET" layer in mining HUD
-      if (season === \'winter\') {
+      const isSummerDry = season === 'summer' && (h % 100) < dryGrassPct;
+      const isWet = false; // rain puddles disabled â confusing as "WET" layer in mining HUD
+      if (season === 'winter') {
         for (let i = 0; i < snowLayers; i++) snow.push([x, y + 1 + i, z]);
       } else if (isWet) {
         wetOverlay.push([x, y + 1, z]);
@@ -531,7 +532,7 @@ self.onmessage = async (event) => {
       const deduped = [];
       for (let i = 0; i < layer.length; i++) {
         const p = layer[i];
-        const k = p[0] + \',\' + p[1] + \',\' + p[2];
+        const k = p[0] + ',' + p[1] + ',' + p[2];
         if (seen.has(k) || occupied.has(k)) continue;
         seen.add(k);
         occupied.add(k);
@@ -550,7 +551,7 @@ self.onmessage = async (event) => {
         let exposed = false;
         for (let j = 0; j < dirs.length; j++) {
           const d = dirs[j];
-          if (!occupied.has((p[0] + d[0]) + \',\' + (p[1] + d[1]) + \',\' + (p[2] + d[2]))) { exposed = true; break; }
+          if (!occupied.has((p[0] + d[0]) + ',' + (p[1] + d[1]) + ',' + (p[2] + d[2]))) { exposed = true; break; }
         }
         if (exposed) {
           visible[name].push(p[0], p[1], p[2]);
@@ -570,7 +571,7 @@ self.onmessage = async (event) => {
     }
     for (const [name, arr] of Object.entries(hidden)) {
       const typed = new Int32Array(arr);
-      buffers[\'hidden_\' + name] = typed.buffer;
+      buffers['hidden_' + name] = typed.buffer;
       transfers.push(typed.buffer);
     }
 
@@ -579,7 +580,7 @@ self.onmessage = async (event) => {
     {
       let i = 0;
       for (const [key, y] of filledFloor.entries()) {
-        const [x, z] = key.split(\',\').map(Number);
+        const [x, z] = key.split(',').map(Number);
         groundArr[i++] = x;
         groundArr[i++] = z;
         groundArr[i++] = y;
@@ -778,13 +779,13 @@ const Joystick = ({ onMove, onStop }: { onMove: (x: number, y: number) => void, 
       }
     };
     const handleVis = () => { if (document.hidden) stopRef.current(); };
-    window.addEventListener(\'touchend\', handleGlobalEnd);
-    window.addEventListener(\'touchcancel\', handleGlobalEnd);
-    document.addEventListener(\'visibilitychange\', handleVis);
+    window.addEventListener('touchend', handleGlobalEnd);
+    window.addEventListener('touchcancel', handleGlobalEnd);
+    document.addEventListener('visibilitychange', handleVis);
     return () => {
-      window.removeEventListener(\'touchend\', handleGlobalEnd);
-      window.removeEventListener(\'touchcancel\', handleGlobalEnd);
-      document.removeEventListener(\'visibilitychange\', handleVis);
+      window.removeEventListener('touchend', handleGlobalEnd);
+      window.removeEventListener('touchcancel', handleGlobalEnd);
+      document.removeEventListener('visibilitychange', handleVis);
     };
   }, []);
 
@@ -881,10 +882,10 @@ export default function TinyWorld() {
   const [catchUpInfo, setCatchUpInfo] = useState<any>(null);
   const riftMarkersRef = useRef<any[]>([]);
 
-  // ─── Conservation ledger ──────────────────────────────────────────────
+  // âââ Conservation ledger ââââââââââââââââââââââââââââââââââââââââââââââ
   // Single law: world + stockpile + built + void === baseline, always.
-  // Blocks are never created or destroyed — they move between pools. VOID
-  // doubles as the world\'s reservoir: organic growth draws from it, decay
+  // Blocks are never created or destroyed â they move between pools. VOID
+  // doubles as the world's reservoir: organic growth draws from it, decay
   // returns to it. Every move is queued as a block_event and flushed in
   // batches to /api/tinyworld-worlds {action:"logEvents"}.
   type LedgerPool = "world" | "stockpile" | "built" | "void";
@@ -912,6 +913,10 @@ export default function TinyWorld() {
   targetModeRef.current = targetMode;
   const [showSave, setShowSave] = useState(false);
   const [showActions, setShowActions] = useState(false);
+  const [voiceListening, setVoiceListening] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState<string>("");
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const recognitionRef = useRef<any>(null);
   const [isMobile, setIsMobile] = useState(false);
   const joystickRef = useRef({ x: 0, y: 0, active: false });
   const lookJoystickRef = useRef({ x: 0, y: 0, active: false });
@@ -923,13 +928,13 @@ export default function TinyWorld() {
 
   useEffect(() => {
     const checkMobile = () => {
-      const mobile = \'ontouchstart\' in window || navigator.maxTouchPoints > 0;
+      const mobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
       setIsMobile(mobile);
       isMobileRef.current = mobile;
     };
     checkMobile();
-    window.addEventListener(\'resize\', checkMobile);
-    return () => window.removeEventListener(\'resize\', checkMobile);
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
   const queueBlockEvent = useCallback((kind: string, count: number, source: string) => {
@@ -942,7 +947,7 @@ export default function TinyWorld() {
     if (!g[layer]) g[layer] = { raw: 0, worked: 0, pure: 0 };
     return g[layer];
   }, []);
-  // Lowest grade available for a layer (what placement consumes first —
+  // Lowest grade available for a layer (what placement consumes first â
   // refined matter is saved for the press unless explicitly requested).
   const lowestGrade = useCallback((layer: string): Grade => {
     const p = gradePool(layer);
@@ -971,7 +976,7 @@ export default function TinyWorld() {
     const kind = from === "world" && to === "void" ? "remove" : from === "void" && to === "world" ? "grow" : "cycle";
     if (kind === "grow" && source === "sim") {
       // Bloom feeds the scanner: only ORGANIC growth charges the scan bank
-      // (docs/scan-economy.md). Scans/purges/placements also move void→world
+      // (docs/scan-economy.md). Scans/purges/placements also move voidâworld
       // but must not refund themselves.
       scanSecondsRef.current = Math.min(60, scanSecondsRef.current + 0.02 * n);
     }
@@ -1024,6 +1029,63 @@ export default function TinyWorld() {
     };
   }, []);
 
+  // Web Speech API â voice command goal-injection for villagers. Each
+  // utterance overwrites every worker's goal and clears their plan so the
+  // next planner tick picks up the new instruction. Browser support is
+  // strongest on Safari/Chrome; silently no-ops where unavailable.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) { setVoiceError("not supported on this browser"); return; }
+    const rec = new SR();
+    rec.lang = "en-US";
+    rec.interimResults = false;
+    rec.continuous = false;
+    rec.maxAlternatives = 1;
+    rec.onresult = (ev: any) => {
+      try {
+        const last = ev.results[ev.results.length - 1];
+        const transcript = (last?.[0]?.transcript || "").trim();
+        if (!transcript) return;
+        setVoiceTranscript(transcript);
+        const n = (window as any).__tw?.setGoal?.(transcript);
+        if (typeof n === "number") console.log("[voice] goal sent to", n, "workers:", transcript);
+      } catch (e) { console.warn("[voice] result parse failed", e); }
+    };
+    rec.onerror = (ev: any) => {
+      if (ev?.error === "no-speech" || ev?.error === "aborted") return;
+      setVoiceError(ev?.error || "recognition error");
+    };
+    rec.onend = () => {
+      // Continuous mode: restart if the user hasn't toggled off.
+      if (recognitionRef.current?.shouldListen) {
+        try { rec.start(); } catch {}
+      } else {
+        setVoiceListening(false);
+      }
+    };
+    recognitionRef.current = rec;
+    return () => {
+      try { rec.stop(); } catch {}
+      recognitionRef.current = null;
+    };
+  }, []);
+
+  const toggleVoice = useCallback(() => {
+    const rec = recognitionRef.current;
+    if (!rec) return;
+    if (voiceListening) {
+      rec.shouldListen = false;
+      try { rec.stop(); } catch {}
+      setVoiceListening(false);
+    } else {
+      setVoiceError(null);
+      rec.shouldListen = true;
+      try { rec.start(); setVoiceListening(true); }
+      catch (e) { setVoiceError("could not start"); }
+    }
+  }, [voiceListening]);
+
   useEffect(() => {
     let alive = true;
     if (typeof navigator !== "undefined" && navigator.geolocation) {
@@ -1061,7 +1123,7 @@ export default function TinyWorld() {
 
   const fetchWorlds = useCallback(async (gps?: { lat: number; lon: number }) => {
     // Forward nodeLat/nodeLon URL params so the debug override seen by
-    // the API also routes the picker — useful on VPN/coarse-geo carriers
+    // the API also routes the picker â useful on VPN/coarse-geo carriers
     // and for testing from a non-NYC IP.
     const u = new URL("/api/tinyworld-worlds", window.location.origin);
     const here = new URLSearchParams(window.location.search);
@@ -1069,7 +1131,7 @@ export default function TinyWorld() {
     const nLon = here.get("nodeLon");
     if (nLat) u.searchParams.set("nodeLat", nLat);
     if (nLon) u.searchParams.set("nodeLon", nLon);
-    // Browser GPS → lat/lon query params; API resolves these as nodeSource="gps".
+    // Browser GPS â lat/lon query params; API resolves these as nodeSource="gps".
     if (gps && Number.isFinite(gps.lat) && Number.isFinite(gps.lon)) {
       u.searchParams.set("lat", String(gps.lat));
       u.searchParams.set("lon", String(gps.lon));
@@ -1109,7 +1171,7 @@ export default function TinyWorld() {
     if (!wid) return;
     autoLoadRef.current = true;
     setSelectedWorldId(wid);
-    setLoadNote("loading captured world…");
+    setLoadNote("loading captured worldâ¦");
     // Defer so the scene refs settle before the build call.
     const t = setTimeout(() => {
       onLoadSelected(wid).catch((e) => {
@@ -1121,7 +1183,7 @@ export default function TinyWorld() {
   }, []);
 
   // Auto-load most-recent saved world at GPS tier: requires the browser to
-  // have shared real coordinates so we know we\'re physically at the save.
+  // have shared real coordinates so we know we're physically at the save.
   // Bypass with ?noauto=1.
   useEffect(() => {
     if (autoLoadRef.current) return;
@@ -1232,7 +1294,7 @@ export default function TinyWorld() {
 
   const saveCurrentWorld = useCallback(async (worldId: string, worldName: string) => {
     const data = worldDataRef.current;
-    if (!data) throw new Error("nothing to save yet — scan or load a world first");
+    if (!data) throw new Error("nothing to save yet â scan or load a world first");
     snapshotLiveLayers();
     const playerState = { satiation: satiationRef.current };
     const ledgerState = {
@@ -1364,25 +1426,25 @@ export default function TinyWorld() {
 
     const scene = new THREE.Scene();
 
-    // ── Ambient lighting system: 8-keyframe TOD palette (Project-Gaia inspired).
+    // ââ Ambient lighting system: 8-keyframe TOD palette (Project-Gaia inspired).
     // Continuous lerp by hour+minute so dawn/dusk get proper transition tones
-    // instead of snapping. Each keyframe is spaced 3h apart, wrapping 21→00.
+    // instead of snapping. Each keyframe is spaced 3h apart, wrapping 21â00.
     const KEYFRAMES = [
-      // 0 — midnight (00:00) — deep void purple
+      // 0 â midnight (00:00) â deep void purple
       { bg: 0x07070f, fog: 0x0a0816, fogD: 0.020, sun: 0x4a5078, sunI: 0.55, hemiS: 0x2a3268, hemiG: 0x140820, hemiI: 1.00, amb: 0x4a5878, ambI: 0.78, rim: 0xff5fbd, rimI: 1.00 },
-      // 1 — predawn (03:00) — cool first hint of blue
+      // 1 â predawn (03:00) â cool first hint of blue
       { bg: 0x0c0a18, fog: 0x100c24, fogD: 0.019, sun: 0x6a78a8, sunI: 0.95, hemiS: 0x3a4878, hemiG: 0x1a1028, hemiI: 1.20, amb: 0x5868a0, ambI: 0.88, rim: 0xc060e0, rimI: 1.00 },
-      // 2 — dawn (06:00) — warm violet bleeding into cream
+      // 2 â dawn (06:00) â warm violet bleeding into cream
       { bg: 0x1f1a2e, fog: 0x2a2440, fogD: 0.016, sun: 0xffb878, sunI: 2.00, hemiS: 0xffc8a0, hemiG: 0x3a2540, hemiI: 1.80, amb: 0xa8a0c8, ambI: 1.00, rim: 0x9c6fff, rimI: 0.90 },
-      // 3 — golden morning (09:00) — high warm sun, blue sky
+      // 3 â golden morning (09:00) â high warm sun, blue sky
       { bg: 0x18203a, fog: 0x202c4a, fogD: 0.013, sun: 0xffd89a, sunI: 2.80, hemiS: 0xeed8b8, hemiG: 0x6a4a3a, hemiI: 2.05, amb: 0xa8b0c8, ambI: 0.95, rim: 0xb0d0ff, rimI: 0.75 },
-      // 4 — midday (12:00) — neutral balanced
+      // 4 â midday (12:00) â neutral balanced
       { bg: 0x0a0e1e, fog: 0x0e1430, fogD: 0.010, sun: 0xfff0dd, sunI: 3.00, hemiS: 0xbdd4ff, hemiG: 0x8a6f50, hemiI: 2.20, amb: 0x9aa8bc, ambI: 0.90, rim: 0xb0d0ff, rimI: 0.70 },
-      // 5 — golden afternoon (15:00) — warming up, magenta creeping
+      // 5 â golden afternoon (15:00) â warming up, magenta creeping
       { bg: 0x1a1428, fog: 0x281a30, fogD: 0.013, sun: 0xffc890, sunI: 2.80, hemiS: 0xf5c8a0, hemiG: 0x7a4830, hemiI: 2.05, amb: 0xb8a8b8, ambI: 1.00, rim: 0xc080ff, rimI: 0.85 },
-      // 6 — dusk (18:00) — coral sun, magenta horizon
+      // 6 â dusk (18:00) â coral sun, magenta horizon
       { bg: 0x180c1f, fog: 0x251030, fogD: 0.016, sun: 0xff8866, sunI: 2.40, hemiS: 0xff9d8f, hemiG: 0x4a1a3f, hemiI: 1.85, amb: 0xb89db8, ambI: 1.10, rim: 0x9c5fff, rimI: 1.00 },
-      // 7 — twilight (21:00) — purple wash, pink rim hint
+      // 7 â twilight (21:00) â purple wash, pink rim hint
       { bg: 0x100820, fog: 0x180a28, fogD: 0.018, sun: 0x8a5fa0, sunI: 1.50, hemiS: 0x6a4878, hemiG: 0x2a1030, hemiI: 1.50, amb: 0x8060a0, ambI: 1.00, rim: 0xff5fbd, rimI: 1.05 },
     ];
     const _lerpN = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -1464,12 +1526,12 @@ export default function TinyWorld() {
     const under = new THREE.DirectionalLight(0x9a7a55, 1.2);
     under.position.set(4, -14, 6);
     scene.add(under);
-    // Rim light — low-angle counter-key, pops voxel silhouettes against the fog band.
+    // Rim light â low-angle counter-key, pops voxel silhouettes against the fog band.
     const rim = new THREE.DirectionalLight(tp.rim, tp.rimI);
     rim.position.set(-6, 6, 14);
     scene.add(rim);
 
-    // Image-based lighting (PMREM) — gives MeshStandardMaterial a plausible
+    // Image-based lighting (PMREM) â gives MeshStandardMaterial a plausible
     // bounce/reflection source so light "wraps" around blocks instead of
     // looking flat-lit. Built from the active TOD palette so reflections
     // tint with sky/ground colors.
@@ -1614,7 +1676,7 @@ export default function TinyWorld() {
       let tMaxZ = stepZ !== 0 ? (stepZ > 0 ? (z + 1) * voxel - start.z : start.z - z * voxel) / Math.abs(dir.z) : Infinity;
       
       let dist = 0;
-      // Track the axis we just stepped along — that\'s the face we entered through.
+      // Track the axis we just stepped along â that's the face we entered through.
       // Normal points back toward the camera: opposite of step on that axis.
       let lastAxis: "x" | "y" | "z" = "y";
       let lastStep = 0;
@@ -1647,7 +1709,7 @@ export default function TinyWorld() {
       return null;
     };
 
-    // Column-top map: (vx,vz) → Set<vy>. Tracks every block\'s vertical position
+    // Column-top map: (vx,vz) â Set<vy>. Tracks every block's vertical position
     // per column so placement can snap to top-of-stack (gravity).
     const colMap = new Map<string, Set<number>>();
     const addCol = (vx: number, vy: number, vz: number) => {
@@ -1668,7 +1730,7 @@ export default function TinyWorld() {
     };
 
     // 3D frontier helpers: the scannable/attackable surface is the whole
-    // exposed boundary of the volume — a block is frontier if ANY of its 6
+    // exposed boundary of the volume â a block is frontier if ANY of its 6
     // faces has an empty neighbor (up, down, under overhangs included).
     // "Floor" is never a primitive, just emergent flat geometry.
     const hasBlockAt = (vx: number, vy: number, vz: number): boolean => {
@@ -1694,11 +1756,11 @@ export default function TinyWorld() {
       return g === undefined ? null : g;
     };
 
-    // ─── 3D frontier (persistence-and-access.md — worlds are volumes) ──────
+    // âââ 3D frontier (persistence-and-access.md â worlds are volumes) ââââââ
     // The frontier is ANY exposed face of the scanned volume: up, down,
     // sideways, under overhangs. "Floor" is emergent flat geometry, never a
     // primitive. Scanning claims empty cells adjacent to the frontier; the
-    // void attacks exposed faces — both use these helpers.
+    // void attacks exposed faces â both use these helpers.
     const solidAt = (vx: number, vy: number, vz: number): boolean => {
       const s = colMap.get(vx + "," + vz);
       return !!s && s.has(vy);
@@ -1771,7 +1833,7 @@ export default function TinyWorld() {
         material = stdMat;
       }
 
-      // ── Cross-layer global occupancy (Project-Gaia #1 v2) ──
+      // ââ Cross-layer global occupancy (Project-Gaia #1 v2) ââ
       // Single Set rebuilt once before any addLayer call, covers visible +
       // hidden blocks across every terrain layer. AO baking inside addLayer
       // reads from this so corners between e.g. dirt and wall darken correctly.
@@ -1784,7 +1846,7 @@ export default function TinyWorld() {
         for (let i = 0; i < _a.length; i += 3) _globalOcc.add(_a[i] + "," + _a[i+1] + "," + _a[i+2]);
       }
 
-      // ── Per-vertex corner AO bake helper (Minecraft-style) ──
+      // ââ Per-vertex corner AO bake helper (Minecraft-style) ââ
       // Aplied per face per vertex. Each cube vertex sees 3 neighbor voxels:
       // two edge-side neighbors and one corner neighbor. Returns 24 floats
       // (6 faces * 4 vertices) in 0..1, where 0 is fully occluded.
@@ -1812,7 +1874,7 @@ export default function TinyWorld() {
       }
       // Pre-bake per-vertex aoIdx attribute on a cube geometry (which face+vertex
       // each of the 24 cube vertices belongs to). Computed from box.normal/position
-      // so it\'s robust to Three.js\'s internal vertex order.
+      // so it's robust to Three.js's internal vertex order.
       function _bakeAOIdxAttr(geo: any) {
         const pos = geo.attributes.position, nor = geo.attributes.normal;
         const idxArr = new Float32Array(pos.count);
@@ -1832,7 +1894,7 @@ export default function TinyWorld() {
         geo.setAttribute("aoIdx", new THREE.BufferAttribute(idxArr, 1));
       }
 
-      // ── Per-vertex baked AO (Project-Gaia #1 v2: corner-vertex Minecraft style) ──
+      // ââ Per-vertex baked AO (Project-Gaia #1 v2: corner-vertex Minecraft style) ââ
       // Computes side1/side2/corner occupancy per face-vertex across ALL layers
       // (cross-layer occupancy via _globalOcc). 6 vec4 InstancedBufferAttributes
       // carry the 24 per-vertex AO values; the vertex shader picks the right
@@ -1867,15 +1929,7 @@ export default function TinyWorld() {
         material.onBeforeCompile = (shader: any) => {
           if (_prevCompile) _prevCompile.call(material, shader);
           shader.vertexShader =
-            "attribute vec4 aoF0;\
-attribute vec4 aoF1;\
-attribute vec4 aoF2;\
-attribute vec4 aoF3;\
-attribute vec4 aoF4;\
-attribute vec4 aoF5;\
-attribute float aoIdx;\
-varying float vAoPerVert;\
-"
+            "attribute vec4 aoF0;\nattribute vec4 aoF1;\nattribute vec4 aoF2;\nattribute vec4 aoF3;\nattribute vec4 aoF4;\nattribute vec4 aoF5;\nattribute float aoIdx;\nvarying float vAoPerVert;\n"
             + shader.vertexShader.replace(
               "#include <begin_vertex>",
               `int _ai = int(aoIdx + 0.5);
@@ -1892,12 +1946,10 @@ varying float vAoPerVert;\
                #include <begin_vertex>`
             );
           shader.fragmentShader =
-            "varying float vAoPerVert;\
-"
+            "varying float vAoPerVert;\n"
             + shader.fragmentShader.replace(
               "#include <output_fragment>",
-              "gl_FragColor.rgb *= mix(0.45, 1.0, vAoPerVert);\
-#include <output_fragment>"
+              "gl_FragColor.rgb *= mix(0.45, 1.0, vAoPerVert);\n#include <output_fragment>"
             );
         };
       }
@@ -1918,7 +1970,7 @@ varying float vAoPerVert;\
         (mesh.userData.slotMap as Map<string, number>).set(x + "," + y + "," + z, j);
         addCol(x, y, z);
       }
-      // Stash hidden positions in spare slots with zero-scale matrices — ready to reveal.
+      // Stash hidden positions in spare slots with zero-scale matrices â ready to reveal.
       const zeroM = new THREE.Matrix4().makeScale(0, 0, 0);
       const visCount = arr.length / 3;
       for (let i = 0, j = visCount; i < hiddenArr.length; i += 3, j++) {
@@ -1962,7 +2014,7 @@ varying float vAoPerVert;\
     if (ceilingMesh) { ceilingMesh.material.transparent = false; ceilingMesh.material.depthWrite = true; ceilingMesh.material.opacity = 1; }
     fadeMeshesRef.current = { ceiling: ceilingMesh, wallUpper: wallUpperMesh };
 
-    // ─── Organic lifecycle scaffolding ─────────────────────────────────────
+    // âââ Organic lifecycle scaffolding âââââââââââââââââââââââââââââââââââââ
     // Fruit / seed / sapling break conservation by design: fruit is eaten
     // (deleted), saplings mature into trunks with new leaves (created). Each
     // lifecycle layer gets its own InstancedMesh with pre-allocated free slots
@@ -2006,7 +2058,7 @@ varying float vAoPerVert;\
     const growthTrunkMesh = makeGrowable(PAL.trunk, Math.max(96, Math.floor(trunkCountStart * 0.6) || 96), "trunks");
     const growthLeafMesh = makeGrowable(season === "fall" ? 0x9a5b1f : PAL.leaf, Math.max(160, Math.floor(leafCountStart * 0.5)), "leaves", 0.95);
 
-    // Universal spawn/despawn helpers — work for ANY mesh that has the
+    // Universal spawn/despawn helpers â work for ANY mesh that has the
     // freeSlots + slotMap userData shape (original or growable). They keep
     // colMap consistent so raycast/pickup/walk all stay in sync.
     const spawnBlockInto = (mesh: any, vx: number, vy: number, vz: number, source = "sim"): boolean => {
@@ -2046,10 +2098,10 @@ varying float vAoPerVert;\
       return true;
     };
 
-    // ─── Local protection field (Chunk 3 — mass-and-density.md §3) ────────
-    // Coarse 2D cell grid (P_CELL × P_CELL columns). Each cell holds the
+    // âââ Local protection field (Chunk 3 â mass-and-density.md Â§3) ââââââââ
+    // Coarse 2D cell grid (P_CELL Ã P_CELL columns). Each cell holds the
     // summed density-mass of every block in its columns. Protection at a
-    // column = Σ nearby cellMass / (1 + d²) — gravity-style falloff. The
+    // column = Î£ nearby cellMass / (1 + dÂ²) â gravity-style falloff. The
     // void only sees mass: pressure anywhere = base / local protection.
     const P_CELL = 8;
     const protCells = new Map<string, number>();
@@ -2078,8 +2130,8 @@ varying float vAoPerVert;\
     }
     console.log("[tinyworld] protection field seeded:", protCells.size, "cells");
 
-    // ─── Organic lifecycle state + tick ────────────────────────────────────
-    // organicLife: pos-key → { kind, since, onTree? }. Only mid-lifecycle
+    // âââ Organic lifecycle state + tick ââââââââââââââââââââââââââââââââââââ
+    // organicLife: pos-key â { kind, since, onTree? }. Only mid-lifecycle
     // blocks live here; original-scan leaves are sampled randomly per tick
     // to seed new fruit. Seeded from existing fruit/seed/sapling layers on
     // load so saved worlds resume gracefully (clock resets, not aged).
@@ -2212,7 +2264,7 @@ varying float vAoPerVert;\
           if (groundY === null) continue;
           const ny = groundY + 1;
           if (ny >= vy) {
-            // Already resting on something — flip onTree off, reset timer.
+            // Already resting on something â flip onTree off, reset timer.
             const e = organicLife.get(t.k);
             if (e) organicLife.set(t.k, { ...e, onTree: false, since: nowMs });
             continue;
@@ -2236,7 +2288,7 @@ varying float vAoPerVert;\
           }
         } else if (t.action === "germinate") {
           if (!isSoilAt(vx, vy, vz)) {
-            // Not on soil — reset timer so it tries again later.
+            // Not on soil â reset timer so it tries again later.
             const e = organicLife.get(t.k);
             if (e) organicLife.set(t.k, { ...e, since: nowMs - SEED_GERMINATE_MS + 4000 });
             continue;
@@ -2266,7 +2318,7 @@ varying float vAoPerVert;\
       }
     };
 
-    // ─── Offline Catch-up Simulation ───────────────────────────────────────
+    // âââ Offline Catch-up Simulation âââââââââââââââââââââââââââââââââââââââ
     let catchUpSummary: { voidLoss: number; growth: number; elapsedHours: number; rift: {x:number, y:number, z:number} | null } | null = null;
     
     if (!(source instanceof File)) {
@@ -2283,7 +2335,7 @@ varying float vAoPerVert;\
 
         if (est.voidLoss > 0) {
           // weakestFrontier is declared later in this effect and is not yet
-          // initialized when catch-up runs at load — inline the frontier pick.
+          // initialized when catch-up runs at load â inline the frontier pick.
           const perim: Array<{ vx: number; vz: number }> = [];
           for (const k of colMap.keys()) {
             const cs = colMap.get(k);
@@ -2405,7 +2457,7 @@ varying float vAoPerVert;\
       }
     }
     if (groundMap.size === 0 && colMap.size > 0) {
-      // Saved worlds don\'t persist the voxelizer\'s ground layer — rebuild a
+      // Saved worlds don't persist the voxelizer's ground layer â rebuild a
       // walkable floor map from the block columns (visible + occlusion-culled
       // hidden blocks): the top of the LOWEST contiguous solid run per column.
       // That captures floors and objects resting on them while excluding
@@ -2610,18 +2662,18 @@ varying float vAoPerVert;\
       }
     };
 
-    // Player physics scaled to voxel size — you\'re tiny-world sized, not human sized.
+    // Player physics scaled to voxel size â you're tiny-world sized, not human sized.
     const EYE_HEIGHT = voxel * 3.5;
     const MOVE_SPEED = voxel * 8;
     const JUMP_VELOCITY = voxel * 18;
     const GRAVITY = voxel * 55;
 
-    // Sample ground height at world (x, z) — returns world Y of floor top.
-    // footWY (optional): current foot height — columns whose top is more than
+    // Sample ground height at world (x, z) â returns world Y of floor top.
+    // footWY (optional): current foot height â columns whose top is more than
     // ~1.15 voxels above the feet are ignored, so tall neighbors (walls,
-    // stacks) can\'t yank the sample upward while walking on top of objects.
+    // stacks) can't yank the sample upward while walking on top of objects.
     // radius (optional, world units): how far around (wx, wz) to consider
-    // columns — pass the body radius so only columns the body actually
+    // columns â pass the body radius so only columns the body actually
     // overlaps can support it.
     const sampleGround = (wx: number, wz: number, footWY?: number, radius = 0): number => {
       const ground = groundRef.current;
@@ -2643,7 +2695,7 @@ varying float vAoPerVert;\
         }
       }
       if (best === null && bestAny === null) {
-        // Nothing under the body at all — fall back to the 3x3 neighborhood
+        // Nothing under the body at all â fall back to the 3x3 neighborhood
         // max so we never return 0 over scanned terrain.
         const cvx = Math.round(wx / v) + ground.cx;
         const cvz = Math.round(wz / v) + ground.cz;
@@ -2662,7 +2714,7 @@ varying float vAoPerVert;\
 
     // Horizontal collision against solid blocks in colMap. Tests the player
     // body envelope (vertical cylinder, radius playerR, height EYE_HEIGHT)
-    // for any block overlap above the step-up tolerance — blocks at the
+    // for any block overlap above the step-up tolerance â blocks at the
     // foot voxel + 1 are forgiven so single-voxel ledges remain climbable
     // via the ground snap, but anything chest-high or above blocks movement.
     const playerR = voxel * 0.35;
@@ -2689,7 +2741,7 @@ varying float vAoPerVert;\
       return false;
     };
 
-    // Same cylinder test as isBlockedAt but at an arbitrary world Y — used by
+    // Same cylinder test as isBlockedAt but at an arbitrary world Y â used by
     // spawn clearance sweep + per-frame stuck-recovery.
     const bodyBlockedAtY = (wx: number, wy: number, wz: number): boolean => {
       const footY = wy - EYE_HEIGHT;
@@ -2725,11 +2777,11 @@ varying float vAoPerVert;\
       return null;
     };
 
-    // ─── Tiny Worker v1: AI NPC that paths via A* and moves soft blocks ─────
+    // âââ Tiny Worker v1: AI NPC that paths via A* and moves soft blocks âââââ
     // One character per world. Picks up grass/dirt/leaves/fruit/snow/dryGrass
     // from somewhere within ~30 voxels, walks them to a random walkable cell,
     // places them. Slow tick (~250ms) for decisions/cell-step. Per-frame
-    // render lerp for smooth motion. Conservation-respecting — uses the same
+    // render lerp for smooth motion. Conservation-respecting â uses the same
     // freeSlots mechanism as the player so block counts stay consistent.
     const SOFT_WORKER_LAYERS = new Set(["grass", "dryGrass", "leaves", "fruit", "dirt", "snow"]);
 
@@ -2876,11 +2928,11 @@ varying float vAoPerVert;\
       return cands[Math.floor(Math.random() * cands.length)];
     };
 
-    // ─── LLM-driven planning ────────────────────────────────────────────────
+    // âââ LLM-driven planning ââââââââââââââââââââââââââââââââââââââââââââââââ
     // When idle, a worker fetches a small build plan from /api/tinyworld-plan
     // (Gemini 2.5 Flash-Lite). The plan is a list of primitive shapes which
     // we expand to a sorted target-block list. Worker then executes each
-    // target: pickup matching layer → A* walk → place. Plan re-fetched
+    // target: pickup matching layer â A* walk â place. Plan re-fetched
     // whenever the current one finishes or fails.
     type PlanTarget = { vx: number; vz: number; layer: string; localY: number; done: boolean };
     type WorkerPlan = { name: string; rationale: string; actions: GoapAction[] };
@@ -2952,7 +3004,7 @@ varying float vAoPerVert;\
             position: { vx: w.vx, vy: w.vy, vz: w.vz },
             currentColumnTop: colTop(w.vx, w.vz),
             cardinalNeighborTops: neighborHeights,
-            note: "No cardinal neighbor has a column top within ±1 of my elevation. I need to descend.",
+            note: "No cardinal neighbor has a column top within Â±1 of my elevation. I need to descend.",
           };
         }
         const r = await fetch("/api/tinyworld-plan", {
@@ -3039,12 +3091,6 @@ varying float vAoPerVert;\
       carried.position.set(0, voxel * 1.15, 0);
       carried.visible = false;
       group.add(carried);
-      const beacon = new THREE.Mesh(
-        new THREE.CylinderGeometry(voxel * 0.08, voxel * 0.08, voxel * 40, 6, 1, true),
-        new THREE.MeshBasicMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.3, depthWrite: false }),
-      );
-      beacon.position.y = voxel * 20;
-      group.add(beacon);
       scene.add(group);
       const w: WorkerState = {
         id, vx, vy, vz,
@@ -3099,7 +3145,7 @@ varying float vAoPerVert;\
     let lastWorkerTickMs = 0;
     let lastWorkerUiMs = 0;
     let lastWorkerUiHadWorker = false;
-    // Slower than v1 — workers now feel deliberate. Cell move 2500ms,
+    // Slower than v1 â workers now feel deliberate. Cell move 2500ms,
     // pickup 8000ms, place 4000ms. LLM call latency (~1s) is invisible
     // at these timings.
     const W_CELL_MS = 2500;
@@ -3146,8 +3192,51 @@ varying float vAoPerVert;\
     };
     const tickWorkers = (now: number) => {
       for (const w of workers) {
+        // Ground re-sync + escape route. Void creatures eating the column
+        // beneath a worker leaves w.vy stale (worker visibly floats). Run
+        // only between actions to avoid disrupting mid-walk interpolation.
+        if (w.mode === "idle" && !w.pickupTarget && !w.placeTarget && !(w as any).buildTarget) {
+          const top = colTop(w.vx, w.vz);
+          if (top !== null) {
+            if (w.vy !== top + 1) { w.vy = top + 1; w.targetVY = w.vy; }
+          } else {
+            // Column under worker is empty â try a neighbor first.
+            let stepped = false;
+            const dirs: Array<[number, number]> = [[1,0],[-1,0],[0,1],[0,-1]];
+            for (const [dx, dz] of dirs) {
+              const t = colTop(w.vx + dx, w.vz + dz);
+              if (t === null) continue;
+              w.vx += dx; w.vz += dz; w.vy = t + 1;
+              w.targetVX = w.vx; w.targetVY = w.vy; w.targetVZ = w.vz;
+              stepped = true; break;
+            }
+            if (!stepped) {
+              // Build escape route â spawn a stockpile block as new ground.
+              const sp = stockpileByLayerRef.current as Record<string, number>;
+              let lay: string | null = null;
+              for (const cand of ["dirt", "grass", "dryGrass", "stone", "snow", "leaves"]) {
+                if ((sp[cand] || 0) > 0) { lay = cand; break; }
+              }
+              if (lay) {
+                let mesh: any = null;
+                for (const m of meshesRef.current) {
+                  if (m.userData?.layer === lay && (m.userData?.freeSlots?.length || 0) > 0) { mesh = m; break; }
+                }
+                if (mesh) {
+                  const escY = Math.max(0, w.vy - 1);
+                  if (spawnBlockInto(mesh, w.vx, escY, w.vz, "worker-escape")) {
+                    syncGroundAfterPlace(w.vx, escY, w.vz, lay);
+                    ledgerMove("stockpile", "void", 1, "worker-escape", lay, lowestGrade(lay));
+                    w.vy = escY + 1; w.targetVY = w.vy;
+                  }
+                }
+              }
+            }
+          }
+        }
+
         if (w.mode === "idle") {
-          // No plan yet — request one (async).
+          // No plan yet â request one (async).
           if (!w.plan) {
             if (!w.planRequested && now - w.lastPlanFailMs > W_PLAN_BACKOFF_MS) {
               w.planRequested = true;
@@ -3170,7 +3259,7 @@ varying float vAoPerVert;\
                 if (w.mode === "planning") w.mode = "idle";
               });
             }
-            // Wander fallback so workers don\'t freeze while plans are unavailable.
+            // Wander fallback so workers don't freeze while plans are unavailable.
             if (!w.planRequested && w.mode === "idle") {
               const lastWander = (w as any).lastWanderMs ?? 0;
               if (now - lastWander > W_WANDER_MS) {
@@ -3346,7 +3435,7 @@ varying float vAoPerVert;\
             next.done = true;
           }
         } else if (w.mode === "planning") {
-          // Awaiting fetch — handled in promise resolver above.
+          // Awaiting fetch â handled in promise resolver above.
           continue;
         } else if (w.mode === "walking") {
           if (now < w.moveEndMs) continue;
@@ -3424,7 +3513,7 @@ varying float vAoPerVert;\
             }
           }
           if (w.placeTarget?.actionRef) w.placeTarget.actionRef.done = true;
-          // On failure keep carrying — the block stays in the stockpile
+          // On failure keep carrying â the block stays in the stockpile
           // instead of silently vanishing like it used to.
           if (placed) {
             w.carrying = null;
@@ -3502,8 +3591,8 @@ varying float vAoPerVert;\
             // Compress whatever is stockpiled that has >= 4
             for (const layer of ["dirt", "stone", "metal", "densium"]) {
               if ((stockpileByLayerRef.current[layer] || 0) >= 4) {
-                // We\'ll just call compress for them if possible
-                // They shouldn\'t be holding it, it comes from stockpile
+                // We'll just call compress for them if possible
+                // They shouldn't be holding it, it comes from stockpile
                 const pool = gradePool(layer);
                 const clean = pool.pure >= 4;
                 if (clean) pool.pure -= 4;
@@ -3598,7 +3687,7 @@ varying float vAoPerVert;\
           visor.material.color.setRGB(r/255, g/255, b/255);
         }
 
-        // Face the direction of travel (snap, not lerp — they\'re tiny).
+        // Face the direction of travel (snap, not lerp â they're tiny).
         if (w.mode === "walking" && (w.targetVX !== w.vx || w.targetVZ !== w.vz)) {
           w.group.rotation.y = Math.atan2(w.targetVX - w.vx, w.targetVZ - w.vz);
         }
@@ -3613,7 +3702,7 @@ varying float vAoPerVert;\
     const getPlacementTarget = () => {
       const hit = marchRay();
       if (hit) {
-        // Place against the face we hit — normal points back toward camera.
+        // Place against the face we hit â normal points back toward camera.
         const vx = hit.vx + hit.nx;
         const vy = hit.vy + hit.ny;
         const vz = hit.vz + hit.nz;
@@ -3659,7 +3748,7 @@ varying float vAoPerVert;\
       if ((!fp.isLocked && !isMobileRef.current) || carryState || chargeState) return;
       let hit = marchRay();
       if (!hit && isMobileRef.current) {
-        // Mobile aim is imprecise — fall back to nearest pickable top block within ~4 voxels.
+        // Mobile aim is imprecise â fall back to nearest pickable top block within ~4 voxels.
         const px = Math.floor(camera.position.x / voxel) + cxRound;
         const pz = Math.floor(camera.position.z / voxel) + czRound;
         const py = Math.floor(camera.position.y / voxel);
@@ -3733,7 +3822,7 @@ varying float vAoPerVert;\
 
     // Reveal previously hidden (occlusion-culled) blocks adjacent to a freshly
     // emptied cell. Walks the 6 face-neighbors of (vx, vy, vz); any neighbor
-    // that\'s parked in a hiddenMap gets its matrix rewritten + registered.
+    // that's parked in a hiddenMap gets its matrix rewritten + registered.
     const tryRevealHidden = (vx: number, vy: number, vz: number) => {
       const ds = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
       for (const m of meshesRef.current) {
@@ -3773,7 +3862,7 @@ varying float vAoPerVert;\
       if (!freeSlots.length) return false;
       // Reject if target voxel is already solid.
       if (solidAt(vx, vy, vz)) return false;
-      // Require at least one adjacent occupied face — no floating placement.
+      // Require at least one adjacent occupied face â no floating placement.
       // Also accept ground-level under foot as an anchor (groundRef map).
       const hasNeighbor =
         solidAt(vx + 1, vy, vz) || solidAt(vx - 1, vy, vz) ||
@@ -3804,10 +3893,10 @@ varying float vAoPerVert;\
       return true;
     };
 
-    // ─── Water flow (settle on edit, conservation-respecting) ───────────────
+    // âââ Water flow (settle on edit, conservation-respecting) âââââââââââââââ
     // After any land block is moved, redistribute nearby water to fill the
     // lowest reachable cells in its connected region. Total water count is
-    // preserved — water only re-pours into newly-opened space, draining from
+    // preserved â water only re-pours into newly-opened space, draining from
     // higher cells. Bounded by a radius + cell cap so cost stays trivial.
     const settleWaterNear = (epx: number, epy: number, epz: number) => {
       const waterMesh = meshesRef.current.find((m: any) => m.userData?.layer === "water");
@@ -3987,7 +4076,7 @@ varying float vAoPerVert;\
         velocityYRef.current = JUMP_VELOCITY;
       }
       if (e.code === "KeyE" && fp.isLocked && carryState && carryState.layer === "fruit") {
-        // Eat: carried fruit is consumed — STOCKPILE → VOID, satiation up.
+        // Eat: carried fruit is consumed â STOCKPILE â VOID, satiation up.
         carryState = null;
         ghostMesh.visible = false;
         setCarryLayer(null);
@@ -4007,7 +4096,7 @@ varying float vAoPerVert;\
       renderer.setSize(innerWidth, innerHeight);
     });
 
-    // ─── Conservation ledger init ─────────────────────────────────────────
+    // âââ Conservation ledger init âââââââââââââââââââââââââââââââââââââââââ
     // Authoritative recount once the world is fully built: WORLD = every
     // visible + occlusion-hidden block. Saved pools (void/built/stockpile)
     // restore from meta; fresh scans seed a small void reserve so organic
@@ -4041,14 +4130,14 @@ varying float vAoPerVert;\
       setLedger({ ...ledgerRef.current });
     }
 
-    // ─── Void creatures (Chunk 3): night wraiths that erode weak edges ─────
-    // No pathfinding — they hover and drift toward targets. Spawn at the
+    // âââ Void creatures (Chunk 3): night wraiths that erode weak edges âââââ
+    // No pathfinding â they hover and drift toward targets. Spawn at the
     // lowest-protection exposed faces of the 3D frontier during active/
-    // aggressive void phases (caps: aggressive 3, active 1, passive 0 →
-    // despawn at dawn). They bite the exact block they reach — any exposed
-    // face, including undersides and overhangs — via
+    // aggressive void phases (caps: aggressive 3, active 1, passive 0 â
+    // despawn at dawn). They bite the exact block they reach â any exposed
+    // face, including undersides and overhangs â via
     // removeBlockFrom(...,"void_creature"), so every bite is
-    // ledger-conserving (world → void). Eat rate slows with local
+    // ledger-conserving (world â void). Eat rate slows with local
     // protection; strong protection repels them back to weak ground.
     type VoidCreature = {
       vx: number; vy: number; vz: number;
@@ -4083,7 +4172,7 @@ varying float vAoPerVert;\
           }
           if (!open) {
             // Frontier rule: columns with vertical gaps (bridge undersides,
-            // overhangs, interior shafts) are exposed surface too — the void
+            // overhangs, interior shafts) are exposed surface too â the void
             // attacks any exposed face, not just horizontal edges.
             const colSet = colMap.get(k)!;
             let yMin = Infinity, yMax = -Infinity;
@@ -4096,9 +4185,9 @@ varying float vAoPerVert;\
         const stride = Math.max(1, Math.floor(frontier.length / 400));
         for (let i = 0; i < frontier.length; i += stride) {
           const { vx, vz } = frontier[i];
-          // Weight protection down by exposure: a block with 4–5 open faces
+          // Weight protection down by exposure: a block with 4â5 open faces
           // (spindle, overhang underside) is far weaker surface than a flat
-          // top with 1 — necking falls out of this for free.
+          // top with 1 â necking falls out of this for free.
           let maxExp = 1;
           let bestY = 0;
           const colSet = colMap.get(vx + "," + vz);
@@ -4161,7 +4250,7 @@ varying float vAoPerVert;\
     const VOID_TICK_MS = 1000;
     const VOID_EAT_BASE_MS = 6000;
     // Eat-fx pool: expanding pink wireframe cube spawned at the eaten block.
-    // Pooled meshes so spam doesn\'t allocate. Ticked in the main render loop.
+    // Pooled meshes so spam doesn't allocate. Ticked in the main render loop.
     type EatFx = { mesh: any; t0: number };
     const eatFx: EatFx[] = [];
     const eatFxPool: any[] = [];
@@ -4213,7 +4302,7 @@ varying float vAoPerVert;\
             c.vz += (ddz / dist) * step;
           }
           // Surface-clamp Y: hover above the topmost block in this column so
-          // the wraith doesn\'t phase through walls/towers. Reads colMap which
+          // the wraith doesn't phase through walls/towers. Reads colMap which
           // is already maintained as blocks change.
           {
             const cxNow = Math.round(c.vx), czNow = Math.round(c.vz);
@@ -4247,7 +4336,7 @@ varying float vAoPerVert;\
             const eatMs = (VOID_EAT_BASE_MS * (1 + 3 * relProt)) / VOID_SEASON_MULT;
             if (now - c.lastEatMs > eatMs) {
               let ate = false;
-              // Frontier rule: bite the MOST exposed block in this column —
+              // Frontier rule: bite the MOST exposed block in this column â
               // not just the top. Undersides of bridges and overhangs (5
               // open faces) erode before flat ground (1), so thin geometry
               // necks and severs exactly as mass-and-density.md describes.
@@ -4309,13 +4398,13 @@ varying float vAoPerVert;\
       }
     };
 
-    // ─── Scan economy + press (Chunk 4) ─────────────────────────────────────
-    // Scanning new land is the ONLY legitimate baseline increase — fresh
+    // âââ Scan economy + press (Chunk 4) âââââââââââââââââââââââââââââââââââââ
+    // Scanning new land is the ONLY legitimate baseline increase â fresh
     // matter enters the conservation ledger via a `scan` block_event.
     // Material rolls are mostly raw loam/stone; rare pure metal veins and
-    // very rare core blocks (docs/mass-and-density.md §9.3). The press
+    // very rare core blocks (docs/mass-and-density.md Â§9.3). The press
     // compresses 4 stockpiled blocks of a tier into 1 of the next
-    // (4×d → 1×4d): mass conserved exactly, block COUNT drops by 3, so the
+    // (4Ãd â 1Ã4d): mass conserved exactly, block COUNT drops by 3, so the
     // block-count baseline drops with it via a `compress` event.
     const scanDirtMesh = makeGrowable(PAL.dirt, 3072, "dirt");
     const scanGrassMesh = makeGrowable(PAL.grass, 1536, "grass");
@@ -4325,8 +4414,8 @@ varying float vAoPerVert;\
     const coreScanMesh = makeGrowable(0xffd75e, 16, "core");
     const blockGrades = blockGradesRef.current;
 
-    // Restore saved scan-economy layers — snapshotLiveLayers persists them
-    // under their layer names but buildWorld\'s addLayer calls only rebuild
+    // Restore saved scan-economy layers â snapshotLiveLayers persists them
+    // under their layer names but buildWorld's addLayer calls only rebuild
     // the original scan layers. spawnBlockInto drains VOID, and these blocks
     // were already part of the saved baseline, so compensate exactly like
     // scanNewLand does (void refund + baseline raise).
@@ -4351,7 +4440,7 @@ varying float vAoPerVert;\
     }
 
     // Scan-seconds: one banked currency (docs/scan-economy.md). Bloom feeds
-    // the bank via ledgerMove\'s grow accrual; spending is expand (scan new
+    // the bank via ledgerMove's grow accrual; spending is expand (scan new
     // land) or purge (re-sweep owned territory to expel the void).
     const SCAN_SEC_CAP = 60;
     const SCAN_COST_SEC = 10;
@@ -4376,14 +4465,14 @@ varying float vAoPerVert;\
 
     // 3D frontier scan: scanning adds BLOCKS, not "land". The frontier is
     // ANY exposed face of the scanned volume (docs/persistence-and-access.md)
-    // — sideways off an edge, up a wall, down under an overhang. Pick a
+    // â sideways off an edge, up a wall, down under an overhang. Pick a
     // random exposed face with open space along its normal and grow a
     // connected blob of new matter from it; the old horizontal patch is just
     // the special case where the face normal is horizontal.
     const scanNewLand = () => {
       if (scanSecondsRef.current < SCAN_COST_SEC) return { ok: false, reason: "need " + SCAN_COST_SEC + "s banked, have " + Math.floor(scanSecondsRef.current) + "s" };
       // Sample random occupied blocks; take the first exposed face with room
-      // to grow (≥4 of 5 probe cells empty along the outward normal). A
+      // to grow (â¥4 of 5 probe cells empty along the outward normal). A
       // cramped face (interior notch) is kept only as a fallback.
       const keys = Array.from(colMap.keys());
       let seed: { x: number; y: number; z: number } | null = null;
@@ -4421,8 +4510,8 @@ varying float vAoPerVert;\
       if (!seed && fallbackSeed) { seed = fallbackSeed.s; normal = fallbackSeed.n; }
       if (!seed) return { ok: false, reason: "no exposed frontier face found" };
       // Blob shape: ellipsoid reaching outward along the face normal. A
-      // horizontal normal reproduces the old slab (long × wide × ~3 thick);
-      // a vertical normal grows a shaft/cap — same rule, no special case.
+      // horizontal normal reproduces the old slab (long Ã wide Ã ~3 thick);
+      // a vertical normal grows a shaft/cap â same rule, no special case.
       const D = 8 + Math.floor(Math.random() * 4);
       const semiN = D / 2;
       const verticalScan = normal[1] !== 0;
@@ -4444,7 +4533,7 @@ varying float vAoPerVert;\
       };
       // Collect empty candidate cells inside the (noisy) ellipsoid, then BFS
       // from the seed so the blob is one connected piece attached to the
-      // face it grew from — no floating fragments behind existing geometry.
+      // face it grew from â no floating fragments behind existing geometry.
       const candidates = new Set<string>();
       const rx = Math.ceil(normal[0] !== 0 ? semiN : (normal[2] !== 0 ? semiW : semiW)) + 1;
       const ry = Math.ceil(normal[1] !== 0 ? semiN : semiT) + 1;
@@ -4475,7 +4564,7 @@ varying float vAoPerVert;\
       }
       if (blob.length === 0) return { ok: false, reason: "frontier face had no room" };
       // Classify cells: a cell whose up-neighbor is open (outside the blob
-      // AND empty in the world) reads as surface — it gets grass/dirt and a
+      // AND empty in the world) reads as surface â it gets grass/dirt and a
       // ground-map sync. Everything else is body matter (dirt/stone by how
       // buried it is). Vein/core rolls land in body cells only.
       const isTop: boolean[] = blob.map((c) => !blobSet.has(c.x + "," + (c.y + 1) + "," + c.z) && !hasBlockAt(c.x, c.y + 1, c.z));
@@ -4520,8 +4609,8 @@ varying float vAoPerVert;\
         }
       }
       if (added === 0) return { ok: false, reason: "no blocks spawned (capacity?)" };
-      // spawnBlockInto moved `added` from VOID→WORLD; scans mint NEW matter,
-      // so refund the reservoir and raise the baseline — the one legit way.
+      // spawnBlockInto moved `added` from VOIDâWORLD; scans mint NEW matter,
+      // so refund the reservoir and raise the baseline â the one legit way.
       const L = ledgerRef.current as any;
       L.void += added;
       L.baseline += added;
@@ -4531,11 +4620,11 @@ varying float vAoPerVert;\
       scanCount += 1;
       setScanUi({ charge: Math.floor(scanSecondsRef.current), scans: scanCount });
       const dirName = normal[1] === 1 ? "up" : normal[1] === -1 ? "down" : normal[0] === 1 ? "+x" : normal[0] === -1 ? "-x" : normal[2] === 1 ? "+z" : "-z";
-      console.log("[tinyworld] frontier scan (" + dirName + "):", added, "blocks at", seed.x, seed.y, seed.z, veinBlocks ? "(pure metal vein ×" + veinBlocks + ")" : "", coreFound ? "(CORE FOUND)" : "");
+      console.log("[tinyworld] frontier scan (" + dirName + "):", added, "blocks at", seed.x, seed.y, seed.z, veinBlocks ? "(pure metal vein Ã" + veinBlocks + ")" : "", coreFound ? "(CORE FOUND)" : "");
       return { ok: true, added, anchor: { x: seed.x, z: seed.z }, seed, normal: dirName, veinBlocks, coreFound };
     };
 
-    // Purge: LiDAR is directed perception and the void is unperceived space —
+    // Purge: LiDAR is directed perception and the void is unperceived space â
     // re-sweeping owned territory expels void-pool mass back as RAW matter
     // (mass conserved, grades lost, per the entropy law).
     const purgeSweep = (vx?: number, vy?: number, vz?: number) => {
@@ -4580,7 +4669,7 @@ varying float vAoPerVert;\
       purgeCount += 1;
       if (reclaimed > 0) queueBlockEvent("purge", reclaimed, "purge_sweep");
       setScanUi({ charge: Math.floor(scanSecondsRef.current), scans: scanCount });
-      console.log("[tinyworld] purge sweep at", cx, cy, cz, "—", reclaimed, "reclaimed,", expelledCreatures, "creatures expelled");
+      console.log("[tinyworld] purge sweep at", cx, cy, cz, "â", reclaimed, "reclaimed,", expelledCreatures, "creatures expelled");
       return { ok: true, at: [cx, cy, cz], reclaimed, creaturesExpelled: expelledCreatures, secondsLeft: Math.floor(scanSecondsRef.current) };
     };
 
@@ -4639,7 +4728,7 @@ varying float vAoPerVert;\
     const pressCompress = (layer: string) => {
       const next = PRESS_LADDER[layer];
       if (!next) return { ok: false, reason: layer + " is not compressible" };
-      if (!pressPersistRef.current || !pressPersistRef.current.built) return { ok: false, reason: "no press built — buildPress() first (" + PRESS_COST_STONE + " stone)" };
+      if (!pressPersistRef.current || !pressPersistRef.current.built) return { ok: false, reason: "no press built â buildPress() first (" + PRESS_COST_STONE + " stone)" };
       const sp = stockpileByLayerRef.current;
       const have = sp[layer] || 0;
       if (have < 4) return { ok: false, reason: "need 4 stockpiled " + layer + ", have " + have };
@@ -4656,28 +4745,28 @@ varying float vAoPerVert;\
         gradePool(next).raw += 1;
         queueBlockEvent("compress", 3, "press_" + layer);
         setLedger({ ...L });
-        console.log("[tinyworld] press: 4 pure " + layer + " → 1×" + next);
+        console.log("[tinyworld] press: 4 pure " + layer + " â 1Ã" + next);
         return { ok: true, clean: true, from: layer, to: next, stockpile: { ...sp } };
       }
-      // Impure feed — the lattice shears under load (mass-and-density §6):
+      // Impure feed â the lattice shears under load (mass-and-density Â§6):
       // output is an unstable slug, not a usable block.
       sp["slug_" + next] = (sp["slug_" + next] || 0) + 1;
       queueBlockEvent("compress", 3, "slug_" + layer);
       setLedger({ ...L });
       updateBombUi();
-      console.log("[tinyworld] press: impure " + layer + " feed → 1 unstable " + next + " slug");
+      console.log("[tinyworld] press: impure " + layer + " feed â 1 unstable " + next + " slug");
       return { ok: true, clean: false, from: layer, slug: next, slugs: sp["slug_" + next], stockpile: { ...sp } };
     };
 
     // Bloom-fed refinement: the press upgrades one stockpiled block per cycle
-    // (raw→worked→pure), burning 1 stockpiled fruit per grade step.
+    // (rawâworkedâpure), burning 1 stockpiled fruit per grade step.
     const REFINE_MS = 20000;
     let refineQueue: { layer: string; queued: number } | null = null;
     let refinedTotal = 0;
     let lastRefineMs = 0;
     const startRefine = (layer: string, n = 1) => {
       if (!PRESS_LADDER[layer]) return { ok: false, reason: layer + " is not refinable" };
-      if (!pressPersistRef.current || !pressPersistRef.current.built) return { ok: false, reason: "no press built — buildPress() first (" + PRESS_COST_STONE + " stone)" };
+      if (!pressPersistRef.current || !pressPersistRef.current.built) return { ok: false, reason: "no press built â buildPress() first (" + PRESS_COST_STONE + " stone)" };
       const sp = stockpileByLayerRef.current;
       if ((sp[layer] || 0) < 1) return { ok: false, reason: "no stockpiled " + layer };
       if (refineQueue && refineQueue.layer !== layer) return { ok: false, reason: "press busy refining " + refineQueue.layer };
@@ -4698,7 +4787,7 @@ varying float vAoPerVert;\
         setPressUi((u) => ({ ...u, queued: 0 }));
         return;
       }
-      if ((sp.fruit || 0) < 1) return; // starved — wait for bloom to restock fruit
+      if ((sp.fruit || 0) < 1) return; // starved â wait for bloom to restock fruit
       ledgerMove("stockpile", "void", 1, "press_refine", "fruit");
       const to = from === "raw" ? "worked" : "pure";
       pool[from] -= 1;
@@ -4707,13 +4796,13 @@ varying float vAoPerVert;\
       q.queued -= 1;
       if (q.queued <= 0) refineQueue = null;
       setPressUi((u) => ({ ...u, queued: refineQueue ? refineQueue.queued : 0, refined: refinedTotal }));
-      console.log("[tinyworld] press refined 1 " + q.layer + " " + from + "→" + to + " (fruit burned)");
+      console.log("[tinyworld] press refined 1 " + q.layer + " " + from + "â" + to + " (fruit burned)");
     };
 
-    // ─── Keel core ships (Chunk 5) ──────────────────────────────────────────
-    // A keel is a core taught to move (docs/mass-and-density.md §8). Building
+    // âââ Keel core ships (Chunk 5) ââââââââââââââââââââââââââââââââââââââââââ
+    // A keel is a core taught to move (docs/mass-and-density.md Â§8). Building
     // a ship binds 1 core + 8 stone hull from STOCKPILE into BUILT. Flight
-    // burns hull mass into the void (1 block per 6 cells — flight feeds the
+    // burns hull mass into the void (1 block per 6 cells â flight feeds the
     // void), so every expedition has a real bill. Out of fuel = stranded.
     // The pilot is autopilot for now (stands in for a Tiny Person pilot).
     type Ship = {
@@ -4769,7 +4858,7 @@ varying float vAoPerVert;\
     const flyShip = (tx: number, tz: number, idx = 0) => {
       const ship = ships[idx];
       if (!ship) return { ok: false, reason: "no ship " + idx };
-      if (ship.fuel < 1) return { ok: false, reason: "stranded — no hull mass left to burn" };
+      if (ship.fuel < 1) return { ok: false, reason: "stranded â no hull mass left to burn" };
       ship.tx = tx;
       ship.tz = tz;
       ship.flying = true;
@@ -4812,7 +4901,7 @@ varying float vAoPerVert;\
           if (ship.fuel < 1) {
             ship.flying = false;
             uiDirty = true;
-            console.log("[tinyworld] ship stranded at", Math.round(ship.x), Math.round(ship.z), "— hull burned out");
+            console.log("[tinyworld] ship stranded at", Math.round(ship.x), Math.round(ship.z), "â hull burned out");
           }
         }
       }
@@ -4831,16 +4920,16 @@ varying float vAoPerVert;\
       }
     };
 
-    // ─── The Return — unstable slugs and bombs (Chunk 5b, §9.4) ───────────
+    // âââ The Return â unstable slugs and bombs (Chunk 5b, Â§9.4) âââââââââââ
     // The press accepts raw matter; the imperfections store strain. A slug is
     // press math with the output flagged unstable instead of stockpiled.
-    // Detonation cascades the slug back down the ladder — 4 raw blocks rain
+    // Detonation cascades the slug back down the ladder â 4 raw blocks rain
     // out per slug, the exact inverse of the compress that made it, so the
     // baseline returns to where it started. The shockwave reuses the
-    // protection law (force = strain/(1+d²) ≥ density) to shake top blocks
+    // protection law (force = strain/(1+dÂ²) â¥ density) to shake top blocks
     // loose as net-zero rescatter: nothing destroyed, everything disordered.
-    // Creatures in radius dissipate (their bound mass returns void → world),
-    // and bombs inside a blast also Return — chains.
+    // Creatures in radius dissipate (their bound mass returns void â world),
+    // and bombs inside a blast also Return â chains.
     type Bomb = { vx: number; vy: number; vz: number; size: number; tier: string; group: any };
     const bombs: Bomb[] = [];
     let detonationsTotal = 0;
@@ -4863,7 +4952,7 @@ varying float vAoPerVert;\
     const makeSlug = (layer: string) => {
       const next = PRESS_LADDER[layer];
       if (!next) return { ok: false, reason: layer + " is not compressible" };
-      if (!pressPersistRef.current || !pressPersistRef.current.built) return { ok: false, reason: "no press built — buildPress() first (" + PRESS_COST_STONE + " stone)" };
+      if (!pressPersistRef.current || !pressPersistRef.current.built) return { ok: false, reason: "no press built â buildPress() first (" + PRESS_COST_STONE + " stone)" };
       const sp = stockpileByLayerRef.current as any;
       const have = sp[layer] || 0;
       if (have < 4) return { ok: false, reason: "need 4 stockpiled " + layer + ", have " + have };
@@ -4876,7 +4965,7 @@ varying float vAoPerVert;\
       queueBlockEvent("compress", 3, "slug_" + layer);
       setLedger({ ...L });
       updateBombUi();
-      console.log("[tinyworld] slug pressed: 4×" + layer + " → 1 unstable " + next);
+      console.log("[tinyworld] slug pressed: 4Ã" + layer + " â 1 unstable " + next);
       return { ok: true, slug: next, slugs: sp["slug_" + next] };
     };
 
@@ -4924,10 +5013,10 @@ varying float vAoPerVert;\
       const strain = size;
       const rMax = 2 + Math.cbrt(size);
 
-      // 1. Decompression — each slug cascades a tier down: 4 raw blocks out.
-      // built → void for the slugs, then spawn 4×size (void → world each);
-      // mint the +3×size count difference exactly like scanNewLand, which
-      // cancels the −3/slug the press took when the slug was made.
+      // 1. Decompression â each slug cascades a tier down: 4 raw blocks out.
+      // built â void for the slugs, then spawn 4Ãsize (void â world each);
+      // mint the +3Ãsize count difference exactly like scanNewLand, which
+      // cancels the â3/slug the press took when the slug was made.
       const down = DOWN_LADDER[tier] || "dirt";
       ledgerMove("built", "void", size, "detonate");
       let spawnedRaw = 0;
@@ -4952,9 +5041,9 @@ varying float vAoPerVert;\
         queueBlockEvent("detonate", mint, "bomb_" + tier);
       }
 
-      // 2. Shockwave — crack blocks within the 3D radius where incident
-      // force ≥ its density; remove + rescatter just outside the radius
-      // (world→void then void→world: net-zero, disorder not destruction).
+      // 2. Shockwave â crack blocks within the 3D radius where incident
+      // force â¥ its density; remove + rescatter just outside the radius
+      // (worldâvoid then voidâworld: net-zero, disorder not destruction).
       const blastR = Math.ceil(Math.sqrt(Math.max(0, strain / 0.25 - 1)));
       let cracked = 0;
       for (let dx = -blastR; dx <= blastR; dx++) {
@@ -4996,8 +5085,8 @@ varying float vAoPerVert;\
         }
       }
 
-      // 3. The Return un-makes the void\'s only ordered things — creatures in
-      // radius dissipate, their bound stolen mass scattering back void→world.
+      // 3. The Return un-makes the void's only ordered things â creatures in
+      // radius dissipate, their bound stolen mass scattering back voidâworld.
       let dissipated = 0, massReturned = 0;
       for (const c of [...voidCreatures]) {
         if (Math.hypot(c.vx - bomb.vx, c.vy - bomb.vy, c.vz - bomb.vz) > blastR + 2) continue;
@@ -5020,7 +5109,7 @@ varying float vAoPerVert;\
         dissipated++;
       }
 
-      // 4. Chain reactions — slugs inside a blast also Return.
+      // 4. Chain reactions â slugs inside a blast also Return.
       let chained = 0;
       for (const other of [...bombs]) {
         if (visited.has(other)) continue;
@@ -5033,11 +5122,11 @@ varying float vAoPerVert;\
       detonationsTotal++;
       setLedger({ ...L });
       updateBombUi();
-      console.log("[tinyworld] RETURN: " + size + "-slug " + tier + " bomb — " + spawnedRaw + " raw " + down + " out, " + cracked + " cracked, " + dissipated + " creatures dissipated, " + chained + " chained");
+      console.log("[tinyworld] RETURN: " + size + "-slug " + tier + " bomb â " + spawnedRaw + " raw " + down + " out, " + cracked + " cracked, " + dissipated + " creatures dissipated, " + chained + " chained");
       return { ok: true, size, tier, raw: spawnedRaw, cracked, dissipated, massReturned, chained };
     };
 
-    // ─── Debug / test harness (window.__tw) ──────────────────────────────
+    // âââ Debug / test harness (window.__tw) ââââââââââââââââââââââââââââââ
     // Lets headless tests (and curious humans) inspect game state, measure
     // walk jitter, teleport, and simulate input without pointer lock.
     // Add ?debug=1 to the URL for an on-screen overlay.
@@ -5068,9 +5157,7 @@ varying float vAoPerVert;\
           "fps " + __twFps +
           " | cam " + camera.position.x.toFixed(2) + "," + camera.position.y.toFixed(2) + "," + camera.position.z.toFixed(2) +
           " | jitter " + (window as any).__tw.jitter().toFixed(4) +
-          (w0 ? "\
-worker " + w0.vx + "," + w0.vz + " " + w0.mode + (w0.plan ? " plan:" + w0.plan.name : "") : "\
-worker: none");
+          (w0 ? "\nworker " + w0.vx + "," + w0.vz + " " + w0.mode + (w0.plan ? " plan:" + w0.plan.name : "") : "\nworker: none");
       }
     };
     (window as any).__tw = {
@@ -5088,7 +5175,7 @@ worker: none");
           distFromCam: Math.hypot(w.worldX - camera.position.x, w.worldZ - camera.position.z),
         })),
       }),
-      // Mean |Δy| per moving frame, in voxel units. Smooth walking ≈ < 0.02;
+      // Mean |Îy| per moving frame, in voxel units. Smooth walking â < 0.02;
       // visible jitter shows up as > 0.1.
       jitter: () => {
         let sum = 0, n = 0;
@@ -5096,7 +5183,7 @@ worker: none");
           const a = __twSamples[i - 1], b = __twSamples[i];
           const horiz = Math.hypot(b.x - a.x, b.z - a.z);
           if (horiz < voxel * 0.01) continue;
-          // Skip teleport-sized discontinuities — they\'re not walk jitter.
+          // Skip teleport-sized discontinuities â they're not walk jitter.
           if (horiz > voxel * 2 || Math.abs(b.y - a.y) > voxel * 3) continue;
           sum += Math.abs(b.y - a.y);
           n += 1;
@@ -5116,6 +5203,20 @@ worker: none");
         const w = workers[0];
         if (!w) return null;
         return (window as any).__tw.teleport(w.vx + 3, w.vz + 3);
+      },
+      // Voice-command goal injection. Replaces every worker's goal with the
+      // spoken text and clears their current plan so the next planner tick
+      // picks up the new goal. Returns the number of workers affected.
+      setGoal: (goal: string) => {
+        if (!goal || typeof goal !== "string") return 0;
+        for (const w of workers) {
+          (w as any).goal = goal;
+          w.plan = null;
+          w.lastPlanFailMs = 0;
+          (w as any).wanderFails = 0;
+          (w as any).stuckPlanRequested = false;
+        }
+        return workers.length;
       },
       simWalk: (on: boolean) => { __twSim.walk = on; },
       press: (code: string, ms = 1000) => {
@@ -5319,7 +5420,7 @@ worker: none");
             }
 
             const lookLerp = Math.min(1, dt * 18);
-            camera.rotation.order = \'YXZ\';
+            camera.rotation.order = 'YXZ';
             camera.rotation.y += (targetLookRef.current.y - camera.rotation.y) * lookLerp;
             camera.rotation.x += (targetLookRef.current.x - camera.rotation.x) * lookLerp;
           }
@@ -5377,7 +5478,7 @@ worker: none");
           const groundY = sampleGround(camera.position.x, camera.position.z, camera.position.y - EYE_HEIGHT, playerR);
           const eye = groundY + EYE_HEIGHT;
           // Off-world detection: is there any scanned column within the body
-          // radius? If not, treat as void — no eye-clamp, gravity drops the
+          // radius? If not, treat as void â no eye-clamp, gravity drops the
           // player past the world edge until the dynamic kill-plane respawns.
           let overWorld = false;
           {
@@ -5402,8 +5503,8 @@ worker: none");
               camera.position.y += velocityYRef.current * dt;
               const g = groundRef.current;
               if (g && camera.position.y < (g.minY - 40) * g.voxel) {
-                // Past the dynamic kill-plane (40 voxels below the world\'s
-                // lowest scanned cell — follows downward scans). Respawn.
+                // Past the dynamic kill-plane (40 voxels below the world's
+                // lowest scanned cell â follows downward scans). Respawn.
                 enterWalkRef.current?.();
               }
             } else if (velocityYRef.current > 0 || camera.position.y > eye + voxel * 0.5) {
@@ -5603,7 +5704,7 @@ worker: none");
       return;
     }
     try {
-      setLoadNote("loading…");
+      setLoadNote("loadingâ¦");
       const saved = await loadWorldToScene(worldId);
       const world = worlds.find((w) => w.id === worldId) || null;
       persistWorldMeta(worldId, world?.name || String(saved.meta?.worldName ?? saved.meta?.sourceName ?? "TinyWorld save"));
@@ -5618,11 +5719,11 @@ worker: none");
   const onSaveSelected = useCallback(async () => {
     const worldId = selectedWorldId || worlds.find((w) => w.hasSavedBlocks)?.id || "";
     if (!worldId) {
-      setLoadNote("no world selected — use Save As");
+      setLoadNote("no world selected â use Save As");
       return;
     }
     try {
-      setLoadNote("saving…");
+      setLoadNote("savingâ¦");
       const world = worlds.find((w) => w.id === worldId) || null;
       await saveCurrentWorld(worldId, world?.name || savedWorldRef.current?.name || "TinyWorld save");
       await fetchWorlds();
@@ -5640,7 +5741,7 @@ worker: none");
   }, [saveAsCurrentWorld]);
 
   const ui = useMemo(() => ({
-    root: { width: "100vw", height: "100vh", background: "#07070f", position: "relative", overflow: "hidden", fontFamily: "\'SF Mono\', monospace" } as React.CSSProperties,
+    root: { width: "100vw", height: "100vh", background: "#07070f", position: "relative", overflow: "hidden", fontFamily: "'SF Mono', monospace" } as React.CSSProperties,
     mount: { width: "100%", height: "100%" } as React.CSSProperties,
     center: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 20 } as React.CSSProperties,
     title: { fontSize: 40, fontWeight: 900, color: "#fff", letterSpacing: 3, margin: 0 } as React.CSSProperties,
@@ -5705,11 +5806,11 @@ worker: none");
     );
   };
 
-  // Matter integrity readout — slim NieR-style indicator.
+  // Matter integrity readout â slim NieR-style indicator.
   // Reads as a quiet field instrument, not a health bar: a thin etched
   // line whose right edge is "eaten" by a faint void-purple gradient as
   // world matter drains. Tiny tabular-nums readout below for the precise
-  // ratio. Color of the held portion warms from ivory → amber → void
+  // ratio. Color of the held portion warms from ivory â amber â void
   // purple as integrity falls, so the indicator goes from "clear sky"
   // to "something is wrong" without ever shouting.
   const MatterReadout = ({ health }: { health: number }) => {
@@ -5753,7 +5854,7 @@ worker: none");
     <div 
       style={ui.root} 
       onTouchStart={(e) => {
-        if (!walking || (e.target as HTMLElement).closest(\'button\') || (e.target as HTMLElement).closest(\'.joystick-zone\')) return;
+        if (!walking || (e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('.joystick-zone')) return;
         if (touchLookRef.current.active) return;
         const touch = e.changedTouches[0];
         touchLookRef.current = { id: touch.identifier, lastX: touch.clientX, lastY: touch.clientY, active: true };
@@ -5812,7 +5913,7 @@ worker: none");
                 so.lock("landscape").catch(() => undefined);
               }
             }
-          } catch { /* silent — fullscreen may be unsupported */ }
+          } catch { /* silent â fullscreen may be unsupported */ }
         }}
         title="Toggle fullscreen"
         aria-label="Toggle fullscreen"
@@ -5892,7 +5993,7 @@ worker: none");
         <div style={ui.center}>
           <p style={ui.label}>Project</p>
           <h1 style={ui.title}>TinyWorld</h1>
-          <p style={ui.sub}>NYC Temperate · weather + terrain + trees</p>
+          <p style={ui.sub}>NYC Temperate Â· weather + terrain + trees</p>
           <label
             style={{
               display: "inline-flex",
@@ -5921,21 +6022,21 @@ worker: none");
                 e.target.value = "";
                 if (!file) return;
 
-                // Dedup: same GLB → existing saved zone, not a fresh build.
-                const baseName = file.name.replace(/\\.(glb|gltf)$/i, "").trim().toLowerCase();
+                // Dedup: same GLB â existing saved zone, not a fresh build.
+                const baseName = file.name.replace(/\.(glb|gltf)$/i, "").trim().toLowerCase();
                 if (baseName) {
                   const refreshed = await fetchWorlds().catch(() => [] as any[]);
                   const pool = (refreshed && refreshed.length ? refreshed : worlds) as WorldRecord[];
                   const candidates = pool.filter((w) => {
                     if (!w.hasSavedBlocks) return false;
                     const wn = (w.name || "").toLowerCase();
-                    return wn === baseName || wn.startsWith(baseName + " ") || wn.startsWith(baseName + " ·");
+                    return wn === baseName || wn.startsWith(baseName + " ") || wn.startsWith(baseName + " Â·");
                   });
                   const existing = candidates.sort((a: any, b: any) =>
                     (b.last_visited ?? b.last_scanned ?? 0) - (a.last_visited ?? a.last_scanned ?? 0)
                   )[0];
                   if (existing) {
-                    setLoadNote(`recognized · loading saved zone`);
+                    setLoadNote(`recognized Â· loading saved zone`);
                     setSelectedWorldId(existing.id);
                     try {
                       await onLoadSelected(existing.id);
@@ -5950,12 +6051,12 @@ worker: none");
                 // Auto-save: tag the world with the current GPS anchor so
                 // future visits to this geo bucket auto-load it.
                 try {
-                  const base = file.name.replace(/\\.(glb|gltf)$/i, "").trim() || "TinyWorld";
-                  const name = `${base} · ${new Date().toLocaleDateString()}`;
+                  const base = file.name.replace(/\.(glb|gltf)$/i, "").trim() || "TinyWorld";
+                  const name = `${base} Â· ${new Date().toLocaleDateString()}`;
                   const target = await createWorldRecord(name);
                   await saveCurrentWorld(target.id, name);
                   await fetchWorlds();
-                  setLoadNote(`saved · auto-loads next time you visit`);
+                  setLoadNote(`saved Â· auto-loads next time you visit`);
                 } catch (err: any) {
                   setLoadNote(`auto-save failed: ${err?.message || err}`);
                 }
@@ -5963,7 +6064,7 @@ worker: none");
             />
           </label>
           <p style={{ ...ui.sub, opacity: 0.55, marginTop: 4 }}>
-            drop a Scaniverse / Polycam mesh export · seeds a fresh tiny world
+            drop a Scaniverse / Polycam mesh export Â· seeds a fresh tiny world
           </p>
           <a
             href="/tinyworld/capture"
@@ -5981,7 +6082,7 @@ worker: none");
             <p style={{ ...ui.sub, opacity: 0.65 }}>
               node: {nodeInfo.city ?? "unknown"} ({nodeInfo.source})
               {nodeInfo.hiddenCount > 0
-                ? ` · ${nodeInfo.hiddenCount} world${nodeInfo.hiddenCount === 1 ? "" : "s"} beyond perception`
+                ? ` Â· ${nodeInfo.hiddenCount} world${nodeInfo.hiddenCount === 1 ? "" : "s"} beyond perception`
                 : ""}
             </p>
           ) : null}
@@ -5993,19 +6094,19 @@ worker: none");
                   setLoadNote("this browser has no geolocation API");
                   return;
                 }
-                setLoadNote("requesting location…");
+                setLoadNote("requesting locationâ¦");
                 navigator.geolocation.getCurrentPosition(
                   (pos) => {
                     const lat = pos.coords.latitude;
                     const lon = pos.coords.longitude;
                     setAnchor({ lat, lon });
-                    setLoadNote("got it — looking for saved worlds…");
+                    setLoadNote("got it â looking for saved worldsâ¦");
                     fetchWorlds({ lat, lon }).catch((e) => {
                       setLoadNote(`fetch failed: ${e?.message || e}`);
                     });
                   },
                   (err) => {
-                    if (err.code === 1) setLoadNote("location denied — enable in Settings › Safari › Location");
+                    if (err.code === 1) setLoadNote("location denied â enable in Settings âº Safari âº Location");
                     else if (err.code === 2) setLoadNote("location unavailable");
                     else if (err.code === 3) setLoadNote("location request timed out");
                     else setLoadNote(`location error: ${err.message}`);
@@ -6059,7 +6160,7 @@ worker: none");
             <button
               onClick={async () => {
                 if (!window.confirm("Wipe ALL saved scans and worlds? This cannot be undone.")) return;
-                setLoadNote("clearing saved scans…");
+                setLoadNote("clearing saved scansâ¦");
                 try {
                   const res = await fetch("/api/tinyworld-worlds", {
                     method: "POST",
@@ -6071,7 +6172,7 @@ worker: none");
                   savedWorldRef.current = null;
                   setSelectedWorldId(null);
                   await fetchWorlds();
-                  setLoadNote("cleared · ready for fresh upload");
+                  setLoadNote("cleared Â· ready for fresh upload");
                 } catch (e) {
                   setLoadNote(`clear failed: ${(e as any)?.message || e}`);
                 }
@@ -6095,7 +6196,7 @@ worker: none");
               <p style={ui.sub}>or load a saved world</p>
               {worlds.filter((w) => w.hasSavedBlocks).map((world) => (
                 <button key={world.id} style={ui.worldBtn} onClick={() => { setSelectedWorldId(world.id); onLoadSelected(world.id); }}>
-                  {world.name} · {(world.savedBlockCount ?? 0).toLocaleString()} blocks
+                  {world.name} Â· {(world.savedBlockCount ?? 0).toLocaleString()} blocks
                 </button>
               ))}
               {loadNote ? <p style={ui.sub}>{loadNote}</p> : null}
@@ -6105,7 +6206,7 @@ worker: none");
       )}
       {(phase === "loading" || phase === "building") && (
         <div style={ui.status}>
-          <p style={ui.tag}>{phase === "loading" ? "Fetching weather…" : "Building tiny world…"}</p>
+          <p style={ui.tag}>{phase === "loading" ? "Fetching weatherâ¦" : "Building tiny worldâ¦"}</p>
           <p style={ui.tagSub}>{phase === "loading" ? "loading Open-Meteo + biome rules" : "worker voxelization + occlusion culling"}</p>
         </div>
       )}
@@ -6131,7 +6232,7 @@ worker: none");
                 </div>
               )}
               {bombUi.slugs > 0 && (
-                <div className="flex items-center gap-1.5 border-l border-white/10 pl-4" title="unstable slugs (press 4 stone → 1 slug)">
+                <div className="flex items-center gap-1.5 border-l border-white/10 pl-4" title="unstable slugs (press 4 stone â 1 slug)">
                   <Zap className="w-4 h-4 text-fuchsia-400" />
                   <span className="text-xs text-white/80 font-medium">{bombUi.slugs}</span>
                 </div>
@@ -6148,10 +6249,10 @@ worker: none");
             )}
             {workerUi && (
               <div className="text-[10px] uppercase tracking-widest mt-0.5" title={workerUi.error || workerUi.plan || workerUi.mode}>
-                <span className="text-white/40">{workerUi.name} · </span>
+                <span className="text-white/40">{workerUi.name} Â· </span>
                 <span className={workerUi.error ? "text-rose-400" : workerUi.mode === "idle" ? "text-amber-300" : "text-emerald-300"}>{workerUi.mode}</span>
-                {workerUi.plan && <span className="text-white/40"> · {workerUi.plan}</span>}
-                {workerUi.error && <span className="text-rose-400"> · {workerUi.error}</span>}
+                {workerUi.plan && <span className="text-white/40"> Â· {workerUi.plan}</span>}
+                {workerUi.error && <span className="text-rose-400"> Â· {workerUi.error}</span>}
               </div>
             )}
           </div>
@@ -6165,7 +6266,7 @@ worker: none");
               </div>
               <div className="flex items-center gap-2 text-white/40 text-[10px]">
                 <Thermometer className="w-3 h-3" />
-                <span>{Math.round(weather?.current?.temperature ?? 22)}°C</span>
+                <span>{Math.round(weather?.current?.temperature ?? 22)}Â°C</span>
                 <Clock className="w-3 h-3 ml-2" />
                 <span className="uppercase">{voidUi.phase}</span>
               </div>
@@ -6178,7 +6279,7 @@ worker: none");
               </button>
               <div className="absolute right-full mr-4 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
                 <span className="text-[10px] text-white/40 bg-black/60 px-2 py-1 rounded border border-white/5 whitespace-nowrap uppercase tracking-widest">
-                  Hold to Expand · 10s
+                  Hold to Expand Â· 10s
                 </span>
               </div>
             </div>
@@ -6217,8 +6318,41 @@ worker: none");
                 </div>
                 <span className="text-[11px] text-white/60 group-hover:text-white uppercase tracking-widest">Capture</span>
               </a>
+
+              <button
+                className="group flex items-center gap-3"
+                onClick={toggleVoice}
+                title={voiceError ? "Voice: " + voiceError : (voiceListening ? "Listening â speak a goal" : "Voice command")}>
+                <div className={"w-10 h-10 rounded-full border flex items-center justify-center transition-colors " + (voiceListening ? "border-amber-300 bg-amber-300/15" : "border-white/20 group-hover:bg-amber-300/15 group-hover:border-amber-300")}>
+                  {voiceListening
+                    ? <Mic className="w-5 h-5 text-amber-200 animate-pulse" />
+                    : <MicOff className="w-5 h-5 text-white/80 group-hover:text-amber-200" />}
+                </div>
+                <span className="text-[11px] text-white/60 group-hover:text-white uppercase tracking-widest">
+                  {voiceListening ? "Listening" : "Voice"}
+                </span>
+              </button>
             </div>
           </div>
+
+          {/* Voice transcript pill */}
+          {(voiceListening || voiceTranscript) && (
+            <div className="pointer-events-none absolute left-6 bottom-24 z-30 max-w-md">
+              <div className="px-3 py-2 rounded-md border border-amber-300/30 bg-black/60 backdrop-blur-sm">
+                <div className="text-[9px] text-amber-200/70 uppercase tracking-widest font-mono">
+                  {voiceListening ? "voice command â villager goal" : "last command"}
+                </div>
+                {voiceTranscript && (
+                  <div className="text-[12px] text-amber-100/95 font-mono mt-0.5">
+                    "{voiceTranscript}"
+                  </div>
+                )}
+                {voiceError && !voiceTranscript && (
+                  <div className="text-[11px] text-red-300/80 font-mono mt-0.5">{voiceError}</div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Action Wheel / Overlay */}
           {targetMode && (
@@ -6226,7 +6360,7 @@ worker: none");
               <Crosshair className={"w-5 h-5 " + (targetMode === "placeBomb" ? "text-rose-300" : "text-cyan-300")} />
               <div className="flex flex-col leading-tight">
                 <span className="text-[11px] uppercase tracking-widest text-white/80">
-                  {targetMode === "placeBomb" ? "Place Bomb — aim & click" : "Fly Ship — aim & click destination"}
+                  {targetMode === "placeBomb" ? "Place Bomb â aim & click" : "Fly Ship â aim & click destination"}
                 </span>
                 <span className="text-[10px] text-white/40">Right-click or ESC to cancel</span>
               </div>
@@ -6337,10 +6471,10 @@ worker: none");
                 <select 
                   value={selectedWorldId} 
                   onChange={(e) => setSelectedWorldId(e.target.value)}>
-                  <option value="">Select world…</option>
+                  <option value="">Select worldâ¦</option>
                   {worlds.map((world) => (
                     <option key={world.id} value={world.id}>
-                      {world.name}{world.hasSavedBlocks ? ` · ${(world.savedBlockCount ?? 0).toLocaleString()}` : ""}
+                      {world.name}{world.hasSavedBlocks ? ` Â· ${(world.savedBlockCount ?? 0).toLocaleString()}` : ""}
                     </option>
                   ))}
                 </select>
@@ -6359,12 +6493,12 @@ worker: none");
           {walkDebug && walkDebugUrlEnabledRef.current && (
             <div className="absolute top-20 left-4 right-4 bg-black/80 text-white text-[10px] font-mono p-2 rounded border border-yellow-400/60 pointer-events-none z-[2000] leading-tight">
               <div className="text-yellow-400 font-bold mb-1">WALK DEBUG</div>
-              <div>path: {walkDebug.path} · placed: {String(walkDebug.placed)}</div>
-              <div>workers: {walkDebug.workers} · ground: {walkDebug.groundSize} · mobile: {String(walkDebug.isMobile)}</div>
+              <div>path: {walkDebug.path} Â· placed: {String(walkDebug.placed)}</div>
+              <div>workers: {walkDebug.workers} Â· ground: {walkDebug.groundSize} Â· mobile: {String(walkDebug.isMobile)}</div>
               <div>spawn: ({walkDebug.spawn.sx.toFixed(1)}, {walkDebug.spawn.sy.toFixed(1)}, {walkDebug.spawn.sz.toFixed(1)})</div>
               <div>prevCam: ({walkDebug.prevCam.x.toFixed(1)}, {walkDebug.prevCam.y.toFixed(1)}, {walkDebug.prevCam.z.toFixed(1)})</div>
               <div>camAfter: ({walkDebug.camAfter.x.toFixed(1)}, {walkDebug.camAfter.y.toFixed(1)}, {walkDebug.camAfter.z.toFixed(1)})</div>
-              <div>vox: {walkDebug.voxel?.toFixed(2)} · eyeH: {walkDebug.eyeH?.toFixed(2)} · surfY: {walkDebug.sampledSurfaceY?.toFixed(2)}</div>
+              <div>vox: {walkDebug.voxel?.toFixed(2)} Â· eyeH: {walkDebug.eyeH?.toFixed(2)} Â· surfY: {walkDebug.sampledSurfaceY?.toFixed(2)}</div>
             </div>
           )}
           {isMobileRef.current && (
@@ -6458,4 +6592,4 @@ worker: none");
     </div>
   );
 }
-' sync_success=True sync_message='Synced 31 routes'
+'
