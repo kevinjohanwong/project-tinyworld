@@ -3195,10 +3195,12 @@ export default function TinyWorld() {
         // Ground re-sync + escape route. Void creatures eating the column
         // beneath a worker leaves w.vy stale (worker visibly floats). Run
         // only between actions to avoid disrupting mid-walk interpolation.
+        // Convention: w.vy = the top occupied block's vy (a Star, spawn,
+        // and findAdjacentWalkableW all use this offset â there is NO +1).
         if (w.mode === "idle" && !w.pickupTarget && !w.placeTarget && !(w as any).buildTarget) {
           const top = colTop(w.vx, w.vz);
           if (top !== null) {
-            if (w.vy !== top + 1) { w.vy = top + 1; w.targetVY = w.vy; }
+            if (w.vy !== top) { w.vy = top; w.targetVY = w.vy; }
           } else {
             // Column under worker is empty â try a neighbor first.
             let stepped = false;
@@ -3206,12 +3208,13 @@ export default function TinyWorld() {
             for (const [dx, dz] of dirs) {
               const t = colTop(w.vx + dx, w.vz + dz);
               if (t === null) continue;
-              w.vx += dx; w.vz += dz; w.vy = t + 1;
+              w.vx += dx; w.vz += dz; w.vy = t;
               w.targetVX = w.vx; w.targetVY = w.vy; w.targetVZ = w.vz;
               stepped = true; break;
             }
             if (!stepped) {
-              // Build escape route â spawn a stockpile block as new ground.
+              // Build escape route â spawn a stockpile block at the
+              // worker's current vy so it becomes the new top under them.
               const sp = stockpileByLayerRef.current as Record<string, number>;
               let lay: string | null = null;
               for (const cand of ["dirt", "grass", "dryGrass", "stone", "snow", "leaves"]) {
@@ -3223,11 +3226,11 @@ export default function TinyWorld() {
                   if (m.userData?.layer === lay && (m.userData?.freeSlots?.length || 0) > 0) { mesh = m; break; }
                 }
                 if (mesh) {
-                  const escY = Math.max(0, w.vy - 1);
+                  const escY = Math.max(0, w.vy);
                   if (spawnBlockInto(mesh, w.vx, escY, w.vz, "worker-escape")) {
                     syncGroundAfterPlace(w.vx, escY, w.vz, lay);
                     ledgerMove("stockpile", "void", 1, "worker-escape", lay, lowestGrade(lay));
-                    w.vy = escY + 1; w.targetVY = w.vy;
+                    w.vy = escY; w.targetVY = w.vy;
                   }
                 }
               }
