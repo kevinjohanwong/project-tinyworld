@@ -1,9 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+route=SpaceRouteResponse(path='/tinyworld', route_type='page', public=True) code='import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { 
+  Wind, Sun, CloudRain, Moon, Zap, Heart, Compass, 
+  Box, Ship, Bomb, Hammer, Cpu, Crosshair, X, 
+  ArrowUpCircle, Info, Save, FolderOpen, Play, 
+  Eye, EyeOff, Thermometer, Clock, Camera, Maximize2, Minimize2
+} from "lucide-react";
 
 const THREE_URL = "https://esm.sh/three@0.165.0";
 const GLTF_URL = "https://esm.sh/three@0.165.0/examples/jsm/loaders/GLTFLoader.js";
 const ORBIT_URL = "https://esm.sh/three@0.165.0/examples/jsm/controls/OrbitControls.js";
 const FP_URL = "https://esm.sh/three@0.165.0/examples/jsm/controls/PointerLockControls.js";
+const COMPOSER_URL = "https://esm.sh/three@0.165.0/examples/jsm/postprocessing/EffectComposer.js";
+const RENDER_PASS_URL = "https://esm.sh/three@0.165.0/examples/jsm/postprocessing/RenderPass.js";
+const SSAO_PASS_URL = "https://esm.sh/three@0.165.0/examples/jsm/postprocessing/SSAOPass.js";
+const BLOOM_PASS_URL = "https://esm.sh/three@0.165.0/examples/jsm/postprocessing/UnrealBloomPass.js";
 
 const NYC = { lat: 40.7128, lon: -74.006, timezone: "America/New_York" };
 const MAX_TRIANGLES = 220_000;
@@ -56,16 +66,16 @@ function voidPhaseNow(): "passive" | "active" | "aggressive" {
 }
 
 const MOVE_MS: Record<string, number> = {
-  leaves: 120,
-  fruit: 80,
-  seed: 100,
-  sapling: 220,
-  snow: 200,
-  grass: 280,
-  dryGrass: 280,
-  wet: 360,
-  dirt: 550,
-  trunks: 1300,
+  leaves: 450,
+  fruit: 350,
+  seed: 400,
+  sapling: 600,
+  snow: 500,
+  grass: 600,
+  dryGrass: 600,
+  wet: 700,
+  dirt: 800,
+  trunks: 1500,
   wall: 3500,
   ceiling: 3500,
   water: Number.POSITIVE_INFINITY,
@@ -97,8 +107,8 @@ const WORKER_CODE = String.raw`
 self.onmessage = async (event) => {
   const { buffer, weather } = event.data;
   try {
-    const THREE = await import('${THREE_URL}');
-    const { GLTFLoader } = await import('${GLTF_URL}');
+    const THREE = await import(\'${THREE_URL}\');
+    const { GLTFLoader } = await import(\'${GLTF_URL}\');
 
     const MAX_TRIANGLES = ${MAX_TRIANGLES};
     const TARGET_DIVS = ${TARGET_DIVS};
@@ -108,18 +118,18 @@ self.onmessage = async (event) => {
 
     const hash2 = (x, z) => (Math.imul(x, 73856093) ^ Math.imul(z, 19349663)) >>> 0;
     const getSeason = (month) => {
-      if (month === 12 || month <= 2) return 'winter';
-      if (month <= 5) return 'spring';
-      if (month <= 8) return 'summer';
-      return 'fall';
+      if (month === 12 || month <= 2) return \'winter\';
+      if (month <= 5) return \'spring\';
+      if (month <= 8) return \'summer\';
+      return \'fall\';
     };
     const season = (weather && weather.season) || getSeason(new Date().getMonth() + 1);
     const rain = !!(weather && weather.modifiers && (weather.modifiers.isRaining || weather.modifiers.rain));
-    const snowLayers = (weather && weather.modifiers && weather.modifiers.snowLayers) || (season === 'winter' ? 1 : 0);
-    const dryGrassPct = (weather && weather.modifiers && weather.modifiers.dryGrassPct) || (season === 'summer' ? 20 : 0);
+    const snowLayers = (weather && weather.modifiers && weather.modifiers.snowLayers) || (season === \'winter\' ? 1 : 0);
+    const dryGrassPct = (weather && weather.modifiers && weather.modifiers.dryGrassPct) || (season === \'summer\' ? 20 : 0);
 
     const gltf = await new Promise((resolve, reject) => {
-      new GLTFLoader().parse(buffer, '', resolve, reject);
+      new GLTFLoader().parse(buffer, \'\', resolve, reject);
     });
     gltf.scene.updateMatrixWorld(true);
 
@@ -131,7 +141,7 @@ self.onmessage = async (event) => {
       if (!node.isMesh || triangles.length >= MAX_TRIANGLES) return;
       const geom = node.geometry.clone();
       geom.applyMatrix4(node.matrixWorld);
-      const pos = geom.getAttribute('position');
+      const pos = geom.getAttribute(\'position\');
       const idx = geom.getIndex();
       const triCount = idx ? idx.count / 3 : Math.floor(pos.count / 3);
       for (let i = 0; i < triCount && triangles.length < MAX_TRIANGLES; i++) {
@@ -229,7 +239,7 @@ self.onmessage = async (event) => {
           const vy = Math.round(y / voxel);
           const vz = Math.round(z / voxel);
           if (upFacing) {
-            const key = vx + ',' + vz;
+            const key = vx + \',\' + vz;
             const prev = floorMap.get(key);
             if (prev === undefined || vy < prev) floorMap.set(key, vy);
           } else if (downFacing) {
@@ -245,13 +255,13 @@ self.onmessage = async (event) => {
     for (let pass = 0; pass < 2; pass++) {
       const additions = [];
       for (const [key, y] of filledFloor.entries()) {
-        const [x, z] = key.split(',').map(Number);
+        const [x, z] = key.split(\',\').map(Number);
         for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const nk = (x + dx) + ',' + (z + dz);
+          const nk = (x + dx) + \',\' + (z + dz);
           if (filledFloor.has(nk)) continue;
           let sum = 0, count = 0;
           for (const [adx, adz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            const ny = filledFloor.get((x + dx + adx) + ',' + (z + dz + adz));
+            const ny = filledFloor.get((x + dx + adx) + \',\' + (z + dz + adz));
             if (ny !== undefined) { sum += ny; count += 1; }
           }
           additions.push([nk, count ? Math.round(sum / count) : y]);
@@ -266,12 +276,12 @@ self.onmessage = async (event) => {
     for (let pass = 0; pass < 2; pass++) {
       const smoothed = new Map();
       for (const [key, y] of filledFloor.entries()) {
-        const [x, z] = key.split(',').map(Number);
+        const [x, z] = key.split(\',\').map(Number);
         const samples = [y];
         for (let dx = -1; dx <= 1; dx++) {
           for (let dz = -1; dz <= 1; dz++) {
             if (!dx && !dz) continue;
-            const ny = filledFloor.get((x + dx) + ',' + (z + dz));
+            const ny = filledFloor.get((x + dx) + \',\' + (z + dz));
             if (ny !== undefined) samples.push(ny);
           }
         }
@@ -301,7 +311,7 @@ self.onmessage = async (event) => {
     // scan noise and are dropped entirely.
     const wallCols = new Map();
     for (const p of wall) {
-      const k = p[0] + ',' + p[2];
+      const k = p[0] + \',\' + p[2];
       let col = wallCols.get(k);
       if (!col) { col = { minY: p[1], maxY: p[1], count: 0 }; wallCols.set(k, col); }
       if (p[1] < col.minY) col.minY = p[1];
@@ -311,7 +321,7 @@ self.onmessage = async (event) => {
     const solidWall = [];
     for (const [k, col] of wallCols) {
       if (col.count < 3) continue;
-      const [x, z] = k.split(',').map(Number);
+      const [x, z] = k.split(\',\').map(Number);
       let base = col.minY;
       const floorY = filledFloor.get(k);
       if (floorY !== undefined && floorY < base) base = floorY + 1;
@@ -324,7 +334,7 @@ self.onmessage = async (event) => {
     // Collapse ceiling noise to one clean voxel per column at the median height.
     const ceilCols = new Map();
     for (const p of ceiling) {
-      const k = p[0] + ',' + p[2];
+      const k = p[0] + \',\' + p[2];
       let arr = ceilCols.get(k);
       if (!arr) { arr = []; ceilCols.set(k, arr); }
       arr.push(p[1]);
@@ -341,7 +351,7 @@ self.onmessage = async (event) => {
       for (const [y, count] of histogram) if (count > domCount) { domY = y; domCount = count; }
       const snapCeil = domCount >= ceilCols.size * 0.5;
       for (const [k, ys] of ceilCols) {
-        const [x, z] = k.split(',').map(Number);
+        const [x, z] = k.split(\',\').map(Number);
         const med = ys[Math.floor(ys.length / 2)];
         const y = snapCeil && Math.abs(med - domY) <= 2 ? domY : med;
         flatCeil.push([x, y, z]);
@@ -372,7 +382,7 @@ self.onmessage = async (event) => {
 
     let fx0 = Infinity, fx1 = -Infinity, fz0 = Infinity, fz1 = -Infinity;
     for (const key of filledFloor.keys()) {
-      const [x, z] = key.split(',').map(Number);
+      const [x, z] = key.split(\',\').map(Number);
       if (x < fx0) fx0 = x;
       if (x > fx1) fx1 = x;
       if (z < fz0) fz0 = z;
@@ -382,9 +392,9 @@ self.onmessage = async (event) => {
     const minTreeSpacing = Math.max(3, Math.floor(floorSpan / 26));
     const treeCandidates = [];
     for (const [key, y] of filledFloor.entries()) {
-      const [x, z] = key.split(',').map(Number);
+      const [x, z] = key.split(\',\').map(Number);
       const h = hash2(x, z);
-      if ((h % 1000) < Math.round(((season === 'spring' ? 0.22 : season === 'summer' ? 0.16 : 0.1) * 1000))) {
+      if ((h % 1000) < Math.round(((season === \'spring\' ? 0.22 : season === \'summer\' ? 0.16 : 0.1) * 1000))) {
         treeCandidates.push({ x, z, y, h });
       }
     }
@@ -395,7 +405,7 @@ self.onmessage = async (event) => {
       if (chosenTrees.length >= MAX_TREES) break;
       const gx = Math.floor(cand.x / minTreeSpacing);
       const gz = Math.floor(cand.z / minTreeSpacing);
-      const cellKey = gx + ',' + gz;
+      const cellKey = gx + \',\' + gz;
       if (treeOccupied.has(cellKey)) continue;
       treeOccupied.add(cellKey);
       chosenTrees.push(cand);
@@ -415,20 +425,20 @@ self.onmessage = async (event) => {
     {
       const queue = [];
       for (const key of filledFloor.keys()) {
-        const parts = key.split(',');
+        const parts = key.split(\',\');
         const x = Number(parts[0]), z = Number(parts[1]);
         let isEdge = false;
         for (const d of neighbors4) {
-          if (!filledFloor.has((x + d[0]) + ',' + (z + d[1]))) { isEdge = true; break; }
+          if (!filledFloor.has((x + d[0]) + \',\' + (z + d[1]))) { isEdge = true; break; }
         }
         if (isEdge) { distToEdge.set(key, 0); queue.push([x, z]); }
       }
       let head = 0;
       while (head < queue.length) {
         const cur = queue[head++];
-        const dHere = distToEdge.get(cur[0] + ',' + cur[1]);
+        const dHere = distToEdge.get(cur[0] + \',\' + cur[1]);
         for (const d of neighbors4) {
-          const nk = (cur[0] + d[0]) + ',' + (cur[1] + d[1]);
+          const nk = (cur[0] + d[0]) + \',\' + (cur[1] + d[1]);
           if (filledFloor.has(nk) && !distToEdge.has(nk)) {
             distToEdge.set(nk, dHere + 1);
             queue.push([cur[0] + d[0], cur[1] + d[1]]);
@@ -442,7 +452,7 @@ self.onmessage = async (event) => {
     // Underside: inverted-cone mass — deepest at the CENTER, tapering to thin rim,
     // plus deep hanging "taproots" near the core (Laputa style)
     for (const [key, floorY] of filledFloor) {
-      const parts = key.split(',');
+      const parts = key.split(\',\');
       const x = Number(parts[0]), z = Number(parts[1]);
       const dist = distToEdge.get(key) || 0;
       const t = dist / maxEdgeDist;
@@ -460,7 +470,7 @@ self.onmessage = async (event) => {
     // Pools are CARVED INTO the floor (sunken), not stacked on top.
     const poolSeeds = [];
     for (const [key, y] of filledFloor.entries()) {
-      const [x, z] = key.split(',').map(Number);
+      const [x, z] = key.split(\',\').map(Number);
       const h = hash2(x, z);
       const exposed = openSides.get(key) ?? 4;
       const basinChance = rain ? 0.12 : 0.07;
@@ -478,7 +488,7 @@ self.onmessage = async (event) => {
       let cells = 0;
       while (queue.length) {
         const [x, z, dist] = queue.shift();
-        const k = x + ',' + z;
+        const k = x + \',\' + z;
         if (seen.has(k) || dist > seed.r) continue;
         seen.add(k);
         if (!filledFloor.has(k)) continue;
@@ -500,12 +510,12 @@ self.onmessage = async (event) => {
     }
 
     for (const [key, y] of filledFloor.entries()) {
-      const [x, z] = key.split(',').map(Number);
-      if (poolTaken.has(x + ',' + z)) continue;
+      const [x, z] = key.split(\',\').map(Number);
+      if (poolTaken.has(x + \',\' + z)) continue;
       const h = hash2(x, z);
-      const isSummerDry = season === 'summer' && (h % 100) < dryGrassPct;
-      const isWet = rain && (h % 100) < 35;
-      if (season === 'winter') {
+      const isSummerDry = season === \'summer\' && (h % 100) < dryGrassPct;
+      const isWet = false; // rain puddles disabled — confusing as "WET" layer in mining HUD
+      if (season === \'winter\') {
         for (let i = 0; i < snowLayers; i++) snow.push([x, y + 1 + i, z]);
       } else if (isWet) {
         wetOverlay.push([x, y + 1, z]);
@@ -521,7 +531,7 @@ self.onmessage = async (event) => {
       const deduped = [];
       for (let i = 0; i < layer.length; i++) {
         const p = layer[i];
-        const k = p[0] + ',' + p[1] + ',' + p[2];
+        const k = p[0] + \',\' + p[1] + \',\' + p[2];
         if (seen.has(k) || occupied.has(k)) continue;
         seen.add(k);
         occupied.add(k);
@@ -540,7 +550,7 @@ self.onmessage = async (event) => {
         let exposed = false;
         for (let j = 0; j < dirs.length; j++) {
           const d = dirs[j];
-          if (!occupied.has((p[0] + d[0]) + ',' + (p[1] + d[1]) + ',' + (p[2] + d[2]))) { exposed = true; break; }
+          if (!occupied.has((p[0] + d[0]) + \',\' + (p[1] + d[1]) + \',\' + (p[2] + d[2]))) { exposed = true; break; }
         }
         if (exposed) {
           visible[name].push(p[0], p[1], p[2]);
@@ -560,7 +570,7 @@ self.onmessage = async (event) => {
     }
     for (const [name, arr] of Object.entries(hidden)) {
       const typed = new Int32Array(arr);
-      buffers['hidden_' + name] = typed.buffer;
+      buffers[\'hidden_\' + name] = typed.buffer;
       transfers.push(typed.buffer);
     }
 
@@ -569,7 +579,7 @@ self.onmessage = async (event) => {
     {
       let i = 0;
       for (const [key, y] of filledFloor.entries()) {
-        const [x, z] = key.split(',').map(Number);
+        const [x, z] = key.split(\',\').map(Number);
         groundArr[i++] = x;
         groundArr[i++] = z;
         groundArr[i++] = y;
@@ -717,9 +727,122 @@ function estimateCatchUp(world: WorldRecord | null | undefined, state: any, bloc
   return { elapsedHours, voidLoss, growth, cycles, net };
 }
 
+const Joystick = ({ onMove, onStop }: { onMove: (x: number, y: number) => void, onStop: () => void }) => {
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const baseRef = useRef<HTMLDivElement>(null);
+  const activeTouchId = useRef<number | null>(null);
+
+  const processTouch = (clientX: number, clientY: number) => {
+    if (!baseRef.current) return;
+    const rect = baseRef.current.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dx = clientX - cx;
+    const dy = clientY - cy;
+    const dist = Math.hypot(dx, dy);
+    const max = rect.width / 2;
+    const deadZone = max * 0.15;
+
+    if (dist < deadZone) {
+      setPos({ x: 0, y: 0 });
+      onMove(0, 0);
+    } else {
+      const clampedDist = Math.min(dist, max);
+      const dirX = dx / dist;
+      const dirY = dy / dist;
+      setPos({ x: dirX * clampedDist, y: dirY * clampedDist });
+      const effectiveRadius = max - deadZone;
+      const normalized = (clampedDist - deadZone) / effectiveRadius;
+      onMove(dirX * normalized, dirY * normalized);
+    }
+  };
+
+  const stop = useCallback(() => {
+    activeTouchId.current = null;
+    setPos({ x: 0, y: 0 });
+    onMove(0, 0);
+    onStop();
+  }, [onMove, onStop]);
+
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
+
+  useEffect(() => {
+    const handleGlobalEnd = (e: TouchEvent) => {
+      if (activeTouchId.current === null) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === activeTouchId.current) {
+          stopRef.current();
+          break;
+        }
+      }
+    };
+    const handleVis = () => { if (document.hidden) stopRef.current(); };
+    window.addEventListener(\'touchend\', handleGlobalEnd);
+    window.addEventListener(\'touchcancel\', handleGlobalEnd);
+    document.addEventListener(\'visibilitychange\', handleVis);
+    return () => {
+      window.removeEventListener(\'touchend\', handleGlobalEnd);
+      window.removeEventListener(\'touchcancel\', handleGlobalEnd);
+      document.removeEventListener(\'visibilitychange\', handleVis);
+    };
+  }, []);
+
+  return (
+    <div 
+      ref={baseRef}
+      className="joystick-zone w-28 h-28 rounded-full bg-white/5 border border-white/10 flex items-center justify-center relative touch-none pointer-events-auto"
+      onTouchStart={(e) => {
+        if (activeTouchId.current !== null) return;
+        const touch = e.changedTouches[0];
+        activeTouchId.current = touch.identifier;
+        processTouch(touch.clientX, touch.clientY);
+      }}
+      onTouchMove={(e) => {
+        if (activeTouchId.current === null) return;
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const touch = e.changedTouches[i];
+          if (touch.identifier === activeTouchId.current) {
+            processTouch(touch.clientX, touch.clientY);
+            break;
+          }
+        }
+      }}
+      onTouchEnd={(e) => {
+        if (activeTouchId.current === null) return;
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const touch = e.changedTouches[i];
+          if (touch.identifier === activeTouchId.current) {
+            stop();
+            break;
+          }
+        }
+      }}
+      onTouchCancel={(e) => {
+        if (activeTouchId.current === null) return;
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const touch = e.changedTouches[i];
+          if (touch.identifier === activeTouchId.current) {
+            stop();
+            break;
+          }
+        }
+      }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div 
+        className="w-10 h-10 rounded-full bg-white/20 border border-white/20"
+        style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
+      />
+    </div>
+  );
+};
+
 export default function TinyWorld() {
   const mountRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<any>(null);
+  const serverWorkersRef = useRef<any[]>([]);
+  const composerRef = useRef<any>(null);
   const cameraRef = useRef<any>(null);
   const orbitRef = useRef<any>(null);
   const fpRef = useRef<any>(null);
@@ -727,7 +850,7 @@ export default function TinyWorld() {
   const keysRef = useRef<Record<string, boolean>>({});
   const enterWalkRef = useRef<() => void>(() => {});
   const workerUrlRef = useRef<string>("");
-  const groundRef = useRef<{ map: Map<string, number>; voxel: number; cx: number; cz: number } | null>(null);
+  const groundRef = useRef<{ map: Map<string, number>; voxel: number; cx: number; cz: number; minY: number } | null>(null);
   const velocityYRef = useRef(0);
   const carryRef = useRef<CarryState | null>(null);
   const holdTimerRef = useRef<number | null>(null);
@@ -738,6 +861,11 @@ export default function TinyWorld() {
   const [phase, setPhase] = useState<"idle" | "loading" | "building" | "ready">("idle");
   const [blocks, setBlocks] = useState(0);
   const [walking, setWalking] = useState(false);
+  const [walkDebug, setWalkDebug] = useState<any>(null);
+  const walkDebugUrlEnabledRef = useRef(false);
+  if (typeof window !== "undefined" && !walkDebugUrlEnabledRef.current) {
+    walkDebugUrlEnabledRef.current = new URLSearchParams(window.location.search).get("walkdebug") === "1";
+  }
   const [weather, setWeather] = useState<Weather | null>(null);
   const [xray, setXray] = useState(true);
   const [worlds, setWorlds] = useState<WorldRecord[]>([]);
@@ -756,7 +884,7 @@ export default function TinyWorld() {
   // ─── Conservation ledger ──────────────────────────────────────────────
   // Single law: world + stockpile + built + void === baseline, always.
   // Blocks are never created or destroyed — they move between pools. VOID
-  // doubles as the world's reservoir: organic growth draws from it, decay
+  // doubles as the world\'s reservoir: organic growth draws from it, decay
   // returns to it. Every move is queued as a block_event and flushed in
   // batches to /api/tinyworld-worlds {action:"logEvents"}.
   type LedgerPool = "world" | "stockpile" | "built" | "void";
@@ -769,6 +897,7 @@ export default function TinyWorld() {
   const blockGradesRef = useRef<Map<string, Grade>>(new Map());
   const scanSecondsRef = useRef(12);
   const pressPersistRef = useRef<{ built: boolean; vx: number; vz: number } | null>(null);
+  const builtStructuresRef = useRef<Array<{ type: string; vx: number; vz: number; layer: string; topY: number; footprint: Array<{ dx: number; dz: number }>; builtMs: number }>>([]);
   const pendingEventsRef = useRef<Map<string, number>>(new Map());
   const lastLedgerUiRef = useRef(0);
   const [ledger, setLedger] = useState({ world: 0, stockpile: 0, built: 0, void: 0, baseline: 0 });
@@ -777,6 +906,31 @@ export default function TinyWorld() {
   const [pressUi, setPressUi] = useState({ built: false, queued: 0, refined: 0 });
   const [shipUi, setShipUi] = useState({ count: 0, flying: 0 });
   const [bombUi, setBombUi] = useState({ slugs: 0, bombs: 0, detonations: 0 });
+  const [workerUi, setWorkerUi] = useState<{ name: string; mode: string; plan: string | null; error: string | null } | null>(null);
+  const [targetMode, setTargetMode] = useState<null | "placeBomb" | "flyShip">(null);
+  const targetModeRef = useRef<null | "placeBomb" | "flyShip">(null);
+  targetModeRef.current = targetMode;
+  const [showSave, setShowSave] = useState(false);
+  const [showActions, setShowActions] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const joystickRef = useRef({ x: 0, y: 0, active: false });
+  const lookJoystickRef = useRef({ x: 0, y: 0, active: false });
+  const touchLookRef = useRef({ id: -1, lastX: 0, lastY: 0, active: false });
+  const mobileActionsRef = useRef({ jump: false, action: false, eat: false });
+  const walkingRef = useRef(false);
+  const isMobileRef = useRef(false);
+  const targetLookRef = useRef({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const checkMobile = () => {
+      const mobile = \'ontouchstart\' in window || navigator.maxTouchPoints > 0;
+      setIsMobile(mobile);
+      isMobileRef.current = mobile;
+    };
+    checkMobile();
+    window.addEventListener(\'resize\', checkMobile);
+    return () => window.removeEventListener(\'resize\', checkMobile);
+  }, []);
 
   const queueBlockEvent = useCallback((kind: string, count: number, source: string) => {
     const key = kind + "|" + source;
@@ -873,16 +1027,29 @@ export default function TinyWorld() {
   useEffect(() => {
     let alive = true;
     if (typeof navigator !== "undefined" && navigator.geolocation) {
+      const params = new URLSearchParams(window.location.search);
+      const respectOverride = params.get("nodeLat") && params.get("nodeLon");
+      const noGps = params.get("nogps") === "1";
+      if (respectOverride || noGps) {
+        // Skip the browser prompt entirely when an override is forcing the node.
+        if (!respectOverride) setAnchor({ lat: NYC.lat, lon: NYC.lon });
+        return () => { alive = false; };
+      }
       navigator.geolocation.getCurrentPosition(
         (position) => {
           if (!alive) return;
-          setAnchor({ lat: position.coords.latitude, lon: position.coords.longitude });
+          const lat = position.coords.latitude;
+          const lon = position.coords.longitude;
+          setAnchor({ lat, lon });
+          // Re-fetch the worlds list with real GPS coords so the API reports
+          // nodeSource="gps" and the auto-load gate downstream can fire.
+          fetchWorldsRef.current?.({ lat, lon }).catch(() => undefined);
         },
         () => {
           if (!alive) return;
           setAnchor({ lat: NYC.lat, lon: NYC.lon });
         },
-        { enableHighAccuracy: false, timeout: 3500, maximumAge: 300000 },
+        { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 },
       );
     }
     return () => {
@@ -890,14 +1057,36 @@ export default function TinyWorld() {
     };
   }, []);
 
-  const fetchWorlds = useCallback(async () => {
-    const res = await fetch(`/api/tinyworld-worlds`, { headers: { Accept: "application/json" } });
+  const fetchWorldsRef = useRef<((gps?: { lat: number; lon: number }) => Promise<WorldRecord[]>) | null>(null);
+
+  const fetchWorlds = useCallback(async (gps?: { lat: number; lon: number }) => {
+    // Forward nodeLat/nodeLon URL params so the debug override seen by
+    // the API also routes the picker — useful on VPN/coarse-geo carriers
+    // and for testing from a non-NYC IP.
+    const u = new URL("/api/tinyworld-worlds", window.location.origin);
+    const here = new URLSearchParams(window.location.search);
+    const nLat = here.get("nodeLat");
+    const nLon = here.get("nodeLon");
+    if (nLat) u.searchParams.set("nodeLat", nLat);
+    if (nLon) u.searchParams.set("nodeLon", nLon);
+    // Browser GPS → lat/lon query params; API resolves these as nodeSource="gps".
+    if (gps && Number.isFinite(gps.lat) && Number.isFinite(gps.lon)) {
+      u.searchParams.set("lat", String(gps.lat));
+      u.searchParams.set("lon", String(gps.lon));
+    }
+    const res = await fetch(u.toString(), { headers: { Accept: "application/json" } });
     const data = await res.json();
     if (data?.ok && Array.isArray(data.worlds)) {
       if (data.node) setNodeInfo({ source: data.node.source, city: data.node.city, hiddenCount: data.hiddenCount ?? 0 });
-      setWorlds(data.worlds);
-      setSelectedWorldId((current) => current || data.worlds.find((world: WorldRecord) => world.hasSavedBlocks)?.id || data.worlds[0]?.id || "");
-      return data.worlds as WorldRecord[];
+      // GLB upload is the MVP capture path. Whitelist only worlds whose name
+      // matches a known GLB-import pattern; everything else (pre-seeded test
+      // worlds, old geometric scans) is hidden. Override with ?showGeometric=1.
+      const _showAll = !!new URLSearchParams(window.location.search).get("showGeometric");
+      const _glbPattern = /^(Scaniverse|Polycam|GLB Upload|LiDAR Scan)/i;
+      const _glbOnly = _showAll ? data.worlds : data.worlds.filter((w: WorldRecord) => _glbPattern.test(w.name || ""));
+      setWorlds(_glbOnly);
+      setSelectedWorldId((current) => current || _glbOnly.find((world: WorldRecord) => world.hasSavedBlocks)?.id || _glbOnly[0]?.id || "");
+      return _glbOnly as WorldRecord[];
     }
     setWorlds([]);
     setSelectedWorldId("");
@@ -905,8 +1094,61 @@ export default function TinyWorld() {
   }, []);
 
   useEffect(() => {
+    fetchWorldsRef.current = fetchWorlds;
+  }, [fetchWorlds]);
+
+  useEffect(() => {
     fetchWorlds().catch(() => undefined);
   }, [fetchWorlds]);
+
+  const autoLoadRef = useRef(false);
+  useEffect(() => {
+    if (autoLoadRef.current) return;
+    if (typeof window === "undefined") return;
+    const wid = new URLSearchParams(window.location.search).get("world");
+    if (!wid) return;
+    autoLoadRef.current = true;
+    setSelectedWorldId(wid);
+    setLoadNote("loading captured world…");
+    // Defer so the scene refs settle before the build call.
+    const t = setTimeout(() => {
+      onLoadSelected(wid).catch((e) => {
+        setLoadNote(`load failed: ${e?.message || e}`);
+        autoLoadRef.current = false;
+      });
+    }, 50);
+    return () => clearTimeout(t);
+  }, []);
+
+  // Auto-load most-recent saved world at GPS tier: requires the browser to
+  // have shared real coordinates so we know we\'re physically at the save.
+  // Bypass with ?noauto=1.
+  useEffect(() => {
+    if (autoLoadRef.current) return;
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("noauto") === "1") return;
+    if (params.get("world")) return;
+    if (phase !== "idle") return;
+    if (!nodeInfo || nodeInfo.source !== "gps") return;
+    const savedWorlds = worlds.filter((w) => w.hasSavedBlocks);
+    if (savedWorlds.length === 0) return;
+    // Prefer the most recently visited save in this geo bucket.
+    const best = savedWorlds.slice().sort((a: any, b: any) =>
+      (b.last_visited ?? b.last_scanned ?? 0) - (a.last_visited ?? a.last_scanned ?? 0)
+    )[0];
+    if (!best) return;
+    autoLoadRef.current = true;
+    setSelectedWorldId(best.id);
+    setLoadNote(`auto-loading ${best.name} (saved here)`);
+    const t = setTimeout(() => {
+      onLoadSelected(best.id).catch((e) => {
+        setLoadNote(`auto-load failed: ${e?.message || e}`);
+        autoLoadRef.current = false;
+      });
+    }, 50);
+    return () => clearTimeout(t);
+  }, [worlds, nodeInfo, phase]);
 
   const fetchWeather = useCallback(async () => {
     const params = new URLSearchParams({ lat: String(NYC.lat), lon: String(NYC.lon), timezone: NYC.timezone });
@@ -1052,16 +1294,24 @@ export default function TinyWorld() {
     velocityYRef.current = 0;
     setPhase("loading");
 
-    const [THREE, orbitMod, fpMod, weatherData] = await Promise.all([
+    const [THREE, orbitMod, fpMod, composerMod, renderPassMod, ssaoPassMod, bloomPassMod, weatherData] = await Promise.all([
       import(THREE_URL),
       import(ORBIT_URL),
       import(FP_URL),
+      import(COMPOSER_URL),
+      import(RENDER_PASS_URL),
+      import(SSAO_PASS_URL),
+      import(BLOOM_PASS_URL),
       fetchWeather(),
     ]);
     const gltfMod = await import(GLTF_URL);
     const { GLTFLoader } = gltfMod as any;
     const { OrbitControls } = orbitMod as any;
     const { PointerLockControls } = fpMod as any;
+    const { EffectComposer } = composerMod as any;
+    const { RenderPass } = renderPassMod as any;
+    const { SSAOPass } = ssaoPassMod as any;
+    const { UnrealBloomPass } = bloomPassMod as any;
 
     let result: any;
     if (source instanceof File) {
@@ -1113,8 +1363,62 @@ export default function TinyWorld() {
     setSatiation(satiationRef.current);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(PAL.bg);
-    scene.fog = new THREE.FogExp2(PAL.bg, 0.012);
+
+    // ── Ambient lighting system: 8-keyframe TOD palette (Project-Gaia inspired).
+    // Continuous lerp by hour+minute so dawn/dusk get proper transition tones
+    // instead of snapping. Each keyframe is spaced 3h apart, wrapping 21→00.
+    const KEYFRAMES = [
+      // 0 — midnight (00:00) — deep void purple
+      { bg: 0x07070f, fog: 0x0a0816, fogD: 0.020, sun: 0x4a5078, sunI: 0.55, hemiS: 0x2a3268, hemiG: 0x140820, hemiI: 1.00, amb: 0x4a5878, ambI: 0.78, rim: 0xff5fbd, rimI: 1.00 },
+      // 1 — predawn (03:00) — cool first hint of blue
+      { bg: 0x0c0a18, fog: 0x100c24, fogD: 0.019, sun: 0x6a78a8, sunI: 0.95, hemiS: 0x3a4878, hemiG: 0x1a1028, hemiI: 1.20, amb: 0x5868a0, ambI: 0.88, rim: 0xc060e0, rimI: 1.00 },
+      // 2 — dawn (06:00) — warm violet bleeding into cream
+      { bg: 0x1f1a2e, fog: 0x2a2440, fogD: 0.016, sun: 0xffb878, sunI: 2.00, hemiS: 0xffc8a0, hemiG: 0x3a2540, hemiI: 1.80, amb: 0xa8a0c8, ambI: 1.00, rim: 0x9c6fff, rimI: 0.90 },
+      // 3 — golden morning (09:00) — high warm sun, blue sky
+      { bg: 0x18203a, fog: 0x202c4a, fogD: 0.013, sun: 0xffd89a, sunI: 2.80, hemiS: 0xeed8b8, hemiG: 0x6a4a3a, hemiI: 2.05, amb: 0xa8b0c8, ambI: 0.95, rim: 0xb0d0ff, rimI: 0.75 },
+      // 4 — midday (12:00) — neutral balanced
+      { bg: 0x0a0e1e, fog: 0x0e1430, fogD: 0.010, sun: 0xfff0dd, sunI: 3.00, hemiS: 0xbdd4ff, hemiG: 0x8a6f50, hemiI: 2.20, amb: 0x9aa8bc, ambI: 0.90, rim: 0xb0d0ff, rimI: 0.70 },
+      // 5 — golden afternoon (15:00) — warming up, magenta creeping
+      { bg: 0x1a1428, fog: 0x281a30, fogD: 0.013, sun: 0xffc890, sunI: 2.80, hemiS: 0xf5c8a0, hemiG: 0x7a4830, hemiI: 2.05, amb: 0xb8a8b8, ambI: 1.00, rim: 0xc080ff, rimI: 0.85 },
+      // 6 — dusk (18:00) — coral sun, magenta horizon
+      { bg: 0x180c1f, fog: 0x251030, fogD: 0.016, sun: 0xff8866, sunI: 2.40, hemiS: 0xff9d8f, hemiG: 0x4a1a3f, hemiI: 1.85, amb: 0xb89db8, ambI: 1.10, rim: 0x9c5fff, rimI: 1.00 },
+      // 7 — twilight (21:00) — purple wash, pink rim hint
+      { bg: 0x100820, fog: 0x180a28, fogD: 0.018, sun: 0x8a5fa0, sunI: 1.50, hemiS: 0x6a4878, hemiG: 0x2a1030, hemiI: 1.50, amb: 0x8060a0, ambI: 1.00, rim: 0xff5fbd, rimI: 1.05 },
+    ];
+    const _lerpN = (a: number, b: number, t: number) => a + (b - a) * t;
+    const _lerpHex = (a: number, b: number, t: number) => {
+      const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+      const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+      return (Math.round(_lerpN(ar, br, t)) << 16) | (Math.round(_lerpN(ag, bg, t)) << 8) | Math.round(_lerpN(ab, bb, t));
+    };
+    function paletteAt(hour24: number) {
+      const kf = ((hour24 % 24) / 3);
+      const a = Math.floor(kf) % 8;
+      const b = (a + 1) % 8;
+      const t = kf - Math.floor(kf);
+      const A = KEYFRAMES[a], B = KEYFRAMES[b];
+      return {
+        bg: _lerpHex(A.bg, B.bg, t), fog: _lerpHex(A.fog, B.fog, t), fogD: _lerpN(A.fogD, B.fogD, t),
+        sun: _lerpHex(A.sun, B.sun, t), sunI: _lerpN(A.sunI, B.sunI, t),
+        hemiS: _lerpHex(A.hemiS, B.hemiS, t), hemiG: _lerpHex(A.hemiG, B.hemiG, t), hemiI: _lerpN(A.hemiI, B.hemiI, t),
+        amb: _lerpHex(A.amb, B.amb, t), ambI: _lerpN(A.ambI, B.ambI, t),
+        rim: _lerpHex(A.rim, B.rim, t), rimI: _lerpN(A.rimI, B.rimI, t),
+      };
+    }
+    const _todToHour: Record<string, number> = { night: 0, dawn: 6, day: 12, dusk: 18 };
+    const _hourStr = new Date().toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: "America/New_York" });
+    const _minStr = new Date().toLocaleString("en-US", { minute: "numeric", timeZone: "America/New_York" });
+    const _h = parseInt(_hourStr, 10) || 12;
+    const _m = parseInt(_minStr, 10) || 0;
+    const _todOv = (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("tod") : null);
+    const _hourNow = (_todOv && _todOv in _todToHour) ? _todToHour[_todOv] : (_h + _m / 60);
+    const tod: "dawn" | "day" | "dusk" | "night" =
+      _todOv && ["dawn","day","dusk","night"].includes(_todOv) ? (_todOv as any) :
+      (_h < 6 ? "night" : _h < 9 ? "dawn" : _h < 17 ? "day" : _h < 20 ? "dusk" : "night");
+    const tp = paletteAt(_hourNow);
+
+    scene.background = new THREE.Color(tp.bg);
+    scene.fog = new THREE.FogExp2(tp.fog, tp.fogD);
 
     const W = innerWidth;
     const H = innerHeight;
@@ -1127,22 +1431,67 @@ export default function TinyWorld() {
     renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
     renderer.setSize(W, H);
     renderer.shadowMap.enabled = false;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
     rendererRef.current = renderer;
     mountRef.current!.appendChild(renderer.domElement);
 
-    scene.add(new THREE.AmbientLight(0x9aa8bc, 0.9));
-    const hemi = new THREE.HemisphereLight(0xbdd4ff, 0x8a6f50, 2.4);
+    const composer = new EffectComposer(renderer);
+    const renderPass = new RenderPass(scene, camera);
+    composer.addPass(renderPass);
+
+    const ssaoPass = new SSAOPass(scene, camera, W, H);
+    ssaoPass.kernelRadius = 24;
+    ssaoPass.minDistance = 0.0008;
+    ssaoPass.maxDistance = 0.04;
+    composer.addPass(ssaoPass);
+
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(W, H), 0.45, 0.5, 0.78);
+    composer.addPass(bloomPass);
+
+    composerRef.current = composer;
+
+    scene.add(new THREE.AmbientLight(tp.amb, tp.ambI));
+    const hemi = new THREE.HemisphereLight(tp.hemiS, tp.hemiG, tp.hemiI);
     scene.add(hemi);
-    const sun = new THREE.DirectionalLight(season === "winter" ? 0xc8d8ff : 0xfff0dd, 3.4);
+    const sun = new THREE.DirectionalLight(season === "winter" ? 0xc8d8ff : tp.sun, tp.sunI);
     sun.position.set(10, 18, 8);
     sun.castShadow = true;
     scene.add(sun);
-    const fill = new THREE.DirectionalLight(0x23304f, 0.8);
+    const fill = new THREE.DirectionalLight(0x23304f, 0.6);
     fill.position.set(-8, 4, -10);
     scene.add(fill);
-    const under = new THREE.DirectionalLight(0x9a7a55, 1.6);
+    const under = new THREE.DirectionalLight(0x9a7a55, 1.2);
     under.position.set(4, -14, 6);
     scene.add(under);
+    // Rim light — low-angle counter-key, pops voxel silhouettes against the fog band.
+    const rim = new THREE.DirectionalLight(tp.rim, tp.rimI);
+    rim.position.set(-6, 6, 14);
+    scene.add(rim);
+
+    // Image-based lighting (PMREM) — gives MeshStandardMaterial a plausible
+    // bounce/reflection source so light "wraps" around blocks instead of
+    // looking flat-lit. Built from the active TOD palette so reflections
+    // tint with sky/ground colors.
+    try {
+      const envScene = new THREE.Scene();
+      envScene.add(new THREE.HemisphereLight(tp.hemiS, tp.hemiG, Math.max(1.5, tp.hemiI)));
+      const skyDome = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(40, 1),
+        new THREE.MeshBasicMaterial({ color: tp.fog, side: THREE.BackSide })
+      );
+      envScene.add(skyDome);
+      const groundDisk = new THREE.Mesh(
+        new THREE.CircleGeometry(40, 32),
+        new THREE.MeshBasicMaterial({ color: tp.hemiG })
+      );
+      groundDisk.rotation.x = -Math.PI / 2;
+      groundDisk.position.y = -1;
+      envScene.add(groundDisk);
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      scene.environment = pmrem.fromScene(envScene, 0.04).texture;
+      pmrem.dispose();
+    } catch (_e) { /* env optional */ }
 
     const box = new THREE.BoxGeometry(voxel * BLOCK_SCALE, voxel * BLOCK_SCALE, voxel * BLOCK_SCALE);
     const dummy = new THREE.Object3D();
@@ -1161,9 +1510,10 @@ export default function TinyWorld() {
     ghostMesh.visible = false;
     scene.add(ghostMesh);
 
-    const REACH = voxel * 15;
+    const REACH = voxel * 4;
+    const TOOL_VISUAL_DIST = voxel * 15;
     const toolGroup = new THREE.Group();
-    toolGroup.position.set(0.6 * REACH, -voxel * 3.5, -REACH * 0.8);
+    toolGroup.position.set(0.6 * TOOL_VISUAL_DIST, -voxel * 3.5, -TOOL_VISUAL_DIST * 0.8);
     const toolCore = new THREE.Mesh(
       new THREE.OctahedronGeometry(voxel * 0.3),
       new THREE.MeshBasicMaterial({ color: 0xe0d6ff })
@@ -1198,14 +1548,14 @@ export default function TinyWorld() {
         position: "fixed",
         top: "50%",
         left: "50%",
-        width: "32px",
-        height: "32px",
-        marginTop: "-16px",
-        marginLeft: "-16px",
+        width: "56px",
+        height: "56px",
+        marginTop: "-28px",
+        marginLeft: "-28px",
         borderRadius: "50%",
-        background: "conic-gradient(rgba(255,255,255,0.9) var(--p, 0%), transparent 0)",
-        mask: "radial-gradient(transparent 12px, black 13px)",
-        WebkitMask: "radial-gradient(transparent 12px, black 13px)",
+        background: "conic-gradient(rgba(255,180,60,1) var(--p, 0%), rgba(255,255,255,0.08) 0)",
+        mask: "radial-gradient(transparent 22px, black 23px)",
+        WebkitMask: "radial-gradient(transparent 22px, black 23px)",
         pointerEvents: "none",
         opacity: "0",
         transition: "opacity 0.15s ease",
@@ -1213,6 +1563,34 @@ export default function TinyWorld() {
       });
       document.body.appendChild(ring);
     }
+
+    let miningPill = document.getElementById("mining-pill");
+    if (!miningPill) {
+      miningPill = document.createElement("div");
+      miningPill.id = "mining-pill";
+      Object.assign(miningPill.style, {
+        position: "fixed",
+        left: "50%",
+        top: "calc(50% + 44px)",
+        transform: "translateX(-50%)",
+        padding: "4px 10px",
+        background: "rgba(255,180,60,0.18)",
+        border: "1px solid rgba(255,180,60,0.7)",
+        color: "rgba(255,220,150,1)",
+        font: "600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace",
+        letterSpacing: "0.08em",
+        borderRadius: "999px",
+        pointerEvents: "none",
+        opacity: "0",
+        transition: "opacity 0.12s ease",
+        zIndex: "9999",
+        textTransform: "uppercase",
+        whiteSpace: "nowrap",
+      });
+      miningPill.textContent = "MINING";
+      document.body.appendChild(miningPill);
+    }
+    let lastChargeEndMs = 0;
 
     const marchRay = () => {
       const start = camera.position;
@@ -1236,13 +1614,17 @@ export default function TinyWorld() {
       let tMaxZ = stepZ !== 0 ? (stepZ > 0 ? (z + 1) * voxel - start.z : start.z - z * voxel) / Math.abs(dir.z) : Infinity;
       
       let dist = 0;
+      // Track the axis we just stepped along — that\'s the face we entered through.
+      // Normal points back toward the camera: opposite of step on that axis.
+      let lastAxis: "x" | "y" | "z" = "y";
+      let lastStep = 0;
       while (dist < REACH) {
         if (tMaxX < tMaxY) {
-          if (tMaxX < tMaxZ) { x += stepX; dist = tMaxX; tMaxX += tDeltaX; }
-          else { z += stepZ; dist = tMaxZ; tMaxZ += tDeltaZ; }
+          if (tMaxX < tMaxZ) { x += stepX; dist = tMaxX; tMaxX += tDeltaX; lastAxis = "x"; lastStep = stepX; }
+          else { z += stepZ; dist = tMaxZ; tMaxZ += tDeltaZ; lastAxis = "z"; lastStep = stepZ; }
         } else {
-          if (tMaxY < tMaxZ) { y += stepY; dist = tMaxY; tMaxY += tDeltaY; }
-          else { z += stepZ; dist = tMaxZ; tMaxZ += tDeltaZ; }
+          if (tMaxY < tMaxZ) { y += stepY; dist = tMaxY; tMaxY += tDeltaY; lastAxis = "y"; lastStep = stepY; }
+          else { z += stepZ; dist = tMaxZ; tMaxZ += tDeltaZ; lastAxis = "z"; lastStep = stepZ; }
         }
         
         const vx = x + cxRound;
@@ -1254,7 +1636,10 @@ export default function TinyWorld() {
           for (const m of meshesRef.current) {
             const slotMap = m.userData?.slotMap as Map<string, number>;
             if (slotMap && slotMap.has(vx + "," + vy + "," + vz)) {
-              return { vx, vy, vz, mesh: m, slot: slotMap.get(vx + "," + vy + "," + vz)! };
+              const nx = lastAxis === "x" ? -lastStep : 0;
+              const ny = lastAxis === "y" ? -lastStep : 0;
+              const nz = lastAxis === "z" ? -lastStep : 0;
+              return { vx, vy, vz, mesh: m, slot: slotMap.get(vx + "," + vy + "," + vz)!, nx, ny, nz };
             }
           }
         }
@@ -1262,7 +1647,7 @@ export default function TinyWorld() {
       return null;
     };
 
-    // Column-top map: (vx,vz) → Set<vy>. Tracks every block's vertical position
+    // Column-top map: (vx,vz) → Set<vy>. Tracks every block\'s vertical position
     // per column so placement can snap to top-of-stack (gravity).
     const colMap = new Map<string, Set<number>>();
     const addCol = (vx: number, vy: number, vz: number) => {
@@ -1363,8 +1748,161 @@ export default function TinyWorld() {
       if (!arr.length && !hiddenArr.length) return null;
       currentBlocks += arr.length / 3;
       const totalCap = (arr.length + hiddenArr.length) / 3;
-      const material = new THREE.MeshPhongMaterial({ color, shininess: opacity < 1 ? 70 : 18, transparent: opacity < 1, opacity });
-      const mesh = new THREE.InstancedMesh(box, material, totalCap);
+      let material: any;
+      if (layerName === "leaves") {
+        // Lambert variant (Project-Gaia learning): per-vertex shading reads
+        // as painterly on organic clumped geometry. Lit, but no env reflection.
+        material = new THREE.MeshLambertMaterial({ color, transparent: opacity < 1, opacity });
+      } else {
+        const stdMat = new THREE.MeshStandardMaterial({ color, roughness: opacity < 1 ? 0.35 : 0.88, metalness: 0.02, transparent: opacity < 1, opacity });
+        if (layerName === "water") {
+          // Schlick fresnel modulates ALPHA (not reflectance): water becomes
+          // opaque at grazing angles, transparent looking straight down.
+          stdMat.onBeforeCompile = (shader: any) => {
+            shader.fragmentShader = shader.fragmentShader.replace(
+              "#include <output_fragment>",
+              `float _dotNV = clamp(dot(normalize(vNormal), normalize(vViewPosition)), 0.0, 1.0);
+               float _fresnel = exp2((-5.55473 * _dotNV - 6.98316) * _dotNV);
+               #include <output_fragment>
+               gl_FragColor.a = mix(gl_FragColor.a, 1.0, _fresnel);`
+            );
+          };
+        }
+        material = stdMat;
+      }
+
+      // ── Cross-layer global occupancy (Project-Gaia #1 v2) ──
+      // Single Set rebuilt once before any addLayer call, covers visible +
+      // hidden blocks across every terrain layer. AO baking inside addLayer
+      // reads from this so corners between e.g. dirt and wall darken correctly.
+      const _globalOcc = new Set<string>();
+      const _aoLayerKeys = ["dirt","grass","dryGrass","snow","wet","trunks","leaves","water","wall","ceiling","hidden_dirt","fruit","seed","sapling"];
+      for (const _k of _aoLayerKeys) {
+        const _buf = (layers as any)[_k];
+        if (!_buf) continue;
+        const _a = _buf instanceof Int32Array ? _buf : new Int32Array(_buf);
+        for (let i = 0; i < _a.length; i += 3) _globalOcc.add(_a[i] + "," + _a[i+1] + "," + _a[i+2]);
+      }
+
+      // ── Per-vertex corner AO bake helper (Minecraft-style) ──
+      // Aplied per face per vertex. Each cube vertex sees 3 neighbor voxels:
+      // two edge-side neighbors and one corner neighbor. Returns 24 floats
+      // (6 faces * 4 vertices) in 0..1, where 0 is fully occluded.
+      const FACE_NORMS = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+      const FACE_TANGENT_AXES: ("x"|"y"|"z")[][] = [["y","z"],["y","z"],["x","z"],["x","z"],["x","y"],["x","y"]];
+      const _occHas = (x: number, y: number, z: number) => _globalOcc.has(x + "," + y + "," + z);
+      function _computeVertexAOs(vx: number, vy: number, vz: number, out: Float32Array) {
+        for (let f = 0; f < 6; f++) {
+          const n = FACE_NORMS[f];
+          const ax = FACE_TANGENT_AXES[f];
+          for (let v = 0; v < 4; v++) {
+            const u1 = (v & 1) ? 1 : -1;
+            const u2 = (v & 2) ? 1 : -1;
+            let s1dx = 0, s1dy = 0, s1dz = 0;
+            let s2dx = 0, s2dy = 0, s2dz = 0;
+            if (ax[0] === "x") s1dx = u1; else if (ax[0] === "y") s1dy = u1; else s1dz = u1;
+            if (ax[1] === "x") s2dx = u2; else if (ax[1] === "y") s2dy = u2; else s2dz = u2;
+            const side1 = _occHas(vx + n[0] + s1dx, vy + n[1] + s1dy, vz + n[2] + s1dz) ? 1 : 0;
+            const side2 = _occHas(vx + n[0] + s2dx, vy + n[1] + s2dy, vz + n[2] + s2dz) ? 1 : 0;
+            const corner = _occHas(vx + n[0] + s1dx + s2dx, vy + n[1] + s1dy + s2dy, vz + n[2] + s1dz + s2dz) ? 1 : 0;
+            const ao = (side1 && side2) ? 0 : 3 - (side1 + side2 + corner);
+            out[f * 4 + v] = ao / 3;
+          }
+        }
+      }
+      // Pre-bake per-vertex aoIdx attribute on a cube geometry (which face+vertex
+      // each of the 24 cube vertices belongs to). Computed from box.normal/position
+      // so it\'s robust to Three.js\'s internal vertex order.
+      function _bakeAOIdxAttr(geo: any) {
+        const pos = geo.attributes.position, nor = geo.attributes.normal;
+        const idxArr = new Float32Array(pos.count);
+        for (let i = 0; i < pos.count; i++) {
+          const nx = Math.round(nor.getX(i)), ny = Math.round(nor.getY(i)), nz = Math.round(nor.getZ(i));
+          let face = 0;
+          if (nx === 1) face = 0; else if (nx === -1) face = 1;
+          else if (ny === 1) face = 2; else if (ny === -1) face = 3;
+          else if (nz === 1) face = 4; else face = 5;
+          const px = pos.getX(i), py = pos.getY(i), pz = pos.getZ(i);
+          let v: number;
+          if (face === 0 || face === 1) v = ((py >= 0 ? 1 : 0) | (pz >= 0 ? 2 : 0));
+          else if (face === 2 || face === 3) v = ((px >= 0 ? 1 : 0) | (pz >= 0 ? 2 : 0));
+          else v = ((px >= 0 ? 1 : 0) | (py >= 0 ? 2 : 0));
+          idxArr[i] = face * 4 + v;
+        }
+        geo.setAttribute("aoIdx", new THREE.BufferAttribute(idxArr, 1));
+      }
+
+      // ── Per-vertex baked AO (Project-Gaia #1 v2: corner-vertex Minecraft style) ──
+      // Computes side1/side2/corner occupancy per face-vertex across ALL layers
+      // (cross-layer occupancy via _globalOcc). 6 vec4 InstancedBufferAttributes
+      // carry the 24 per-vertex AO values; the vertex shader picks the right
+      // one via the baked aoIdx attribute. Result: smooth corner-darkening
+      // bands across faces, the canonical Minecraft AO look.
+      const _aoTmp = new Float32Array(24);
+      const _aoF: Float32Array[] = [];
+      for (let f = 0; f < 6; f++) _aoF.push(new Float32Array(totalCap * 4));
+      let _aoIdx2 = 0;
+      const _writeAOPerVertex = (x: number, y: number, z: number) => {
+        _computeVertexAOs(x, y, z, _aoTmp);
+        for (let f = 0; f < 6; f++) {
+          const off = _aoIdx2 * 4;
+          _aoF[f][off + 0] = _aoTmp[f * 4 + 0];
+          _aoF[f][off + 1] = _aoTmp[f * 4 + 1];
+          _aoF[f][off + 2] = _aoTmp[f * 4 + 2];
+          _aoF[f][off + 3] = _aoTmp[f * 4 + 3];
+        }
+        _aoIdx2++;
+      };
+      for (let i = 0; i < arr.length; i += 3) _writeAOPerVertex(arr[i], arr[i + 1], arr[i + 2]);
+      for (let i = 0; i < hiddenArr.length; i += 3) _writeAOPerVertex(hiddenArr[i], hiddenArr[i + 1], hiddenArr[i + 2]);
+
+      const _aoGeo = box.clone();
+      _bakeAOIdxAttr(_aoGeo);
+      for (let f = 0; f < 6; f++) {
+        _aoGeo.setAttribute("aoF" + f, new THREE.InstancedBufferAttribute(_aoF[f], 4));
+      }
+
+      if (layerName !== "water") {
+        const _prevCompile = material.onBeforeCompile;
+        material.onBeforeCompile = (shader: any) => {
+          if (_prevCompile) _prevCompile.call(material, shader);
+          shader.vertexShader =
+            "attribute vec4 aoF0;\
+attribute vec4 aoF1;\
+attribute vec4 aoF2;\
+attribute vec4 aoF3;\
+attribute vec4 aoF4;\
+attribute vec4 aoF5;\
+attribute float aoIdx;\
+varying float vAoPerVert;\
+"
+            + shader.vertexShader.replace(
+              "#include <begin_vertex>",
+              `int _ai = int(aoIdx + 0.5);
+               int _face = _ai / 4;
+               int _vert = _ai - _face * 4;
+               vec4 _fAo;
+               if (_face == 0) _fAo = aoF0;
+               else if (_face == 1) _fAo = aoF1;
+               else if (_face == 2) _fAo = aoF2;
+               else if (_face == 3) _fAo = aoF3;
+               else if (_face == 4) _fAo = aoF4;
+               else _fAo = aoF5;
+               vAoPerVert = _fAo[_vert];
+               #include <begin_vertex>`
+            );
+          shader.fragmentShader =
+            "varying float vAoPerVert;\
+"
+            + shader.fragmentShader.replace(
+              "#include <output_fragment>",
+              "gl_FragColor.rgb *= mix(0.45, 1.0, vAoPerVert);\
+#include <output_fragment>"
+            );
+        };
+      }
+
+      const mesh = new THREE.InstancedMesh(_aoGeo, material, totalCap);
       mesh.castShadow = false;
       mesh.receiveShadow = false;
       mesh.userData = { layer: layerName, freeSlots: [] as number[], slotMap: new Map<string, number>(), hiddenMap: new Map<string, number>() };
@@ -1420,8 +1958,8 @@ export default function TinyWorld() {
     addLayer(new Int32Array(lower), PAL.wall, 1, "wall");
     const wallUpperMesh = addLayer(new Int32Array(upper), PAL.wall, 1, "wall");
     const ceilingMesh = addLayer(layers.ceiling, PAL.ceiling, 1, "ceiling");
-    if (wallUpperMesh) { wallUpperMesh.material.transparent = true; wallUpperMesh.material.depthWrite = false; }
-    if (ceilingMesh) { ceilingMesh.material.transparent = true; ceilingMesh.material.depthWrite = false; }
+    if (wallUpperMesh) { wallUpperMesh.material.transparent = false; wallUpperMesh.material.depthWrite = true; wallUpperMesh.material.opacity = 1; }
+    if (ceilingMesh) { ceilingMesh.material.transparent = false; ceilingMesh.material.depthWrite = true; ceilingMesh.material.opacity = 1; }
     fadeMeshesRef.current = { ceiling: ceilingMesh, wallUpper: wallUpperMesh };
 
     // ─── Organic lifecycle scaffolding ─────────────────────────────────────
@@ -1435,7 +1973,7 @@ export default function TinyWorld() {
     const trunkCountStart = layers.trunks ? new Int32Array(layers.trunks).length / 3 : 0;
     const makeGrowable = (color: number, capacity: number, layerName: string, opacity = 1, customGeo?: any) => {
       const cap = Math.max(64, capacity);
-      const material = new THREE.MeshPhongMaterial({ color, shininess: 60, transparent: opacity < 1, opacity });
+      const material = new THREE.MeshStandardMaterial({ color, roughness: 0.78, metalness: 0.04, transparent: opacity < 1, opacity });
       const mesh = new THREE.InstancedMesh(customGeo || box, material, cap);
       mesh.castShadow = false;
       mesh.receiveShadow = false;
@@ -1854,10 +2392,6 @@ export default function TinyWorld() {
       console.log("[tinyworld] Rift spawned at", x, y, z, "ate", catchUpSummary.voidLoss);
     }
 
-    const grid = new THREE.GridHelper(span * 3, 80, 0x151528, 0x10101f);
-    grid.position.y = -voxel * (TERRAIN_DEPTH + 1.2);
-    scene.add(grid);
-
     // Build ground-height lookup for walk grounding.
     const groundBuf = layers.ground as unknown as ArrayBuffer | Int32Array | undefined;
     const groundMap = new Map<string, number>();
@@ -1871,7 +2405,7 @@ export default function TinyWorld() {
       }
     }
     if (groundMap.size === 0 && colMap.size > 0) {
-      // Saved worlds don't persist the voxelizer's ground layer — rebuild a
+      // Saved worlds don\'t persist the voxelizer\'s ground layer — rebuild a
       // walkable floor map from the block columns (visible + occlusion-culled
       // hidden blocks): the top of the LOWEST contiguous solid run per column.
       // That captures floors and objects resting on them while excluding
@@ -1902,7 +2436,50 @@ export default function TinyWorld() {
       }
       console.log("[tinyworld] rebuilt ground map from columns:", groundMap.size, "cells");
     }
-    groundRef.current = { map: groundMap, voxel, cx: cxRound, cz: czRound };
+    let groundMinY = Infinity;
+    for (const y of groundMap.values()) {
+      if (y < groundMinY) groundMinY = y;
+    }
+    if (!isFinite(groundMinY)) groundMinY = 0;
+    groundRef.current = { map: groundMap, voxel, cx: cxRound, cz: czRound, minY: groundMinY };
+
+    // Seam visualization: mark outer-perimeter top blocks with a subtle void-tint
+    // so players can see where their scanned territory ends. Foundation for the
+    // tectonic-risk overlay: these are the cells where new adjacent scans will
+    // cause seam reconciliation. Top-of-column only, so the world reads as a
+    // ring of glowing edge from above rather than a wrapped halo on every face.
+    const perimeterTopCells: Array<{ vx: number; vz: number; vy: number }> = [];
+    for (const [k, cs] of colMap) {
+      if (!cs || cs.size === 0) continue;
+      const [vx, vz] = k.split(",").map(Number);
+      let onEdge = false;
+      for (const nb of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ncs = colMap.get((vx + nb[0]) + "," + (vz + nb[1]));
+        if (!ncs || ncs.size === 0) { onEdge = true; break; }
+      }
+      if (!onEdge) continue;
+      const vy = groundMap.get(k);
+      if (vy === undefined) continue;
+      perimeterTopCells.push({ vx, vz, vy });
+    }
+    if (perimeterTopCells.length > 0) {
+      const seamMat = new THREE.MeshPhongMaterial({ color: 0x8a2be2, emissive: 0x4a1080, emissiveIntensity: 0.35, transparent: true, opacity: 0.28, shininess: 8, depthWrite: false });
+      const seamMesh = new THREE.InstancedMesh(box, seamMat, perimeterTopCells.length);
+      seamMesh.renderOrder = 2;
+      for (let i = 0; i < perimeterTopCells.length; i++) {
+        const cell = perimeterTopCells[i];
+        dummy.position.set((cell.vx - cxRound) * voxel, cell.vy * voxel, (cell.vz - czRound) * voxel);
+        dummy.scale.set(1.05, 1.05, 1.05);
+        dummy.updateMatrix();
+        seamMesh.setMatrixAt(i, dummy.matrix);
+      }
+      dummy.scale.set(1, 1, 1);
+      seamMesh.instanceMatrix.needsUpdate = true;
+      seamMesh.userData.isSeamOverlay = true;
+      scene.add(seamMesh);
+      (window as any).__tw = { ...((window as any).__tw || {}), seamMesh, perimeterCount: perimeterTopCells.length };
+      console.log("[tinyworld] seam visualization:", perimeterTopCells.length, "perimeter top cells");
+    }
 
     const orbit = new OrbitControls(camera, renderer.domElement);
     orbit.enableDamping = true;
@@ -1916,22 +2493,23 @@ export default function TinyWorld() {
     fpRef.current = fp;
     fp.addEventListener("lock", () => {
       setWalking(true);
+      walkingRef.current = true;
       orbit.enabled = false;
     });
     fp.addEventListener("unlock", () => {
+      if (isMobileRef.current) return;
       setWalking(false);
+      walkingRef.current = false;
       orbit.enabled = true;
     });
 
     enterWalkRef.current = () => {
-      // Spawn at the walkable cell nearest the floor centroid that has body
-      // clearance. Independent medians could land on (mx, mz) that isn't in
-      // groundMap (returning 0 from sampleGround → stuck in floor geometry).
-      // Minosoft pattern: pre-snap to a position where the player AABB has
-      // zero collisions BEFORE the first physics tick.
       let sx = 0, sz = 0, sy = EYE_HEIGHT;
       const ground = groundRef.current;
-      if (ground && ground.map.size > 0) {
+      let placed = false;
+      let path: string = "default-origin";
+
+      if (!placed && ground && ground.map.size > 0) {
         let sumX = 0, sumZ = 0, n = 0;
         for (const k of ground.map.keys()) {
           const [vx, vz] = k.split(",").map(Number);
@@ -1940,39 +2518,99 @@ export default function TinyWorld() {
         const cx = sumX / n, cz = sumZ / n;
         let bestD2 = Infinity;
         let bestSpawn: { sx: number; sz: number; sy: number } | null = null;
-        for (const k of ground.map.keys()) {
+        let lowestY = Infinity;
+        let lowestPos: { wx: number; wz: number; gy: number } | null = null;
+        for (const [k, vy] of ground.map) {
           const [vx, vz] = k.split(",").map(Number);
+          const wx = (vx - ground.cx) * ground.voxel;
+          const wz = (vz - ground.cz) * ground.voxel;
+          if (vy < lowestY) {
+            lowestY = vy;
+            lowestPos = { wx, wz, gy: (vy + 1) * ground.voxel };
+          }
           const dx = vx - cx, dz = vz - cz;
           const d2 = dx * dx + dz * dz;
           if (d2 >= bestD2) continue;
-          const wx = (vx - ground.cx) * ground.voxel;
-          const wz = (vz - ground.cz) * ground.voxel;
           const clearY = findSafeSpawnY(wx, wz);
           if (clearY === null) continue;
           bestD2 = d2;
           bestSpawn = { sx: wx, sz: wz, sy: clearY };
         }
-        if (bestSpawn) { 
-          sx = bestSpawn.sx; sz = bestSpawn.sz; sy = bestSpawn.sy; 
-        } else {
-          // Fallback: spawn in the sky above the centroid if the room is too cramped.
-          sx = 0; sz = 0; sy = EYE_HEIGHT + voxel * 20;
+        if (bestSpawn) {
+          sx = bestSpawn.sx; sz = bestSpawn.sz; sy = bestSpawn.sy;
+          placed = true;
+          path = "centroid-clear";
+        } else if (lowestPos) {
+          sx = lowestPos.wx;
+          sz = lowestPos.wz;
+          sy = lowestPos.gy + EYE_HEIGHT;
+          placed = true;
+          path = "lowest-floor";
         }
       }
+
+      if (!placed && workers.length > 0 && ground) {
+        const w = workers[0];
+        const wx = w.worldX;
+        const wz = w.worldZ;
+        sx = wx;
+        sz = wz;
+        const surfaceY = sampleGround(wx, wz, undefined, playerR);
+        sy = (surfaceY > 0 ? surfaceY : w.worldY) + EYE_HEIGHT;
+        placed = true;
+        path = "worker-fallback";
+      }
+      const prevCam = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
       camera.position.set(sx, sy, sz);
       velocityYRef.current = 0;
-      
-      // Fallback: if PointerLock doesn't fire the lock event natively, force the UI state.
+      camera.rotation.set(0, 0, 0);
+      // Look toward the world centroid (or origin) rather than -z, so the
+      // first frame in walk mode actually shows the loft instead of the void.
+      let lookX = 0, lookZ = 0;
+      if (ground && ground.map.size > 0) {
+        let sumX = 0, sumZ = 0, n = 0;
+        for (const k of ground.map.keys()) {
+          const [vx, vz] = k.split(",").map(Number);
+          sumX += vx; sumZ += vz; n++;
+        }
+        const cvx = sumX / n, cvz = sumZ / n;
+        lookX = (cvx - ground.cx) * ground.voxel;
+        lookZ = (cvz - ground.cz) * ground.voxel;
+      }
+      const dx = lookX - sx, dz = lookZ - sz;
+      if (dx * dx + dz * dz > 0.0001) {
+        camera.lookAt(lookX, sy, lookZ);
+      } else {
+        camera.lookAt(sx, sy, sz - 1);
+      }
+
+      targetLookRef.current = { x: camera.rotation.x, y: camera.rotation.y };
+
+      (window as any).__twWalkDebug = {
+        path,
+        placed,
+        spawn: { sx, sy, sz },
+        prevCam,
+        camAfter: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+        workers: workers.length,
+        groundSize: ground ? ground.map.size : 0,
+        isMobile: isMobileRef.current,
+        voxel,
+        eyeH: EYE_HEIGHT,
+        sampledSurfaceY: ground ? sampleGround(sx, sz, undefined, playerR) : null,
+        ts: Date.now(),
+      };
+      setWalkDebug((window as any).__twWalkDebug);
+
       setWalking(true);
+      walkingRef.current = true;
       orbit.enabled = false;
-      try {
-        fp.lock();
-      } catch (e) {
-        console.warn("Pointer lock failed:", e);
+      if (!isMobileRef.current) {
+        try { fp.lock(); } catch (e) { console.warn("Pointer lock failed:", e); }
       }
     };
 
-    // Player physics scaled to voxel size — you're tiny-world sized, not human sized.
+    // Player physics scaled to voxel size — you\'re tiny-world sized, not human sized.
     const EYE_HEIGHT = voxel * 3.5;
     const MOVE_SPEED = voxel * 8;
     const JUMP_VELOCITY = voxel * 18;
@@ -1981,7 +2619,7 @@ export default function TinyWorld() {
     // Sample ground height at world (x, z) — returns world Y of floor top.
     // footWY (optional): current foot height — columns whose top is more than
     // ~1.15 voxels above the feet are ignored, so tall neighbors (walls,
-    // stacks) can't yank the sample upward while walking on top of objects.
+    // stacks) can\'t yank the sample upward while walking on top of objects.
     // radius (optional, world units): how far around (wx, wz) to consider
     // columns — pass the body radius so only columns the body actually
     // overlaps can support it.
@@ -2000,7 +2638,7 @@ export default function TinyWorld() {
           const y = ground.map.get(vx + "," + vz);
           if (y === undefined) continue;
           if (bestAny === null || y > bestAny) bestAny = y;
-          if (footWY !== undefined && (y + 1) * v > footWY + v * 1.15) continue;
+          if (footWY !== undefined && (y + 1) * v > footWY + v * 1.6) continue;
           if (best === null || y > best) best = y;
         }
       }
@@ -2174,7 +2812,7 @@ export default function TinyWorld() {
       }
       return null;
     };
-    const findSoftBlockNearW = (vx: number, vy: number, vz: number, r: number) => {
+    const findSourceBlockForLayer = (vx: number, vy: number, vz: number, layer: string, r = 30) => {
       const cands: Array<{ vx: number; vy: number; vz: number; mesh: any; slot: number; d2: number }> = [];
       for (const [colKey, ySet] of colMap) {
         const cs = colKey.split(",");
@@ -2188,7 +2826,7 @@ export default function TinyWorld() {
           const k = cx + "," + y + "," + cz;
           for (const m of meshesRef.current) {
             const slot = (m.userData?.slotMap as Map<string, number> | undefined)?.get(k);
-            if (slot !== undefined && SOFT_WORKER_LAYERS.has(m.userData.layer)) {
+            if (slot !== undefined && m.userData.layer === layer) {
               // Soft block must be exposed on top to pick it up easily
               if (!ySet.has(y + 1)) {
                 cands.push({ vx: cx, vy: y, vz: cz, mesh: m, slot, d2: d2 + (y - vy) * (y - vy) });
@@ -2245,91 +2883,7 @@ export default function TinyWorld() {
     // target: pickup matching layer → A* walk → place. Plan re-fetched
     // whenever the current one finishes or fails.
     type PlanTarget = { vx: number; vz: number; layer: string; localY: number; done: boolean };
-    type WorkerPlan = { name: string; rationale: string; targets: PlanTarget[] };
-
-    const expandPrimitive = (step: any): Array<{ vx: number; vz: number; layer: string; localY: number }> => {
-      const layer = String(step?.layer ?? "");
-      const out: Array<{ vx: number; vz: number; layer: string; localY: number }> = [];
-      if (!layer || !SOFT_WORKER_LAYERS.has(layer)) return out;
-      const p = step?.kind ?? step?.primitive;
-      if (p === "column") {
-        const h = Math.max(1, Math.min(6, Number(step.height) || 1));
-        const vx = Number(step.vx), vz = Number(step.vz);
-        if (!Number.isFinite(vx) || !Number.isFinite(vz)) return out;
-        for (let y = 0; y < h; y++) out.push({ vx, vz, layer, localY: y });
-      } else if (p === "wall") {
-        const from = step.from, to = step.to;
-        if (!Array.isArray(from) || !Array.isArray(to)) return out;
-        const fx = Number(from[0]), fz = Number(from[1]);
-        const tx = Number(to[0]), tz = Number(to[1]);
-        if (![fx, fz, tx, tz].every(Number.isFinite)) return out;
-        const h = Math.max(1, Math.min(4, Number(step.height) || 1));
-        const dx = Math.abs(tx - fx), dz = Math.abs(tz - fz);
-        const sx = fx < tx ? 1 : -1, sz = fz < tz ? 1 : -1;
-        let err = dx - dz, x = fx, z = fz;
-        for (let safety = 0; safety < 30; safety++) {
-          for (let y = 0; y < h; y++) out.push({ vx: x, vz: z, layer, localY: y });
-          if (x === tx && z === tz) break;
-          const e2 = 2 * err;
-          if (e2 > -dz) { err -= dz; x += sx; }
-          if (e2 < dx) { err += dx; z += sz; }
-        }
-      } else if (p === "floor") {
-        const from = step.from, to = step.to;
-        if (!Array.isArray(from) || !Array.isArray(to)) return out;
-        const fx = Number(from[0]), fz = Number(from[1]);
-        const tx = Number(to[0]), tz = Number(to[1]);
-        if (![fx, fz, tx, tz].every(Number.isFinite)) return out;
-        const x0 = Math.min(fx, tx), x1 = Math.max(fx, tx);
-        const z0 = Math.min(fz, tz), z1 = Math.max(fz, tz);
-        if ((x1 - x0 + 1) * (z1 - z0 + 1) > 30) return out;
-        for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++)
-          out.push({ vx: x, vz: z, layer, localY: 0 });
-      } else if (p === "pile") {
-        const r = Math.max(1, Math.min(3, Number(step.radius) || 1));
-        const vx = Number(step.vx), vz = Number(step.vz);
-        if (!Number.isFinite(vx) || !Number.isFinite(vz)) return out;
-        for (let dx = -r + 1; dx < r; dx++) for (let dz = -r + 1; dz < r; dz++) {
-          const dist = Math.abs(dx) + Math.abs(dz);
-          if (dist >= r) continue;
-          const h = r - dist;
-          for (let y = 0; y < h; y++) out.push({ vx: vx + dx, vz: vz + dz, layer, localY: y });
-        }
-      }
-      return out;
-    };
-
-    const findSourceBlockForLayer = (vx: number, vy: number, vz: number, layer: string) => {
-      let best: { vx: number; vy: number; vz: number; mesh: any; slot: number; d2: number } | null = null;
-      for (const m of meshesRef.current) {
-        if (m.userData?.layer !== layer) continue;
-        const slotMap = m.userData?.slotMap as Map<string, number> | undefined;
-        if (!slotMap) continue;
-        for (const k of slotMap.keys()) {
-          const cs = k.split(",");
-          const cx = +cs[0], cy = +cs[1], cz = +cs[2];
-          const dx = cx - vx, dy = cy - vy, dz = cz - vz;
-          const d2 = dx * dx + dy * dy + dz * dz;
-          if (best && d2 >= best.d2) continue;
-          // Must be the top of its column stack — workers don't dig through.
-          const colSet = colMap.get(cx + "," + cz);
-          if (!colSet || colSet.has(cy + 1)) continue;
-          best = { vx: cx, vy: cy, vz: cz, mesh: m, slot: slotMap.get(k)!, d2 };
-        }
-      }
-      return best;
-    };
-
-    const adjacentOrSelfWalkable = (vx: number, vz: number): [number, number] | null => {
-      const ground = groundRef.current;
-      if (!ground) return null;
-      // Prefer adjacent, fall back to standing on the target column itself.
-      for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1],[0,0]]) {
-        const k = (vx + dx) + "," + (vz + dz);
-        if (ground.map.has(k)) return [vx + dx, vz + dz];
-      }
-      return null;
-    };
+    type WorkerPlan = { name: string; rationale: string; actions: GoapAction[] };
 
     const computeVisionFor = (vx: number, vy: number, vz: number, R = 25) => {
       const resources: Record<string, number> = {};
@@ -2358,161 +2912,193 @@ export default function TinyWorld() {
           }
         }
       }
-      return { resources, walkable };
+      const stockpile = { ...stockpileByLayerRef.current };
+      const structures: any[] = [];
+      if (pressPersistRef.current?.built) {
+        structures.push({ type: "press", vx: pressPersistRef.current.vx, vz: pressPersistRef.current.vz });
+      }
+      const recent = builtStructuresRef.current.slice(-8);
+      for (const s of recent) {
+        structures.push({
+          type: s.type,
+          vx: s.vx,
+          vz: s.vz,
+          layer: s.layer,
+          topY: s.topY,
+          footprint: s.footprint,
+        });
+      }
+      return { resources, walkable, stockpile, structures };
     };
 
-    const fetchWorkerPlan = async (vx: number, vy: number, vz: number): Promise<WorkerPlan | null> => {
+    type GoapAction = { action: "PickUp" | "Place" | "MoveTo" | "Interact" | "Mine" | "Build"; layer?: string; target?: string; vx?: number; vz?: number; structure?: "pillar" | "wall" | "hut" | "arch"; blueprint?: Array<{ dx: number; dy: number; dz: number }>; done?: boolean };
+
+    const fetchWorkerPlan = async (w: WorkerState, opts: { stuck?: boolean } = {}): Promise<WorkerPlan | null> => {
       try {
-        const vision = computeVisionFor(vx, vy, vz, 25);
+        const vision = computeVisionFor(w.vx, w.vy, w.vz, 25);
+        const body: any = { 
+          worker: { vx: w.vx, vy: w.vy, vz: w.vz, holding: w.carrying?.layer || null, name: w.name, archetype: w.archetype, goal: w.goal }, 
+          vision 
+        };
+        if (opts.stuck) {
+          body.stuck = true;
+          const neighborHeights: Record<string, number | null> = {};
+          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as Array<[number, number]>) {
+            const key = `${dx},${dz}`;
+            const top = colTop(w.vx + dx, w.vz + dz);
+            neighborHeights[key] = top;
+          }
+          body.stuckContext = {
+            position: { vx: w.vx, vy: w.vy, vz: w.vz },
+            currentColumnTop: colTop(w.vx, w.vz),
+            cardinalNeighborTops: neighborHeights,
+            note: "No cardinal neighbor has a column top within ±1 of my elevation. I need to descend.",
+          };
+        }
         const r = await fetch("/api/tinyworld-plan", {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ worker: { vx, vy, vz }, vision }),
+          body: JSON.stringify(body),
         });
         const data = await r.json();
-        if (!data?.ok || !Array.isArray(data?.plan?.steps)) return null;
-        const targets: PlanTarget[] = [];
-        for (const step of data.plan.steps) {
-          for (const b of expandPrimitive(step)) {
-            targets.push({ ...b, done: false });
-          }
+        if (!data?.ok || !Array.isArray(data?.plan?.actions)) {
+          console.warn("[tinyworld] worker plan rejected:", r.status, data?.error || data);
+          (w as any).lastPlanError = data?.error || ("http " + r.status);
+          return null;
         }
-        if (targets.length === 0) return null;
-        targets.sort((a, b) => a.localY - b.localY || a.vx - b.vx || a.vz - b.vz);
-        if (targets.length > 60) targets.length = 60;
+        (w as any).lastPlanError = null;
         return {
           name: String(data.plan.name || "untitled"),
           rationale: String(data.plan.rationale || ""),
-          targets,
+          actions: data.plan.actions.map((a: any) => ({ ...a, done: false })),
         };
-      } catch {
+      } catch (err) {
+        console.warn("[tinyworld] worker plan fetch failed:", err);
+        (w as any).lastPlanError = String(err);
         return null;
       }
     };
 
     type WorkerState = {
+      id: string;
       vx: number; vy: number; vz: number;
       targetVX: number; targetVY: number; targetVZ: number;
       worldX: number; worldY: number; worldZ: number;
       moveStartMs: number; moveEndMs: number;
-      path: Array<[number, number, number]>;
-      pathIdx: number;
-      mode: "idle" | "walking" | "pickingUp" | "placing" | "planning";
+      path: number[][]; pathIdx: number;
+      mode: "idle" | "walking" | "picking" | "placing" | "mining" | "stuck";
       modeStartMs: number;
       carrying: { mesh: any; color: any; layer: string } | null;
       pickupTarget: { vx: number; vy: number; vz: number; mesh: any; slot: number } | null;
-      placeTarget: { vx: number; vy: number; vz: number; planTargetRef?: PlanTarget } | null;
+      placeTarget: { vx: number; vy: number; vz: number; mesh: any; slot: number } | null;
       group: any;
       carriedMesh: any;
-      plan: WorkerPlan | null;
+      plan: any | null;
       planRequested: boolean;
       lastPlanFailMs: number;
     };
     const workers: WorkerState[] = [];
-    // Spawn 1 worker on a real floor cell near the centroid.
-    {
-      let spawn: [number, number, number] | null = null;
-      if (colMap.size > 0) {
-        let sumX = 0, sumY = 0, sumZ = 0, n = 0;
+
+    const createWorker = (id: string, vx: number, vy: number, vz: number) => {
+      const group = new THREE.Group();
+      // Voxel Tech-Scavenger Humanoid
+      const matBody = new THREE.MeshPhongMaterial({ color: 0x2a2a30, shininess: 10 });
+      const matSkin = new THREE.MeshPhongMaterial({ color: 0xe0cda9, shininess: 20 });
+      const matVisor = new THREE.MeshBasicMaterial({ color: 0x00ffcc });
+      const headGroup = new THREE.Group();
+      headGroup.position.y = voxel * 0.65;
+      const headBox = new THREE.Mesh(new THREE.BoxGeometry(voxel * 0.45, voxel * 0.45, voxel * 0.45), matSkin);
+      const visor = new THREE.Mesh(new THREE.BoxGeometry(voxel * 0.47, voxel * 0.15, voxel * 0.1), matVisor);
+      visor.position.set(0, 0, voxel * 0.23);
+      headGroup.add(headBox);
+      headGroup.add(visor);
+      const torsoGroup = new THREE.Group();
+      torsoGroup.position.y = voxel * 0.1;
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(voxel * 0.5, voxel * 0.6, voxel * 0.35), matBody);
+      const legGeo = new THREE.BoxGeometry(voxel * 0.18, voxel * 0.4, voxel * 0.18);
+      const legL = new THREE.Mesh(legGeo, matBody);
+      legL.position.set(voxel * -0.12, -voxel * 0.5, 0);
+      const legR = new THREE.Mesh(legGeo, matBody);
+      legR.position.set(voxel * 0.12, -voxel * 0.5, 0);
+      const armGeo = new THREE.BoxGeometry(voxel * 0.15, voxel * 0.45, voxel * 0.15);
+      const armL = new THREE.Mesh(armGeo, matBody);
+      armL.position.set(voxel * -0.35, 0, 0);
+      const armR = new THREE.Mesh(armGeo, matBody);
+      armR.position.set(voxel * 0.35, 0, 0);
+      torsoGroup.add(torso);
+      torsoGroup.add(legL);
+      torsoGroup.add(legR);
+      torsoGroup.add(armL);
+      torsoGroup.add(armR);
+      group.add(headGroup);
+      group.add(torsoGroup);
+      const carried = new THREE.Mesh(
+        new THREE.BoxGeometry(voxel * 0.45, voxel * 0.45, voxel * 0.45),
+        new THREE.MeshPhongMaterial({ color: 0xffffff }),
+      );
+      carried.position.set(0, voxel * 1.15, 0);
+      carried.visible = false;
+      group.add(carried);
+      const beacon = new THREE.Mesh(
+        new THREE.CylinderGeometry(voxel * 0.08, voxel * 0.08, voxel * 40, 6, 1, true),
+        new THREE.MeshBasicMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.3, depthWrite: false }),
+      );
+      beacon.position.y = voxel * 20;
+      group.add(beacon);
+      scene.add(group);
+      const w: WorkerState = {
+        id, vx, vy, vz,
+        targetVX: vx, targetVY: vy, targetVZ: vz,
+        worldX: 0, worldY: 0, worldZ: 0,
+        moveStartMs: 0, moveEndMs: 0,
+        path: [], pathIdx: 0,
+        mode: "idle",
+        modeStartMs: performance.now(),
+        carrying: null, pickupTarget: null, placeTarget: null,
+        group, carriedMesh: carried,
+        plan: null,
+        planRequested: false,
+        lastPlanFailMs: 0,
+      };
+      workers.push(w);
+      return w;
+    };
+
+    // Spawn one worker on a real top cell nearest the column centroid.
+    // Without this call, createWorker is defined but never invoked and
+    // worlds load with zero workers (regression from an earlier refactor).
+    if (colMap.size > 0) {
+      let sumX = 0, sumY = 0, sumZ = 0, n = 0;
+      for (const [k, ySet] of colMap.entries()) {
+        const cs = k.split(",");
+        for (const y of ySet) {
+          sumX += +cs[0]; sumY += y; sumZ += +cs[1]; n++;
+        }
+      }
+      if (n > 0) {
+        const cx = sumX / n, cy = sumY / n, cz = sumZ / n;
+        let bestD2 = Infinity;
+        let spawn: [number, number, number] | null = null;
         for (const [k, ySet] of colMap.entries()) {
           const cs = k.split(",");
+          const x = +cs[0], z = +cs[1];
           for (const y of ySet) {
-            sumX += +cs[0]; sumY += y; sumZ += +cs[1]; n++;
+            if (ySet.has(y + 1)) continue; // top of column only
+            const dx = x - cx, dy = y - cy, dz = z - cz;
+            const d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < bestD2) { bestD2 = d2; spawn = [x, y, z]; }
           }
         }
-        if (n > 0) {
-          const cx = sumX / n, cy = sumY / n, cz = sumZ / n;
-          let bestD2 = Infinity;
-          for (const [k, ySet] of colMap.entries()) {
-            const cs = k.split(",");
-            const x = +cs[0], z = +cs[1];
-            for (const y of ySet) {
-              if (ySet.has(y + 1)) continue; // Must be top
-              const dx = x - cx, dy = y - cy, dz = z - cz;
-              const d2 = dx * dx + dy * dy + dz * dz;
-              if (d2 < bestD2) { bestD2 = d2; spawn = [x, y, z]; }
-            }
-          }
+        if (spawn) {
+          createWorker("worker-1", spawn[0], spawn[1], spawn[2]);
+          console.log("[tinyworld] worker spawned at cell", spawn[0], spawn[1], spawn[2]);
         }
-      }
-      if (spawn) {
-        const group = new THREE.Group();
-        
-        // Voxel Tech-Scavenger Humanoid
-        const matBody = new THREE.MeshPhongMaterial({ color: 0x2a2a30, shininess: 10 }); // lint cloak / gritty armor
-        const matSkin = new THREE.MeshPhongMaterial({ color: 0xe0cda9, shininess: 20 });
-        const matVisor = new THREE.MeshBasicMaterial({ color: 0x00ffcc }); // Neon pop
-        
-        const headGroup = new THREE.Group();
-        headGroup.position.y = voxel * 0.65;
-        const headBox = new THREE.Mesh(new THREE.BoxGeometry(voxel * 0.45, voxel * 0.45, voxel * 0.45), matSkin);
-        const visor = new THREE.Mesh(new THREE.BoxGeometry(voxel * 0.47, voxel * 0.15, voxel * 0.1), matVisor);
-        visor.position.set(0, 0, voxel * 0.23);
-        headGroup.add(headBox);
-        headGroup.add(visor);
-        
-        const torsoGroup = new THREE.Group();
-        torsoGroup.position.y = voxel * 0.1;
-        const torso = new THREE.Mesh(new THREE.BoxGeometry(voxel * 0.5, voxel * 0.6, voxel * 0.35), matBody);
-        
-        const legGeo = new THREE.BoxGeometry(voxel * 0.18, voxel * 0.4, voxel * 0.18);
-        const legL = new THREE.Mesh(legGeo, matBody);
-        legL.position.set(voxel * -0.12, -voxel * 0.5, 0);
-        const legR = new THREE.Mesh(legGeo, matBody);
-        legR.position.set(voxel * 0.12, -voxel * 0.5, 0);
-        
-        const armGeo = new THREE.BoxGeometry(voxel * 0.15, voxel * 0.45, voxel * 0.15);
-        const armL = new THREE.Mesh(armGeo, matBody);
-        armL.position.set(voxel * -0.35, 0, 0);
-        const armR = new THREE.Mesh(armGeo, matBody);
-        armR.position.set(voxel * 0.35, 0, 0);
-        
-        torsoGroup.add(torso);
-        torsoGroup.add(legL);
-        torsoGroup.add(legR);
-        torsoGroup.add(armL);
-        torsoGroup.add(armR);
-
-        group.add(headGroup);
-        group.add(torsoGroup);
-
-        const carried = new THREE.Mesh(
-          new THREE.BoxGeometry(voxel * 0.45, voxel * 0.45, voxel * 0.45),
-          new THREE.MeshPhongMaterial({ color: 0xffffff }),
-        );
-        carried.position.set(0, voxel * 1.15, 0);
-        carried.visible = false;
-        group.add(carried);
-
-        // Locator beacon — thin neon beam so the tiny worker is findable in
-        // large scans (fits the Hades/Transistor neon-accent aesthetic).
-        const beacon = new THREE.Mesh(
-          new THREE.CylinderGeometry(voxel * 0.08, voxel * 0.08, voxel * 40, 6, 1, true),
-          new THREE.MeshBasicMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.3, depthWrite: false }),
-        );
-        beacon.position.y = voxel * 20;
-        group.add(beacon);
-
-        console.log("[tinyworld] worker spawned at cell", spawn[0], spawn[1], spawn[2]);
-        
-        scene.add(group);
-        workers.push({
-          vx: spawn[0], vy: spawn[1], vz: spawn[2],
-          targetVX: spawn[0], targetVY: spawn[1], targetVZ: spawn[2],
-          worldX: 0, worldY: 0, worldZ: 0,
-          moveStartMs: 0, moveEndMs: 0,
-          path: [], pathIdx: 0,
-          mode: "idle",
-          modeStartMs: performance.now(),
-          carrying: null, pickupTarget: null, placeTarget: null,
-          group, carriedMesh: carried,
-          plan: null,
-          planRequested: false,
-          lastPlanFailMs: 0,
-        });
       }
     }
+
     let lastWorkerTickMs = 0;
+    let lastWorkerUiMs = 0;
+    let lastWorkerUiHadWorker = false;
     // Slower than v1 — workers now feel deliberate. Cell move 2500ms,
     // pickup 8000ms, place 4000ms. LLM call latency (~1s) is invisible
     // at these timings.
@@ -2520,6 +3106,44 @@ export default function TinyWorld() {
     const W_PICK_MS = 8000;
     const W_PLACE_MS = 4000;
     const W_PLAN_BACKOFF_MS = 6000;
+    const W_WANDER_MS = 3500;
+    const W_BUILD_STEP_MS = 1400;
+    const BUILD_BLUEPRINTS: Record<string, Array<{ dx: number; dy: number; dz: number }>> = {
+      pillar: [
+        { dx: 0, dy: 0, dz: 0 }, { dx: 0, dy: 1, dz: 0 }, { dx: 0, dy: 2, dz: 0 }, { dx: 0, dy: 3, dz: 0 },
+      ],
+      wall: [
+        { dx: -1, dy: 0, dz: 0 }, { dx: 0, dy: 0, dz: 0 }, { dx: 1, dy: 0, dz: 0 },
+        { dx: -1, dy: 1, dz: 0 }, { dx: 0, dy: 1, dz: 0 }, { dx: 1, dy: 1, dz: 0 },
+      ],
+      arch: [
+        { dx: 0, dy: 0, dz: 0 }, { dx: 0, dy: 1, dz: 0 }, { dx: 0, dy: 2, dz: 0 },
+        { dx: 1, dy: 2, dz: 0 },
+        { dx: 2, dy: 0, dz: 0 }, { dx: 2, dy: 1, dz: 0 }, { dx: 2, dy: 2, dz: 0 },
+      ],
+      hut: [
+        { dx: 0, dy: 0, dz: 0 }, { dx: 1, dy: 0, dz: 0 }, { dx: 2, dy: 0, dz: 0 },
+        { dx: 0, dy: 0, dz: 2 }, { dx: 1, dy: 0, dz: 2 }, { dx: 2, dy: 0, dz: 2 },
+        { dx: 0, dy: 1, dz: 0 }, { dx: 2, dy: 1, dz: 2 },
+      ],
+      cap: [
+        { dx: 0, dy: 0, dz: 0 },
+        { dx: 1, dy: 0, dz: 0 }, { dx: -1, dy: 0, dz: 0 },
+        { dx: 0, dy: 0, dz: 1 }, { dx: 0, dy: 0, dz: -1 },
+      ],
+      tower: [
+        { dx: 0, dy: 0, dz: 0 }, { dx: 0, dy: 1, dz: 0 }, { dx: 0, dy: 2, dz: 0 },
+        { dx: 0, dy: 3, dz: 0 }, { dx: 0, dy: 4, dz: 0 }, { dx: 0, dy: 5, dz: 0 },
+      ],
+      ring: [
+        { dx: 2, dy: 0, dz: 0 }, { dx: -2, dy: 0, dz: 0 },
+        { dx: 0, dy: 0, dz: 2 }, { dx: 0, dy: 0, dz: -2 },
+        { dx: 2, dy: 0, dz: 1 }, { dx: 2, dy: 0, dz: -1 },
+        { dx: -2, dy: 0, dz: 1 }, { dx: -2, dy: 0, dz: -1 },
+        { dx: 1, dy: 0, dz: 2 }, { dx: -1, dy: 0, dz: 2 },
+        { dx: 1, dy: 0, dz: -2 }, { dx: -1, dy: 0, dz: -2 },
+      ],
+    };
     const tickWorkers = (now: number) => {
       for (const w of workers) {
         if (w.mode === "idle") {
@@ -2529,7 +3153,7 @@ export default function TinyWorld() {
               w.planRequested = true;
               w.mode = "planning";
               w.modeStartMs = now;
-              fetchWorkerPlan(w.vx, w.vy, w.vz).then((plan) => {
+              fetchWorkerPlan(w).then((plan) => {
                 w.planRequested = false;
                 if (plan) {
                   w.plan = plan;
@@ -2546,50 +3170,180 @@ export default function TinyWorld() {
                 if (w.mode === "planning") w.mode = "idle";
               });
             }
+            // Wander fallback so workers don\'t freeze while plans are unavailable.
+            if (!w.planRequested && w.mode === "idle") {
+              const lastWander = (w as any).lastWanderMs ?? 0;
+              if (now - lastWander > W_WANDER_MS) {
+                (w as any).lastWanderMs = now;
+                const R = 6;
+                let started = false;
+                for (let tries = 0; tries < 8; tries++) {
+                  const dx = Math.floor(Math.random() * (R * 2 + 1)) - R;
+                  const dz = Math.floor(Math.random() * (R * 2 + 1)) - R;
+                  if (dx === 0 && dz === 0) continue;
+                  const tvx = w.vx + dx;
+                  const tvz = w.vz + dz;
+                  const tvy = topAt(tvx, tvz);
+                  if (tvy === null) continue;
+                  const path = aStarOnGround(w.vx, w.vy, w.vz, tvx, tvy + 1, tvz);
+                  if (path && path.length >= 1) {
+                    w.path = path; w.pathIdx = 0;
+                    w.placeTarget = null; w.pickupTarget = null; (w as any).currentAction = null;
+                    w.mode = "walking"; w.moveEndMs = now;
+                    (w as any).wanderFails = 0;
+                    started = true;
+                    break;
+                  }
+                }
+                if (!started) {
+                  (w as any).wanderFails = ((w as any).wanderFails ?? 0) + 1;
+                  // After 2 failed wanders, ask the LLM for a stuck-recovery plan (it can use Mine to dig out).
+                  if ((w as any).wanderFails >= 2 && !(w as any).stuckPlanRequested) {
+                    (w as any).stuckPlanRequested = true;
+                    w.planRequested = true;
+                    w.mode = "planning";
+                    w.modeStartMs = now;
+                    fetchWorkerPlan(w, { stuck: true }).then((plan) => {
+                      w.planRequested = false;
+                      (w as any).stuckPlanRequested = false;
+                      if (plan) {
+                        w.plan = plan;
+                        (w as any).wanderFails = 0;
+                      } else {
+                        w.lastPlanFailMs = performance.now();
+                      }
+                      if (w.mode === "planning") {
+                        w.mode = "idle";
+                        w.modeStartMs = performance.now();
+                      }
+                    }).catch(() => {
+                      w.planRequested = false;
+                      (w as any).stuckPlanRequested = false;
+                      w.lastPlanFailMs = performance.now();
+                      if (w.mode === "planning") w.mode = "idle";
+                    });
+                  }
+                  // After 4 failed wanders (LLM also gave up), teleport-rescue as last resort.
+                  if ((w as any).wanderFails >= 4) {
+                    const R2 = 12;
+                    let best: { vx: number; vy: number; vz: number; d2: number } | null = null;
+                    for (let dx = -R2; dx <= R2; dx++) {
+                      for (let dz = -R2; dz <= R2; dz++) {
+                        if (dx === 0 && dz === 0) continue;
+                        const tvx = w.vx + dx;
+                        const tvz = w.vz + dz;
+                        const tvy = topAt(tvx, tvz);
+                        if (tvy === null) continue;
+                        const d2 = dx * dx + dz * dz;
+                        if (!best || d2 < best.d2) best = { vx: tvx, vy: tvy + 1, vz: tvz, d2 };
+                      }
+                    }
+                    if (best) {
+                      w.vx = best.vx; w.vy = best.vy; w.vz = best.vz;
+                      w.targetVX = best.vx; w.targetVY = best.vy; w.targetVZ = best.vz;
+                      w.path = []; w.pathIdx = 0;
+                      (w as any).wanderFails = 0;
+                    }
+                  }
+                }
+              }
+            }
             continue;
           }
-          const next = w.plan.targets.find((t) => !t.done);
+          const next = w.plan.actions.find((a) => !a.done);
           if (!next) {
             w.plan = null;
             continue;
           }
-          if (w.carrying && w.carrying.layer !== next.layer) {
-            w.placeTarget = { vx: w.vx, vy: w.vy, vz: w.vz };
-            w.mode = "placing";
-            w.modeStartMs = now;
-            continue;
-          }
-          if (w.carrying && w.carrying.layer === next.layer) {
-            const destVY = (colTop(next.vx, next.vz) ?? 0);
-            const dest = findAdjacentWalkableW(next.vx, destVY, next.vz);
-            if (!dest) { next.done = true; continue; }
-            const path = aStarOnGround(w.vx, w.vy, w.vz, dest[0], dest[1], dest[2]);
-            if (path && path.length >= 1) {
-              w.path = path;
-              w.pathIdx = 0;
-              w.placeTarget = { vx: next.vx, vy: destVY, vz: next.vz, planTargetRef: next };
-              w.pickupTarget = null;
-              w.mode = "walking";
-              w.moveEndMs = now;
-            } else {
-              next.done = true;
-            }
-          } else {
+          
+          if (next.action === "PickUp" && next.layer) {
+            if (w.carrying) { next.done = true; continue; }
             const src = findSourceBlockForLayer(w.vx, w.vy, w.vz, next.layer);
             if (!src) { next.done = true; continue; }
             const dest = findAdjacentWalkableW(src.vx, src.vy, src.vz);
             if (!dest) { next.done = true; continue; }
             const path = aStarOnGround(w.vx, w.vy, w.vz, dest[0], dest[1], dest[2]);
             if (path && path.length >= 1) {
-              w.path = path;
-              w.pathIdx = 0;
-              w.pickupTarget = src;
-              w.placeTarget = null;
-              w.mode = "walking";
-              w.moveEndMs = now;
-            } else {
-              next.done = true;
+              w.path = path; w.pathIdx = 0;
+              w.pickupTarget = { ...src, actionRef: next };
+              w.placeTarget = null; w.currentAction = next;
+              w.mode = "walking"; w.moveEndMs = now;
+            } else { next.done = true; }
+          }
+          else if (next.action === "Place" && next.vx !== undefined && next.vz !== undefined) {
+            if (!w.carrying) { next.done = true; continue; }
+            const destVY = (colTop(next.vx, next.vz) ?? 0);
+            const dest = findAdjacentWalkableW(next.vx, destVY, next.vz);
+            if (!dest) { next.done = true; continue; }
+            const path = aStarOnGround(w.vx, w.vy, w.vz, dest[0], dest[1], dest[2]);
+            if (path && path.length >= 1) {
+              w.path = path; w.pathIdx = 0;
+              w.placeTarget = { vx: next.vx, vy: destVY, vz: next.vz, actionRef: next };
+              w.pickupTarget = null; w.currentAction = next;
+              w.mode = "walking"; w.moveEndMs = now;
+            } else { next.done = true; }
+          }
+          else if (next.action === "MoveTo" && next.vx !== undefined && next.vz !== undefined) {
+            const destVY = (colTop(next.vx, next.vz) ?? 0);
+            const path = aStarOnGround(w.vx, w.vy, w.vz, next.vx, destVY, next.vz);
+            if (path && path.length >= 1) {
+              w.path = path; w.pathIdx = 0;
+              w.placeTarget = null; w.pickupTarget = null; w.currentAction = next;
+              w.mode = "walking"; w.moveEndMs = now;
+            } else { next.done = true; }
+          }
+          else if (next.action === "Interact") {
+            if (next.target === "press" && pressPersistRef.current?.built) {
+              const pvx = pressPersistRef.current.vx, pvz = pressPersistRef.current.vz;
+              const path = aStarOnGround(w.vx, w.vy, w.vz, pvx, colTop(pvx, pvz) ?? w.vy, pvz);
+              if (path && path.length >= 1) {
+                w.path = path; w.pathIdx = 0;
+                w.placeTarget = null; w.pickupTarget = null; w.currentAction = next;
+                w.mode = "walking"; w.moveEndMs = now;
+              } else { next.done = true; }
+            } else { next.done = true; }
+          } else if (next.action === "Mine") {
+            let mineMesh: any = null;
+            const mineKey = w.vx + "," + (w.vy - 1) + "," + w.vz;
+            for (const m of meshesRef.current) {
+              const slotMap = m.userData?.slotMap as Map<string, number> | undefined;
+              if (slotMap?.has(mineKey)) { mineMesh = m; break; }
             }
+            if (mineMesh && removeBlockFrom(mineMesh, w.vx, w.vy - 1, w.vz, "worker-mine")) {
+              w.vy = w.vy - 1;
+              w.targetVY = w.vy;
+              (w as any).wanderFails = 0;
+            }
+            next.done = true;
+          } else if (next.action === "Build" && next.vx !== undefined && next.vz !== undefined && next.layer) {
+            const sp = stockpileByLayerRef.current as Record<string, number>;
+            let offsets: Array<{ dx: number; dy: number; dz: number }> | null = null;
+            if (Array.isArray(next.blueprint) && next.blueprint.length > 0) {
+              offsets = next.blueprint.slice(0, 12).filter(
+                (o: any) => typeof o?.dx === "number" && typeof o?.dy === "number" && typeof o?.dz === "number",
+              );
+            } else if (next.structure && BUILD_BLUEPRINTS[next.structure]) {
+              offsets = BUILD_BLUEPRINTS[next.structure];
+            }
+            if (!offsets || offsets.length === 0) { next.done = true; continue; }
+            const have = sp[next.layer] || 0;
+            if (have < offsets.length) {
+              console.warn("[tinyworld] Build skipped: insufficient stockpile", { layer: next.layer, need: offsets.length, have });
+              next.done = true; continue;
+            }
+            const anchorVY = (colTop(next.vx, next.vz) ?? 0);
+            const dest = findAdjacentWalkableW(next.vx, anchorVY, next.vz);
+            if (!dest) { next.done = true; continue; }
+            const path = aStarOnGround(w.vx, w.vy, w.vz, dest[0], dest[1], dest[2]);
+            if (path && path.length >= 1) {
+              w.path = path; w.pathIdx = 0;
+              w.placeTarget = null; w.pickupTarget = null;
+              w.buildTarget = { vx: next.vx, vz: next.vz, layer: next.layer, offsets, idx: 0, lastStepMs: 0, actionRef: next, type: next.structure || (Array.isArray(next.blueprint) ? "custom" : "build"), startedMs: now };
+              w.currentAction = next;
+              w.mode = "walking"; w.moveEndMs = now;
+            } else { next.done = true; }
+          } else {
+            next.done = true;
           }
         } else if (w.mode === "planning") {
           // Awaiting fetch — handled in promise resolver above.
@@ -2616,17 +3370,28 @@ export default function TinyWorld() {
             }
           } else {
             if (w.pickupTarget) {
-              w.mode = "pickingUp";
+              w.mode = "picking";
               w.modeStartMs = now;
             } else if (w.placeTarget) {
               w.mode = "placing";
               w.modeStartMs = now;
-            } else {
-              w.mode = "idle";
+            } else if (w.buildTarget) {
+              w.buildTarget.lastStepMs = now - W_BUILD_STEP_MS;
+              w.mode = "mining";
               w.modeStartMs = now;
+            } else {
+              if (w.currentAction && w.currentAction.action === "Interact") {
+                w.mode = "stuck";
+                w.modeStartMs = now;
+              } else {
+                if (w.currentAction) w.currentAction.done = true;
+                w.currentAction = null;
+                w.mode = "idle";
+                w.modeStartMs = now;
+              }
             }
           }
-        } else if (w.mode === "pickingUp") {
+        } else if (w.mode === "picking") {
           if (now - w.modeStartMs < W_PICK_MS) continue;
           const t = w.pickupTarget!;
           const pickGrade = blockGradesRef.current.get(t.vx + "," + t.vy + "," + t.vz) || "raw";
@@ -2639,7 +3404,9 @@ export default function TinyWorld() {
               w.carriedMesh.visible = true;
             }
           }
+          if (t.actionRef) t.actionRef.done = true;
           w.pickupTarget = null;
+          w.currentAction = null;
           w.mode = "idle";
           w.modeStartMs = now;
         } else if (w.mode === "placing") {
@@ -2656,16 +3423,113 @@ export default function TinyWorld() {
               placed = true;
             }
           }
-          if (placed && w.placeTarget?.planTargetRef) {
-            w.placeTarget.planTargetRef.done = true;
-          }
+          if (w.placeTarget?.actionRef) w.placeTarget.actionRef.done = true;
           // On failure keep carrying — the block stays in the stockpile
           // instead of silently vanishing like it used to.
           if (placed) {
             w.carrying = null;
             if (w.carriedMesh) w.carriedMesh.visible = false;
           }
-          w.placeTarget = null;
+          w.placeTarget = null; w.currentAction = null;
+          w.mode = "idle"; w.modeStartMs = now;
+        } else if (w.mode === "mining") {
+          const bt = w.buildTarget;
+          if (!bt) { w.mode = "idle"; w.modeStartMs = now; continue; }
+          if (now - bt.lastStepMs < W_BUILD_STEP_MS) continue;
+          const sp = stockpileByLayerRef.current as Record<string, number>;
+          if ((sp[bt.layer] || 0) <= 0) {
+            console.warn("[tinyworld] Build aborted: stockpile depleted mid-build", { layer: bt.layer });
+            if (bt.actionRef) bt.actionRef.done = true;
+            w.buildTarget = null; w.currentAction = null;
+            w.mode = "idle"; w.modeStartMs = now;
+            continue;
+          }
+          let targetMesh: any = null;
+          for (const m of meshesRef.current) {
+            if (m.userData?.layer === bt.layer && (m.userData?.freeSlots?.length || 0) > 0) { targetMesh = m; break; }
+          }
+          if (!targetMesh) {
+            if (bt.actionRef) bt.actionRef.done = true;
+            w.buildTarget = null; w.currentAction = null;
+            w.mode = "idle"; w.modeStartMs = now;
+            continue;
+          }
+          while (bt.idx < bt.offsets.length) {
+            const o = bt.offsets[bt.idx];
+            const bx = bt.vx + o.dx;
+            const bz = bt.vz + o.dz;
+            const baseTop = (colTop(bx, bz) ?? 0);
+            const by = baseTop + 1 + o.dy;
+            bt.idx++;
+            if (spawnBlockInto(targetMesh, bx, by, bz, "worker-build")) {
+              syncGroundAfterPlace(bx, by, bz, bt.layer);
+              ledgerMove("stockpile", "void", 1, "worker-build", bt.layer, lowestGrade(bt.layer));
+              bt.lastStepMs = now;
+              break;
+            }
+          }
+          if (bt.idx >= bt.offsets.length || (sp[bt.layer] || 0) <= 0) {
+            if (bt.idx >= bt.offsets.length) {
+              const fp: Array<{ dx: number; dz: number }> = [];
+              const seen = new Set<string>();
+              let maxDy = 0;
+              for (const o of bt.offsets) {
+                const k = o.dx + "," + o.dz;
+                if (!seen.has(k)) { seen.add(k); fp.push({ dx: o.dx, dz: o.dz }); }
+                if (o.dy > maxDy) maxDy = o.dy;
+              }
+              const baseTop = (colTop(bt.vx, bt.vz) ?? 0);
+              builtStructuresRef.current.push({
+                type: (bt as any).type || "build",
+                vx: bt.vx,
+                vz: bt.vz,
+                layer: bt.layer,
+                topY: baseTop,
+                footprint: fp,
+                builtMs: now,
+              });
+              if (builtStructuresRef.current.length > 32) {
+                builtStructuresRef.current.splice(0, builtStructuresRef.current.length - 32);
+              }
+            }
+            if (bt.actionRef) bt.actionRef.done = true;
+            w.buildTarget = null; w.currentAction = null;
+            w.mode = "idle"; w.modeStartMs = now;
+          }
+        } else if (w.mode === "stuck") {
+          if (now - w.modeStartMs < W_PLACE_MS) continue;
+          if (w.currentAction?.target === "press" && pressPersistRef.current?.built) {
+            // Compress whatever is stockpiled that has >= 4
+            for (const layer of ["dirt", "stone", "metal", "densium"]) {
+              if ((stockpileByLayerRef.current[layer] || 0) >= 4) {
+                // We\'ll just call compress for them if possible
+                // They shouldn\'t be holding it, it comes from stockpile
+                const pool = gradePool(layer);
+                const clean = pool.pure >= 4;
+                if (clean) pool.pure -= 4;
+                else drainPoolLow(layer, 4);
+                stockpileByLayerRef.current[layer] -= 4;
+                const nextLayer = layer === "dirt" ? "stone" : layer === "stone" ? "metal" : layer === "metal" ? "densium" : "core";
+                if (!clean) {
+                  stockpileByLayerRef.current["slug_" + nextLayer] = (stockpileByLayerRef.current["slug_" + nextLayer] || 0) + 1;
+                } else {
+                  stockpileByLayerRef.current[nextLayer] = (stockpileByLayerRef.current[nextLayer] || 0) + 1;
+                  gradePool(nextLayer).raw += 1;
+                }
+                const L = ledgerRef.current as any;
+                L.stockpile -= 3;
+                L.baseline -= 3;
+                if (clean) {
+                  queueBlockEvent("compress", 3, "press_" + layer);
+                } else {
+                  queueBlockEvent("compress", 3, "slug_" + layer);
+                }
+                break;
+              }
+            }
+          }
+          if (w.currentAction) w.currentAction.done = true;
+          w.currentAction = null;
           w.mode = "idle";
           w.modeStartMs = now;
         }
@@ -2734,7 +3598,7 @@ export default function TinyWorld() {
           visor.material.color.setRGB(r/255, g/255, b/255);
         }
 
-        // Face the direction of travel (snap, not lerp — they're tiny).
+        // Face the direction of travel (snap, not lerp — they\'re tiny).
         if (w.mode === "walking" && (w.targetVX !== w.vx || w.targetVZ !== w.vz)) {
           w.group.rotation.y = Math.atan2(w.targetVX - w.vx, w.targetVZ - w.vz);
         }
@@ -2748,18 +3612,25 @@ export default function TinyWorld() {
 
     const getPlacementTarget = () => {
       const hit = marchRay();
-      let vx: number;
-      let vz: number;
       if (hit) {
-        vx = hit.vx;
-        vz = hit.vz;
-      } else {
-        const forward = new THREE.Vector3();
-        camera.getWorldDirection(forward);
-        const target = camera.position.clone().addScaledVector(forward, REACH * 0.6);
-        vx = Math.round(target.x / voxel) + cxRound;
-        vz = Math.round(target.z / voxel) + czRound;
+        // Place against the face we hit — normal points back toward camera.
+        const vx = hit.vx + hit.nx;
+        const vy = hit.vy + hit.ny;
+        const vz = hit.vz + hit.nz;
+        return {
+          vx,
+          vy,
+          vz,
+          world: new THREE.Vector3((vx - cxRound) * voxel, vy * voxel, (vz - czRound) * voxel),
+        };
       }
+      // No hit: fall back to top-of-column ahead (preserves the old behavior
+      // when aiming at sky).
+      const forward = new THREE.Vector3();
+      camera.getWorldDirection(forward);
+      const target = camera.position.clone().addScaledVector(forward, REACH * 0.6);
+      const vx = Math.round(target.x / voxel) + cxRound;
+      const vz = Math.round(target.z / voxel) + czRound;
       const top = topAt(vx, vz);
       if (top === null) return null;
       return {
@@ -2785,8 +3656,39 @@ export default function TinyWorld() {
     };
 
     const tryPickup = () => {
-      if (!fp.isLocked || carryState || chargeState) return;
-      const hit = marchRay();
+      if ((!fp.isLocked && !isMobileRef.current) || carryState || chargeState) return;
+      let hit = marchRay();
+      if (!hit && isMobileRef.current) {
+        // Mobile aim is imprecise — fall back to nearest pickable top block within ~4 voxels.
+        const px = Math.floor(camera.position.x / voxel) + cxRound;
+        const pz = Math.floor(camera.position.z / voxel) + czRound;
+        const py = Math.floor(camera.position.y / voxel);
+        let bestD2 = Infinity;
+        for (let dx = -4; dx <= 4; dx++) {
+          for (let dz = -4; dz <= 4; dz++) {
+            const vx = px + dx, vz = pz + dz;
+            const col = colMap.get(vx + "," + vz);
+            if (!col || col.size === 0) continue;
+            let top = -Infinity;
+            for (const y of col) if (y > top) top = y;
+            if (top > py + 2) continue;
+            const dy = top - py;
+            const d2 = dx * dx + dz * dz + dy * dy;
+            if (d2 >= bestD2) continue;
+            for (const m of meshesRef.current) {
+              const slotMap = m.userData?.slotMap as Map<string, number>;
+              const slot = slotMap?.get(vx + "," + top + "," + vz);
+              if (slot === undefined) continue;
+              const layer = (m.userData?.layer as string) || "block";
+              const hardMs = MOVE_MS[layer];
+              if (hardMs !== undefined && !isFinite(hardMs)) break;
+              bestD2 = d2;
+              hit = { vx, vy: top, vz, mesh: m, slot };
+              break;
+            }
+          }
+        }
+      }
       if (!hit) return;
       const mesh = hit.mesh;
       const layer = (mesh.userData?.layer as string) || "block";
@@ -2831,7 +3733,7 @@ export default function TinyWorld() {
 
     // Reveal previously hidden (occlusion-culled) blocks adjacent to a freshly
     // emptied cell. Walks the 6 face-neighbors of (vx, vy, vz); any neighbor
-    // that's parked in a hiddenMap gets its matrix rewritten + registered.
+    // that\'s parked in a hiddenMap gets its matrix rewritten + registered.
     const tryRevealHidden = (vx: number, vy: number, vz: number) => {
       const ds = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
       for (const m of meshesRef.current) {
@@ -2869,27 +3771,35 @@ export default function TinyWorld() {
       if (!carryState) return;
       const freeSlots = carryState.mesh.userData.freeSlots as number[];
       if (!freeSlots.length) return false;
-      const top = topAt(vx, vz);
-      if (top === null) return false;
-      const snappedY = top + 1;
+      // Reject if target voxel is already solid.
+      if (solidAt(vx, vy, vz)) return false;
+      // Require at least one adjacent occupied face — no floating placement.
+      // Also accept ground-level under foot as an anchor (groundRef map).
+      const hasNeighbor =
+        solidAt(vx + 1, vy, vz) || solidAt(vx - 1, vy, vz) ||
+        solidAt(vx, vy + 1, vz) || solidAt(vx, vy - 1, vz) ||
+        solidAt(vx, vy, vz + 1) || solidAt(vx, vy, vz - 1);
+      const groundY = groundRef.current?.map.get(vx + "," + vz);
+      const onGround = groundY !== undefined && vy === groundY + 1;
+      if (!hasNeighbor && !onGround) return false;
       const slot = freeSlots.pop()!;
-      dummy.position.set((vx - cxRound) * voxel, snappedY * voxel, (vz - czRound) * voxel);
+      dummy.position.set((vx - cxRound) * voxel, vy * voxel, (vz - czRound) * voxel);
       dummy.rotation.set(0, 0, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
       carryState.mesh.setMatrixAt(slot, dummy.matrix);
       carryState.mesh.instanceMatrix.needsUpdate = true;
-      (carryState.mesh.userData.slotMap as Map<string, number>).set(vx + "," + snappedY + "," + vz, slot);
-      addCol(vx, snappedY, vz);
+      (carryState.mesh.userData.slotMap as Map<string, number>).set(vx + "," + vy + "," + vz, slot);
+      addCol(vx, vy, vz);
       protAdd(vx, vz, carryState.layer, 1);
       const cGrade = (carryState as any).grade || "raw";
       ledgerMove("stockpile", "world", 1, "user", carryState.layer, cGrade);
-      if (cGrade !== "raw") blockGradesRef.current.set(vx + "," + snappedY + "," + vz, cGrade);
-      // If we placed a floor-ish block within step range, raise walkable ground.
+      if (cGrade !== "raw") blockGradesRef.current.set(vx + "," + vy + "," + vz, cGrade);
+      // If we placed a floor-ish block at the new top of column, raise walkable ground.
       if (groundRef.current && (carryState.layer === "grass" || carryState.layer === "dryGrass" || carryState.layer === "snow" || carryState.layer === "wet" || carryState.layer === "dirt")) {
         const gKey = vx + "," + vz;
         const gCurr = groundRef.current.map.get(gKey);
-        if (gCurr === undefined || snappedY > gCurr) groundRef.current.map.set(gKey, snappedY);
+        if (gCurr === undefined || vy > gCurr) groundRef.current.map.set(gKey, vy);
       }
       return true;
     };
@@ -3002,7 +3912,7 @@ export default function TinyWorld() {
     };
 
     const tryPlace = () => {
-      if (!carryState || !fp.isLocked) return;
+      if (!carryState || (!fp.isLocked && !isMobileRef.current)) return;
       const target = getPlacementTarget();
       if (!target) return;
       if (placeAt(target.vx, target.vy, target.vz)) {
@@ -3025,6 +3935,34 @@ export default function TinyWorld() {
     renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
     renderer.domElement.addEventListener("mousedown", (ev: MouseEvent) => {
       if (!fp.isLocked) return;
+      const tm = targetModeRef.current;
+      if (tm) {
+        if (ev.button !== 0) { setTargetMode(null); return; }
+        const hit = marchRay();
+        if (!hit) {
+          console.log("[tinyworld] " + tm + ": aim at a block first");
+          return;
+        }
+        if (tm === "placeBomb") {
+          const sp = stockpileByLayerRef.current as any;
+          let tier: string | null = null;
+          for (const t of ["core", "densium", "metal", "stone", "dirt"]) {
+            if ((sp["slug_" + t] || 0) >= 1) { tier = t; break; }
+          }
+          if (!tier) {
+            console.warn("[tinyworld] place bomb: no slugs available");
+            setTargetMode(null);
+            return;
+          }
+          const res = placeBomb(hit.vx, hit.vy + 1, hit.vz, 1, tier);
+          console.log("[tinyworld] place bomb", res);
+        } else if (tm === "flyShip") {
+          const res = flyShip(hit.vx, hit.vz, 0);
+          console.log("[tinyworld] fly ship", res);
+        }
+        setTargetMode(null);
+        return;
+      }
       if (ev.button === 2) { returnCarry(); return; }
       if (ev.button !== 0) return;
       if (carryState) tryPlace();
@@ -3037,7 +3975,13 @@ export default function TinyWorld() {
     const onKeyDown = (e: KeyboardEvent) => {
       keysRef.current[e.code] = true;
       if (e.code === "KeyF" && !fp.isLocked) enterWalkRef.current();
-      if (e.code === "Escape" && fp.isLocked) fp.unlock();
+      if (e.code === "Escape" && fp.isLocked) {
+        if (targetModeRef.current) {
+          setTargetMode(null);
+        } else {
+          fp.unlock();
+        }
+      }
       if (e.code === "KeyG" && fp.isLocked) returnCarry();
       if (e.code === "Space" && fp.isLocked && Math.abs(velocityYRef.current) < 0.01) {
         velocityYRef.current = JUMP_VELOCITY;
@@ -3196,6 +4140,7 @@ export default function TinyWorld() {
       group.add(body);
       group.add(eye);
       group.add(vBeacon);
+      group.userData.eye = eye;
       return group;
     };
 
@@ -3215,6 +4160,38 @@ export default function TinyWorld() {
 
     const VOID_TICK_MS = 1000;
     const VOID_EAT_BASE_MS = 6000;
+    // Eat-fx pool: expanding pink wireframe cube spawned at the eaten block.
+    // Pooled meshes so spam doesn\'t allocate. Ticked in the main render loop.
+    type EatFx = { mesh: any; t0: number };
+    const eatFx: EatFx[] = [];
+    const eatFxPool: any[] = [];
+    const spawnEatFx = (vx: number, vy: number, vz: number) => {
+      let m = eatFxPool.pop();
+      if (!m) {
+        const g = new THREE.EdgesGeometry(new THREE.BoxGeometry(voxel * 1.0, voxel * 1.0, voxel * 1.0));
+        const mat = new THREE.LineBasicMaterial({ color: 0xff5fbd, transparent: true, opacity: 1, depthWrite: false });
+        m = new THREE.LineSegments(g, mat);
+      }
+      m.material.opacity = 1;
+      m.scale.setScalar(1);
+      m.position.set((vx - cxRound) * voxel, vy * voxel, (vz - czRound) * voxel);
+      scene.add(m);
+      eatFx.push({ mesh: m, t0: performance.now() });
+    };
+    const tickEatFx = (now: number) => {
+      for (let i = eatFx.length - 1; i >= 0; i--) {
+        const f = eatFx[i];
+        const t = (now - f.t0) / 450;
+        if (t >= 1) {
+          scene.remove(f.mesh);
+          eatFxPool.push(f.mesh);
+          eatFx.splice(i, 1);
+        } else {
+          f.mesh.scale.setScalar(1 + t * 0.8);
+          f.mesh.material.opacity = 1 - t;
+        }
+      }
+    };
     const tickVoidCreatures = (now: number) => {
       const phase = voidPhaseNow();
       const cap = phase === "aggressive" ? 3 : phase === "active" ? 1 : 0;
@@ -3234,6 +4211,19 @@ export default function TinyWorld() {
             c.vx += (ddx / dist) * step;
             c.vy += (ddy / dist) * step;
             c.vz += (ddz / dist) * step;
+          }
+          // Surface-clamp Y: hover above the topmost block in this column so
+          // the wraith doesn\'t phase through walls/towers. Reads colMap which
+          // is already maintained as blocks change.
+          {
+            const cxNow = Math.round(c.vx), czNow = Math.round(c.vz);
+            const colSetNow = colMap.get(cxNow + "," + czNow);
+            if (colSetNow && colSetNow.size > 0) {
+              let topY = -Infinity;
+              for (const y of colSetNow) if (y > topY) topY = y;
+              const hoverY = topY + 1.2;
+              if (c.vy < hoverY) c.vy = hoverY;
+            }
           }
           const nearBomb = bombs.find((b) => Math.hypot(b.vx - c.vx, b.vz - c.vz) < 14);
           if (nearBomb) {
@@ -3279,6 +4269,10 @@ export default function TinyWorld() {
                       c.eaten += 1;
                       voidEatenTotal += 1;
                       ate = true;
+                      // Visual feedback: pink wireframe burst at eaten cell
+                      // + eye flare on the wraith itself.
+                      spawnEatFx(cx, vtarget, cz);
+                      (c as any).eyeFlareUntil = now + 220;
                     }
                     break;
                   }
@@ -3306,6 +4300,12 @@ export default function TinyWorld() {
         const hoverY = (c.vy + 1.1) * voxel + Math.sin(now * 0.0022 + c.bobPhase) * voxel * 0.35;
         c.group.position.set((c.vx - cxRound) * voxel, hoverY, (c.vz - czRound) * voxel);
         c.group.rotation.y = now * 0.0009 + c.bobPhase;
+        const eye = c.group.userData.eye;
+        if (eye && eye.scale) {
+          const flareUntil = (c as any).eyeFlareUntil || 0;
+          const t = Math.max(0, (flareUntil - now) / 220);
+          eye.scale.setScalar(1 + t * 1.6);
+        }
       }
     };
 
@@ -3326,7 +4326,7 @@ export default function TinyWorld() {
     const blockGrades = blockGradesRef.current;
 
     // Restore saved scan-economy layers — snapshotLiveLayers persists them
-    // under their layer names but buildWorld's addLayer calls only rebuild
+    // under their layer names but buildWorld\'s addLayer calls only rebuild
     // the original scan layers. spawnBlockInto drains VOID, and these blocks
     // were already part of the saved baseline, so compensate exactly like
     // scanNewLand does (void refund + baseline raise).
@@ -3351,7 +4351,7 @@ export default function TinyWorld() {
     }
 
     // Scan-seconds: one banked currency (docs/scan-economy.md). Bloom feeds
-    // the bank via ledgerMove's grow accrual; spending is expand (scan new
+    // the bank via ledgerMove\'s grow accrual; spending is expand (scan new
     // land) or purge (re-sweep owned territory to expel the void).
     const SCAN_SEC_CAP = 60;
     const SCAN_COST_SEC = 10;
@@ -3996,7 +4996,7 @@ export default function TinyWorld() {
         }
       }
 
-      // 3. The Return un-makes the void's only ordered things — creatures in
+      // 3. The Return un-makes the void\'s only ordered things — creatures in
       // radius dissipate, their bound stolen mass scattering back void→world.
       let dissipated = 0, massReturned = 0;
       for (const c of [...voidCreatures]) {
@@ -4096,7 +5096,7 @@ worker: none");
           const a = __twSamples[i - 1], b = __twSamples[i];
           const horiz = Math.hypot(b.x - a.x, b.z - a.z);
           if (horiz < voxel * 0.01) continue;
-          // Skip teleport-sized discontinuities — they're not walk jitter.
+          // Skip teleport-sized discontinuities — they\'re not walk jitter.
           if (horiz > voxel * 2 || Math.abs(b.y - a.y) > voxel * 3) continue;
           sum += Math.abs(b.y - a.y);
           n += 1;
@@ -4226,274 +5226,375 @@ worker: none");
     let prev = performance.now();
     let frameCount = 0;
     const loop = () => {
-      rafRef.current = requestAnimationFrame(loop);
-      frameCount += 1;
-      const now = performance.now();
-      tickOrganic(now);
-      if (now - lastWorkerTickMs > 100) {
-        tickWorkers(now);
-        lastWorkerTickMs = now;
-      }
-      renderWorkers(now);
-      if (now - lastVoidTickMs > VOID_TICK_MS) {
-        tickVoidCreatures(now);
-        lastVoidTickMs = now;
-      }
-      renderVoidCreatures(now);
-      if (now - lastScanTickMs > 1000) {
-        tickScan(now);
-        lastScanTickMs = now;
-      }
-      tickRefine(now);
-      if (now - lastShipTickMs > 1000) {
-        tickShips(now);
-        lastShipTickMs = now;
-      }
-      renderShips(now);
-      const dt = Math.min((now - prev) / 1000, 0.05);
-      prev = now;
-      __twFrame(now);
-
-      const tTime = now * 0.001;
-      for (const marker of riftMarkersRef.current) {
-        marker.rotation.y = tTime * 1.5;
-        marker.rotation.x = tTime * 0.8;
-        marker.children[0].rotation.z = tTime * -2.0;
-        marker.children[0].scale.setScalar(1 + Math.sin(tTime * 4) * 0.2);
-      }
-
-      if (fp.isLocked || __twSim.walk) {
-        const speed = MOVE_SPEED * dt;
-        const oldX = camera.position.x;
-        const oldZ = camera.position.z;
-        const wasStuck = bodyBlockedAtY(oldX, camera.position.y, oldZ);
-        // Diagonal speed normalization: W+D shouldn't be √2× faster than W.
-        let inF = 0, inR = 0;
-        if (keysRef.current["KeyW"]) inF += 1;
-        if (keysRef.current["KeyS"]) inF -= 1;
-        if (keysRef.current["KeyD"]) inR += 1;
-        if (keysRef.current["KeyA"]) inR -= 1;
-        const inLen = Math.hypot(inF, inR);
-        if (inLen > 0) {
-          fp.moveForward((inF / inLen) * speed);
-          fp.moveRight((inR / inLen) * speed);
+      try {
+        rafRef.current = requestAnimationFrame(loop);
+        frameCount += 1;
+        // Live TOD tint: re-interpolate hemisphere + ambient + rim every ~2s
+        // so mood drifts with real time without re-baking PMREM (expensive).
+        if (frameCount % 120 === 0 && !_todOv) {
+          const _nowH = new Date().toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: "America/New_York" });
+          const _nowM = new Date().toLocaleString("en-US", { minute: "numeric", timeZone: "America/New_York" });
+          const liveTp = paletteAt((parseInt(_nowH, 10) || 12) + (parseInt(_nowM, 10) || 0) / 60);
+          hemi.color.setHex(liveTp.hemiS);
+          hemi.groundColor.setHex(liveTp.hemiG);
+          hemi.intensity = liveTp.hemiI;
+          rim.color.setHex(liveTp.rim);
+          rim.intensity = liveTp.rimI;
         }
-        const newX = camera.position.x;
-        const newZ = camera.position.z;
-        if (!wasStuck) {
-          if (isBlockedAt(newX, oldZ)) camera.position.x = oldX;
-          if (isBlockedAt(camera.position.x, newZ)) camera.position.z = oldZ;
-        }
-        let recoveringFromStuck = false;
-        if (wasStuck) {
-          // Vertical push-up first (works for open scans with overhead clearance).
-          for (let s = 0; s < 32 && bodyBlockedAtY(camera.position.x, camera.position.y, camera.position.z); s++) {
-            camera.position.y += voxel * 0.5;
+        const now = performance.now();
+        tickOrganic(now);
+        if (now - lastWorkerTickMs > 100) {
+          tickWorkers(now);
+          lastWorkerTickMs = now;
+          if (now - lastWorkerUiMs > 500) {
+            lastWorkerUiMs = now;
+            const w0 = workers[0];
+            if (w0) {
+              lastWorkerUiHadWorker = true;
+              setWorkerUi({
+                name: w0.name || "Worker",
+                mode: w0.mode,
+                plan: w0.plan ? w0.plan.name : null,
+                error: (w0 as any).lastPlanError || null,
+              });
+            } else if (lastWorkerUiHadWorker) {
+              lastWorkerUiHadWorker = false;
+              setWorkerUi(null);
+            }
           }
-          // Ceiling overhead? Minosoft corner-sample horizontal pushout: probe
-          // 4 cardinal directions, pick the closest empty cell.
-          if (bodyBlockedAtY(camera.position.x, camera.position.y, camera.position.z)) {
-            const dirs: Array<[number, number]> = [[1,0],[-1,0],[0,1],[0,-1]];
-            let bestX = camera.position.x, bestZ = camera.position.z, bestStep = Infinity;
-            for (const [dx, dz] of dirs) {
-              for (let s = 1; s <= 12; s++) {
-                const tx = camera.position.x + dx * s * voxel * 0.5;
-                const tz = camera.position.z + dz * s * voxel * 0.5;
-                if (!bodyBlockedAtY(tx, camera.position.y, tz)) {
-                  if (s < bestStep) { bestStep = s; bestX = tx; bestZ = tz; }
-                  break;
+        }
+        renderWorkers(now);
+        if (now - lastVoidTickMs > VOID_TICK_MS) {
+          tickVoidCreatures(now);
+          lastVoidTickMs = now;
+        }
+        renderVoidCreatures(now);
+        tickEatFx(now);
+        if (now - lastScanTickMs > 1000) {
+          tickScan(now);
+          lastScanTickMs = now;
+        }
+        tickRefine(now);
+        if (now - lastShipTickMs > 1000) {
+          tickShips(now);
+          lastShipTickMs = now;
+        }
+        renderShips(now);
+        const dt = Math.min((now - prev) / 1000, 0.05);
+        prev = now;
+        __twFrame(now);
+
+        const tTime = now * 0.001;
+        for (const marker of riftMarkersRef.current) {
+          marker.rotation.y = tTime * 1.5;
+          marker.rotation.x = tTime * 0.8;
+          marker.children[0].rotation.z = tTime * -2.0;
+          marker.children[0].scale.setScalar(1 + Math.sin(tTime * 4) * 0.2);
+        }
+
+        if (fp.isLocked || __twSim.walk || (isMobileRef.current && walkingRef.current)) {
+          if (orbit.enabled) orbit.enabled = false;
+          const speed = MOVE_SPEED * dt;
+          const oldX = camera.position.x;
+          const oldZ = camera.position.z;
+          const wasStuck = bodyBlockedAtY(oldX, camera.position.y, oldZ);
+          
+          let inF = 0, inR = 0;
+          if (isMobileRef.current && joystickRef.current.active) {
+            inF = -joystickRef.current.y;
+            inR = joystickRef.current.x;
+          } else {
+            if (keysRef.current["KeyW"]) inF += 1;
+            if (keysRef.current["KeyS"]) inF -= 1;
+            if (keysRef.current["KeyD"]) inR += 1;
+            if (keysRef.current["KeyA"]) inR -= 1;
+          }
+
+          if (isMobileRef.current) {
+            if (lookJoystickRef.current.active) {
+              const lookSensitivity = 2.5 * dt;
+              targetLookRef.current.y -= lookJoystickRef.current.x * lookSensitivity;
+              targetLookRef.current.x -= lookJoystickRef.current.y * lookSensitivity;
+              targetLookRef.current.x = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, targetLookRef.current.x));
+            }
+
+            const lookLerp = Math.min(1, dt * 18);
+            camera.rotation.order = \'YXZ\';
+            camera.rotation.y += (targetLookRef.current.y - camera.rotation.y) * lookLerp;
+            camera.rotation.x += (targetLookRef.current.x - camera.rotation.x) * lookLerp;
+          }
+
+          if (isMobileRef.current && mobileActionsRef.current.jump && Math.abs(velocityYRef.current) < 0.01) {
+            velocityYRef.current = JUMP_VELOCITY;
+            mobileActionsRef.current.jump = false;
+          }
+
+          const inLen = Math.hypot(inF, inR);
+          if (inLen > 0) {
+            const moveDir = new THREE.Vector3(inR / inLen, 0, -inF / inLen);
+            moveDir.applyQuaternion(camera.quaternion);
+            moveDir.y = 0;
+            moveDir.normalize();
+            camera.position.addScaledVector(moveDir, speed);
+          }
+
+          if (isMobileRef.current && mobileActionsRef.current.action) {
+            if (carryState) tryPlace();
+            else tryPickup();
+            mobileActionsRef.current.action = false;
+          }
+
+          const newX = camera.position.x;
+          const newZ = camera.position.z;
+          if (!wasStuck) {
+            if (isBlockedAt(newX, oldZ)) camera.position.x = oldX;
+            if (isBlockedAt(camera.position.x, newZ)) camera.position.z = oldZ;
+          }
+          let recoveringFromStuck = false;
+          if (wasStuck) {
+            for (let s = 0; s < 32 && bodyBlockedAtY(camera.position.x, camera.position.y, camera.position.z); s++) {
+              camera.position.y += voxel * 0.5;
+            }
+            if (bodyBlockedAtY(camera.position.x, camera.position.y, camera.position.z)) {
+              const dirs: Array<[number, number]> = [[1,0],[-1,0],[0,1],[0,-1]];
+              let bestX = camera.position.x, bestZ = camera.position.z, bestStep = Infinity;
+              for (const [dx, dz] of dirs) {
+                for (let s = 1; s <= 12; s++) {
+                  const tx = camera.position.x + dx * s * voxel * 0.5;
+                  const tz = camera.position.z + dz * s * voxel * 0.5;
+                  if (!bodyBlockedAtY(tx, camera.position.y, tz)) {
+                    if (s < bestStep) { bestStep = s; bestX = tx; bestZ = tz; }
+                    break;
+                  }
+                }
+              }
+              camera.position.x = bestX;
+              camera.position.z = bestZ;
+            }
+            velocityYRef.current = 0;
+            recoveringFromStuck = true;
+          }
+          const groundY = sampleGround(camera.position.x, camera.position.z, camera.position.y - EYE_HEIGHT, playerR);
+          const eye = groundY + EYE_HEIGHT;
+          // Off-world detection: is there any scanned column within the body
+          // radius? If not, treat as void — no eye-clamp, gravity drops the
+          // player past the world edge until the dynamic kill-plane respawns.
+          let overWorld = false;
+          {
+            const g = groundRef.current;
+            if (g && g.map.size > 0) {
+              const v = g.voxel;
+              const minVX = Math.round((camera.position.x - playerR) / v) + g.cx;
+              const maxVX = Math.round((camera.position.x + playerR) / v) + g.cx;
+              const minVZ = Math.round((camera.position.z - playerR) / v) + g.cz;
+              const maxVZ = Math.round((camera.position.z + playerR) / v) + g.cz;
+              outer: for (let vx = minVX; vx <= maxVX; vx++) {
+                for (let vz = minVZ; vz <= maxVZ; vz++) {
+                  if (g.map.has(vx + "," + vz)) { overWorld = true; break outer; }
                 }
               }
             }
-            camera.position.x = bestX;
-            camera.position.z = bestZ;
           }
-          velocityYRef.current = 0;
-          recoveringFromStuck = true;
-        }
-        const groundY = sampleGround(camera.position.x, camera.position.z, camera.position.y - EYE_HEIGHT, playerR);
-        const eye = groundY + EYE_HEIGHT;
-        if (!recoveringFromStuck) {
-          if (velocityYRef.current > 0 || camera.position.y > eye + voxel * 0.05) {
-            // Airborne — full gravity, hard snap on landing (keeps jumps crisp).
-            velocityYRef.current -= GRAVITY * dt;
-            camera.position.y += velocityYRef.current * dt;
-            if (camera.position.y < eye) {
-              camera.position.y = eye;
+          if (!recoveringFromStuck) {
+            if (!overWorld) {
+              // Off-world: unbounded gravity, no eye clamp.
+              velocityYRef.current -= GRAVITY * dt;
+              camera.position.y += velocityYRef.current * dt;
+              const g = groundRef.current;
+              if (g && camera.position.y < (g.minY - 40) * g.voxel) {
+                // Past the dynamic kill-plane (40 voxels below the world\'s
+                // lowest scanned cell — follows downward scans). Respawn.
+                enterWalkRef.current?.();
+              }
+            } else if (velocityYRef.current > 0 || camera.position.y > eye + voxel * 0.5) {
+              velocityYRef.current -= GRAVITY * dt;
+              camera.position.y += velocityYRef.current * dt;
+              if (camera.position.y < eye) {
+                camera.position.y = eye;
+                velocityYRef.current = 0;
+              }
+            } else {
+              const lerp = Math.min(1, dt * 14);
+              camera.position.y += (eye - camera.position.y) * lerp;
+              if (Math.abs(eye - camera.position.y) < voxel * 0.02) {
+                camera.position.y = eye;
+              }
               velocityYRef.current = 0;
             }
-          } else {
-            // Grounded — smooth step-up over ~80ms so 1-voxel ledges glide
-            // instead of teleporting the camera.
-            const lerp = Math.min(1, dt * 14);
-            camera.position.y += (eye - camera.position.y) * lerp;
-            if (Math.abs(eye - camera.position.y) < voxel * 0.02) {
-              camera.position.y = eye;
+          }
+
+          if (chargeState) {
+            const elapsed = now - chargeState.startMs;
+            const pct = Math.min(1, elapsed / chargeState.hardMs);
+            if (ring) {
+              ring.style.setProperty("--p", String(pct * 100));
+              ring.style.opacity = "1";
             }
-            velocityYRef.current = 0;
-          }
-        }
-
-        // Progress ring (charging).
-        if (chargeState) {
-          const elapsed = now - chargeState.startMs;
-          const pct = Math.min(1, elapsed / chargeState.hardMs);
-          if (ring) {
-            ring.style.setProperty("--p", String(pct * 100));
-            ring.style.opacity = "1";
-          }
-          if (pct >= 1) completePickup();
-        } else if (ring && ring.style.opacity !== "0") {
-          ring.style.opacity = "0";
-        }
-
-        // Hover highlight (only when not carrying — ghost preview handles carry).
-        // Throttled to every 3rd frame; uses the DDA grid march (cheap).
-        if (!carryState) {
-          if ((frameCount % 3) === 0) {
-            const hit = marchRay();
-            if (hit) {
-              highlight.position.set((hit.vx - cxRound) * voxel, hit.vy * voxel, (hit.vz - czRound) * voxel);
-              const lyr = (hit.mesh.userData?.layer as string) || "block";
-              const hardness = MOVE_MS[lyr] ?? 500;
-              if (!isFinite(hardness)) hlMat.color.setHex(0xe06868);
-              else if (hardness >= 2500) hlMat.color.setHex(0x8a6bff);   // stone — heavy violet
-              else if (hardness >= 1000) hlMat.color.setHex(0xa6b8ff);   // wood — light blue
-              else hlMat.color.setHex(0xffeb6a);                          // soft — yellow
-              highlight.visible = true;
-            } else {
-              highlight.visible = false;
+            const cs = chargeState;
+            const layerName = (cs.mesh?.userData?.layer as string) || "block";
+            if (miningPill) {
+              miningPill.textContent = `MINING ${layerName.toUpperCase()} ${Math.round(pct * 100)}%`;
+              miningPill.style.opacity = "1";
+            }
+            highlight.position.set((cs.vx - cxRound) * voxel, cs.vy * voxel, (cs.vz - czRound) * voxel);
+            hlMat.color.setHex(pct < 0.5 ? 0xffeb6a : 0xffa040);
+            highlight.visible = true;
+            if (pct >= 1) {
+              lastChargeEndMs = now;
+              completePickup();
+            }
+          } else if (ring && ring.style.opacity !== "0") {
+            if (now - lastChargeEndMs > 300) {
+              ring.style.opacity = "0";
+              if (miningPill) miningPill.style.opacity = "0";
             }
           }
-        } else if (highlight.visible) {
-          highlight.visible = false;
-        }
 
-        // Ghost preview — ONLY while carrying a block (shows landing spot).
-        // No ghost is shown before pickup; the hover highlight covers that.
-        if (carryState) {
-          if ((frameCount % 2) === 0) {
-            const hit = marchRay();
-            let gvx: number, gvz: number;
-            if (hit) {
-              gvx = hit.vx;
-              gvz = hit.vz;
-            } else {
-              const forward = new THREE.Vector3();
-              camera.getWorldDirection(forward);
-              const target = camera.position.clone().addScaledVector(forward, REACH * 0.6);
-              gvx = Math.round(target.x / voxel) + cxRound;
-              gvz = Math.round(target.z / voxel) + czRound;
+          if (!carryState) {
+            if ((frameCount % 3) === 0) {
+              const hit = marchRay();
+              if (hit) {
+                highlight.position.set((hit.vx - cxRound) * voxel, hit.vy * voxel, (hit.vz - czRound) * voxel);
+                const lyr = (hit.mesh.userData?.layer as string) || "block";
+                const hardness = MOVE_MS[lyr] ?? 500;
+                if (!isFinite(hardness)) hlMat.color.setHex(0xe06868);
+                else if (hardness >= 2500) hlMat.color.setHex(0x8a6bff);
+                else if (hardness >= 1000) hlMat.color.setHex(0xa6b8ff);
+                else hlMat.color.setHex(0xffeb6a);
+                highlight.visible = true;
+              } else {
+                highlight.visible = false;
+              }
             }
-            const gtop = topAt(gvx, gvz);
-            if (gtop !== null) {
-              ghostMesh.position.set((gvx - cxRound) * voxel, (gtop + 1) * voxel, (gvz - czRound) * voxel);
-              ghostMesh.visible = true;
-            } else {
-              ghostMesh.visible = false;
-            }
+          } else if (highlight.visible) {
+            highlight.visible = false;
           }
-        } else if (ghostMesh.visible) {
-          ghostMesh.visible = false;
-        }
-      } else {
-        orbit.update();
-        if (ring.style.opacity !== "0") ring.style.opacity = "0";
-        if (ghostMesh.visible) ghostMesh.visible = false;
-      }
 
-      // ─── Tool rune bob + tether update ────────────────────────────────────
-      {
-        const t = performance.now() * 0.002;
-        toolGroup.position.y = -voxel * 3.5 + Math.sin(t) * voxel * 0.18;
-        toolGroup.rotation.y = 0.45 + Math.sin(t * 0.7) * 0.1;
-        toolCore.scale.setScalar(1 + Math.sin(t * 1.8) * 0.12);
-
-        let endPos: { x: number; y: number; z: number } | null = null;
-        let opacity = 0;
-        if (carryState) {
-          endPos = { x: ghostMesh.position.x, y: ghostMesh.position.y, z: ghostMesh.position.z };
-          opacity = 0.9;
-        } else if (chargeState) {
-          endPos = {
-            x: (chargeState.vx - cxRound) * voxel,
-            y: chargeState.vy * voxel,
-            z: (chargeState.vz - czRound) * voxel,
-          };
-          const pct = Math.min(1, (performance.now() - chargeState.startMs) / chargeState.hardMs);
-          opacity = pct * 0.9;
-        }
-        if (endPos && fp.isLocked) {
-          const tw = new THREE.Vector3();
-          toolCore.getWorldPosition(tw);
-          const pos = tetherGeo.getAttribute("position") as THREE.BufferAttribute;
-          pos.setXYZ(0, tw.x, tw.y, tw.z);
-          pos.setXYZ(1, endPos.x, endPos.y, endPos.z);
-          pos.needsUpdate = true;
-          tetherMat.opacity = opacity;
-          tetherLine.visible = true;
-
-          const posIn = tetherInnerGeo.getAttribute("position") as THREE.BufferAttribute;
-          posIn.setXYZ(0, tw.x, tw.y, tw.z);
-          posIn.setXYZ(1, endPos.x, endPos.y, endPos.z);
-          posIn.needsUpdate = true;
-          // Bright inner pulses to read as living void-energy.
-          const pulse = 0.55 + Math.sin(performance.now() * 0.012) * 0.25;
-          tetherInnerMat.opacity = opacity * pulse;
-          tetherInnerLine.visible = true;
+          if (carryState) {
+            const carryColor = (carryState as any).color;
+            if (carryColor !== undefined && (ghostMesh.material as any).color) {
+              (ghostMesh.material as any).color.set(carryColor);
+            }
+            if ((frameCount % 2) === 0) {
+              const target = getPlacementTarget();
+              if (target) {
+                ghostMesh.position.set(target.world.x, target.world.y, target.world.z);
+                ghostMesh.visible = true;
+                (ghostMesh.material as any).opacity = 0.45;
+              } else {
+                const forward2 = new THREE.Vector3();
+                camera.getWorldDirection(forward2);
+                const hold = camera.position.clone().addScaledVector(forward2, voxel * 1.6);
+                hold.y -= voxel * 0.4;
+                ghostMesh.position.set(hold.x, hold.y, hold.z);
+                ghostMesh.visible = true;
+                (ghostMesh.material as any).opacity = 0.22;
+              }
+            }
+          } else if (ghostMesh.visible) {
+            ghostMesh.visible = false;
+            (ghostMesh.material as any).color?.set?.(0xffffff);
+          }
         } else {
-          tetherLine.visible = false;
-          tetherInnerLine.visible = false;
+          orbit.update();
+          if (ring.style.opacity !== "0") ring.style.opacity = "0";
+          if (ghostMesh.visible) ghostMesh.visible = false;
+        }
+
+        {
+          const t = performance.now() * 0.002;
+          toolGroup.position.y = -voxel * 3.5 + Math.sin(t) * voxel * 0.18;
+          toolGroup.rotation.y = 0.45 + Math.sin(t * 0.7) * 0.1;
+          toolCore.scale.setScalar(1 + Math.sin(t * 1.8) * 0.12);
+
+          let endPos: { x: number; y: number; z: number } | null = null;
+          let opacity = 0;
+          if (carryState) {
+            endPos = { x: ghostMesh.position.x, y: ghostMesh.position.y, z: ghostMesh.position.z };
+            opacity = 0.9;
+          } else if (chargeState) {
+            endPos = {
+              x: (chargeState.vx - cxRound) * voxel,
+              y: chargeState.vy * voxel,
+              z: (chargeState.vz - czRound) * voxel,
+            };
+            const pct = Math.min(1, (performance.now() - chargeState.startMs) / chargeState.hardMs);
+            opacity = pct * 0.9;
+          }
+          if (endPos && fp.isLocked) {
+            const tw = new THREE.Vector3();
+            toolCore.getWorldPosition(tw);
+            const pos = tetherGeo.getAttribute("position") as THREE.BufferAttribute;
+            pos.setXYZ(0, tw.x, tw.y, tw.z);
+            pos.setXYZ(1, endPos.x, endPos.y, endPos.z);
+            pos.needsUpdate = true;
+            tetherMat.opacity = opacity;
+            tetherLine.visible = true;
+
+            const posIn = tetherInnerGeo.getAttribute("position") as THREE.BufferAttribute;
+            posIn.setXYZ(0, tw.x, tw.y, tw.z);
+            posIn.setXYZ(1, endPos.x, endPos.y, endPos.z);
+            posIn.needsUpdate = true;
+            const pulse = 0.55 + Math.sin(performance.now() * 0.012) * 0.25;
+            tetherInnerMat.opacity = opacity * pulse;
+            tetherInnerLine.visible = true;
+          } else {
+            tetherLine.visible = false;
+            tetherInnerLine.visible = false;
+          }
+        }
+
+        const fade = fadeMeshesRef.current;
+        if (fade.ceiling || fade.wallUpper) {
+          const walkActive = fp.isLocked || (isMobileRef.current && walkingRef.current);
+          let targetOpacity = 1;
+          if (!walkActive && xrayRef.current) {
+            const dx = camera.position.x - orbit.target.x;
+            const dy = camera.position.y - orbit.target.y;
+            const dz = camera.position.z - orbit.target.z;
+            const horiz = Math.hypot(dx, dz) || 0.0001;
+            const elevation = Math.atan2(dy, horiz);
+            const t = Math.min(1, Math.max(0, elevation / (Math.PI * 0.28)));
+            targetOpacity = 1 - t * 0.85;
+          }
+          const lerp = (m: any) => {
+            if (!m) return;
+            if (walkActive) {
+              m.material.opacity = 1;
+              m.material.transparent = false;
+              m.material.depthWrite = true;
+            } else {
+              m.material.transparent = true;
+              m.material.depthWrite = false;
+              m.material.opacity += (targetOpacity - m.material.opacity) * 0.12;
+            }
+          };
+          lerp(fade.ceiling);
+          lerp(fade.wallUpper);
+        }
+
+        if (composerRef.current) {
+          composerRef.current.render();
+        } else {
+          renderer.render(scene, camera);
+        }
+      } catch (err: any) {
+        if (!(window as any).__twLoopError) {
+          (window as any).__twLoopError = true;
+          const el = document.createElement("div");
+          el.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:red;color:white;padding:20px;z-index:10000;font-family:monospace;pointer-events:none;max-width:90vw;word-wrap:break-word";
+          el.textContent = "LOOP CRASH: " + (err.message || String(err));
+          document.body.appendChild(el);
+          console.error("LOOP CRASH:", err);
         }
       }
-
-      const fade = fadeMeshesRef.current;
-      if (fade.ceiling || fade.wallUpper) {
-        let targetOpacity = 1;
-        if (!fp.isLocked && xrayRef.current) {
-          const dx = camera.position.x - orbit.target.x;
-          const dy = camera.position.y - orbit.target.y;
-          const dz = camera.position.z - orbit.target.z;
-          const horiz = Math.hypot(dx, dz) || 0.0001;
-          const elevation = Math.atan2(dy, horiz);
-          const t = Math.min(1, Math.max(0, elevation / (Math.PI * 0.28)));
-          targetOpacity = 1 - t * 0.85;
-        }
-        const lerp = (m: any) => {
-          if (!m) return;
-          m.material.opacity += (targetOpacity - m.material.opacity) * 0.12;
-          // depthWrite is disabled permanently above to prevent flickering z-sorting bugs
-        };
-        lerp(fade.ceiling);
-        lerp(fade.wallUpper);
-      }
-
-      renderer.render(scene, camera);
     };
     loop();
 
     setBlocks(currentBlocks);
-    setCatchUpInfo(catchUpSummary);
+    setCatchUpInfo(catchUpInfo);
     setPhase("ready");
   }, [anchor.lat, anchor.lon, fetchWeather]);
-
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (file?.name.toLowerCase().endsWith(".glb")) buildWorld(file);
-  };
-
-  const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) buildWorld(file);
-  };
-
-  const toggleXray = useCallback(() => {
-    setXray((v) => {
-      xrayRef.current = !v;
-      return !v;
-    });
-  }, []);
 
   const onLoadSelected = useCallback(async (overrideId?: string) => {
     const worldId = overrideId || selectedWorldId || worlds.find((w) => w.hasSavedBlocks)?.id || "";
@@ -4539,7 +5640,7 @@ worker: none");
   }, [saveAsCurrentWorld]);
 
   const ui = useMemo(() => ({
-    root: { width: "100vw", height: "100vh", background: "#07070f", position: "relative", overflow: "hidden", fontFamily: "'SF Mono', monospace" } as React.CSSProperties,
+    root: { width: "100vw", height: "100vh", background: "#07070f", position: "relative", overflow: "hidden", fontFamily: "\'SF Mono\', monospace" } as React.CSSProperties,
     mount: { width: "100%", height: "100%" } as React.CSSProperties,
     center: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 20 } as React.CSSProperties,
     title: { fontSize: 40, fontWeight: 900, color: "#fff", letterSpacing: 3, margin: 0 } as React.CSSProperties,
@@ -4569,9 +5670,195 @@ worker: none");
     fpHud: { position: "absolute", bottom: 20, left: 20, background: "rgba(7,7,15,0.9)", padding: "12px 16px", borderRadius: 8, backdropFilter: "blur(12px)", pointerEvents: "none" } as React.CSSProperties,
   }), []);
 
+  const BotwStamina = ({ value, max }: { value: number, max: number }) => (
+    <div className="relative w-16 h-16 flex items-center justify-center">
+      <svg className="absolute inset-0 w-full h-16 transform -rotate-90 filter drop-shadow-[0_0_4px_rgba(74,222,128,0.4)]">
+        <circle cx="32" cy="32" r="26" stroke="rgba(0,0,0,0.4)" strokeWidth="5" fill="none" />
+        <circle 
+          cx="32" cy="32" r="26" 
+          stroke="#4ade80" 
+          strokeWidth="4" 
+          fill="none" 
+          strokeDasharray={163.3} 
+          strokeDashoffset={163.3 * (1 - value / max)} 
+          strokeLinecap="round"
+          className="transition-all duration-500 ease-out"
+        />
+      </svg>
+      <Zap className="w-6 h-6 text-green-400" />
+    </div>
+  );
+
+  const BotwHearts = ({ health }: { health: number }) => {
+    const total = 5;
+    const filled = Math.ceil(health * total);
+    return (
+      <div className="flex gap-1 filter drop-shadow-[0_0_4px_rgba(239,68,68,0.3)]">
+        {Array.from({ length: total }).map((_, i) => (
+          <Heart 
+            key={i} 
+            className={`w-5 h-5 ${i < filled ? "text-red-500 fill-red-500" : "text-red-900 opacity-30"}`} 
+            strokeWidth={3}
+          />
+        ))}
+      </div>
+    );
+  };
+
+  // Matter integrity readout — slim NieR-style indicator.
+  // Reads as a quiet field instrument, not a health bar: a thin etched
+  // line whose right edge is "eaten" by a faint void-purple gradient as
+  // world matter drains. Tiny tabular-nums readout below for the precise
+  // ratio. Color of the held portion warms from ivory → amber → void
+  // purple as integrity falls, so the indicator goes from "clear sky"
+  // to "something is wrong" without ever shouting.
+  const MatterReadout = ({ health }: { health: number }) => {
+    const pct = Math.max(0, Math.min(1, health));
+    const lostPct = 1 - pct;
+    const held =
+      pct > 0.7 ? "rgb(230, 225, 211)" :
+      pct > 0.4 ? "rgb(216, 166, 87)" :
+                  "rgb(168, 123, 214)";
+    return (
+      <div className="flex flex-col gap-1.5">
+        <div className="relative h-[3px] w-32 overflow-hidden bg-white/[0.04]">
+          <div
+            className="absolute inset-y-0 left-0 transition-[width] duration-700"
+            style={{
+              width: `${pct * 100}%`,
+              backgroundColor: held,
+              boxShadow: `0 0 6px ${held}`,
+            }}
+          />
+          {lostPct > 0.001 && (
+            <div
+              className="absolute inset-y-0 right-0 transition-[width] duration-700"
+              style={{
+                width: `${lostPct * 100}%`,
+                background:
+                  "linear-gradient(90deg, rgba(168,123,214,0) 0%, rgba(168,123,214,0.28) 100%)",
+              }}
+            />
+          )}
+        </div>
+        <div className="flex items-baseline gap-2 text-[9px] font-mono text-white/40 tabular-nums tracking-[0.2em]">
+          <span className="text-white/30">MATTER</span>
+          <span className="text-white/55">{(pct * 100).toFixed(1)}</span>
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <div style={ui.root} onDrop={onDrop} onDragOver={(e) => e.preventDefault()}>
+    <div 
+      style={ui.root} 
+      onTouchStart={(e) => {
+        if (!walking || (e.target as HTMLElement).closest(\'button\') || (e.target as HTMLElement).closest(\'.joystick-zone\')) return;
+        if (touchLookRef.current.active) return;
+        const touch = e.changedTouches[0];
+        touchLookRef.current = { id: touch.identifier, lastX: touch.clientX, lastY: touch.clientY, active: true };
+      }}
+      onTouchMove={(e) => {
+        if (!touchLookRef.current.active || !walking) return;
+        let touch;
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          if (e.changedTouches[i].identifier === touchLookRef.current.id) {
+            touch = e.changedTouches[i];
+            break;
+          }
+        }
+        if (!touch) return;
+        const dx = touch.clientX - touchLookRef.current.lastX;
+        const dy = touch.clientY - touchLookRef.current.lastY;
+        touchLookRef.current.lastX = touch.clientX;
+        touchLookRef.current.lastY = touch.clientY;
+        const sensitivity = 0.004;
+        targetLookRef.current.y -= dx * sensitivity;
+        targetLookRef.current.x -= dy * sensitivity;
+        targetLookRef.current.x = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, targetLookRef.current.x));
+      }}
+      onTouchEnd={(e) => { 
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          if (e.changedTouches[i].identifier === touchLookRef.current.id) {
+            touchLookRef.current.active = false;
+            break;
+          }
+        }
+      }}
+      onTouchCancel={(e) => { 
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          if (e.changedTouches[i].identifier === touchLookRef.current.id) {
+            touchLookRef.current.active = false;
+            break;
+          }
+        }
+      }}
+    >
       <div ref={mountRef} style={ui.mount} />
+      <button
+        onClick={async () => {
+          try {
+            const doc: any = document;
+            const isFs = !!(doc.fullscreenElement || doc.webkitFullscreenElement);
+            if (isFs) {
+              const exit = doc.exitFullscreen || doc.webkitExitFullscreen;
+              if (exit) await exit.call(doc);
+            } else {
+              const el: any = document.documentElement;
+              const req = el.requestFullscreen || el.webkitRequestFullscreen || el.webkitEnterFullscreen;
+              if (req) await req.call(el);
+              const so: any = (window as any).screen?.orientation;
+              if (so && typeof so.lock === "function") {
+                so.lock("landscape").catch(() => undefined);
+              }
+            }
+          } catch { /* silent — fullscreen may be unsupported */ }
+        }}
+        title="Toggle fullscreen"
+        aria-label="Toggle fullscreen"
+        style={{
+          position: "fixed",
+          top: "calc(env(safe-area-inset-top, 0px) + 10px)",
+          left: "calc(env(safe-area-inset-left, 0px) + 56px)",
+          zIndex: 1100,
+          width: 30,
+          height: 30,
+          padding: 0,
+          background: "rgba(0,0,0,0.45)",
+          border: "1px solid rgba(255,255,255,0.18)",
+          borderRadius: 6,
+          color: "rgba(255,255,255,0.75)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+          backdropFilter: "blur(6px)",
+          WebkitBackdropFilter: "blur(6px)",
+        }}
+      >
+        <Maximize2 size={14} />
+      </button>
+      {isMobileRef.current && (
+        <div className="landscape-overlay fixed inset-0 z-[99999] bg-black text-white flex-col items-center justify-center p-8 text-center"
+             style={{ display: "none" }}>
+          <div className="w-20 h-20 border-4 border-white/40 rounded-xl flex items-center justify-center mb-6 relative"
+               style={{ animation: "spin 2s ease-in-out infinite" }}>
+          </div>
+          <h2 className="text-xl font-bold mb-2 tracking-widest">LANDSCAPE REQUIRED</h2>
+          <p className="text-sm text-white/60">Please rotate your device horizontally to play.</p>
+          <style>{`
+            @media (orientation: portrait) {
+              .landscape-overlay { display: flex !important; }
+            }
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              30% { transform: rotate(90deg); }
+              70% { transform: rotate(90deg); }
+              100% { transform: rotate(0deg); }
+            }
+          `}</style>
+        </div>
+      )}
       {catchUpInfo && (
         <div style={{
           position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
@@ -4606,14 +5893,90 @@ worker: none");
           <p style={ui.label}>Project</p>
           <h1 style={ui.title}>TinyWorld</h1>
           <p style={ui.sub}>NYC Temperate · weather + terrain + trees</p>
-          <div style={ui.dropzone}>
-            <p style={ui.droptext}>Drop .GLB scan here</p>
-            <span style={{ color: "#111120", fontSize: 10 }}>or</span>
-            <label style={ui.fileBtn}>
-              Choose file
-              <input type="file" accept=".glb" onChange={onFile} style={{ display: "none" }} />
-            </label>
-          </div>
+          <label
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 10,
+              marginTop: 8,
+              padding: "14px 26px",
+              background: "linear-gradient(180deg, rgba(138,43,226,0.28), rgba(138,43,226,0.10))",
+              border: "1px solid rgba(138,43,226,0.7)",
+              color: "#f5f1e8",
+              fontSize: 13,
+              letterSpacing: 2,
+              textDecoration: "none",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              cursor: "pointer",
+            }}
+          >
+            <ArrowUpCircle className="w-4 h-4" />
+            <span>UPLOAD GLB</span>
+            <input
+              type="file"
+              accept=".glb,.gltf,model/gltf-binary,model/gltf+json"
+              style={{ display: "none" }}
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (!file) return;
+
+                // Dedup: same GLB → existing saved zone, not a fresh build.
+                const baseName = file.name.replace(/\\.(glb|gltf)$/i, "").trim().toLowerCase();
+                if (baseName) {
+                  const refreshed = await fetchWorlds().catch(() => [] as any[]);
+                  const pool = (refreshed && refreshed.length ? refreshed : worlds) as WorldRecord[];
+                  const candidates = pool.filter((w) => {
+                    if (!w.hasSavedBlocks) return false;
+                    const wn = (w.name || "").toLowerCase();
+                    return wn === baseName || wn.startsWith(baseName + " ") || wn.startsWith(baseName + " ·");
+                  });
+                  const existing = candidates.sort((a: any, b: any) =>
+                    (b.last_visited ?? b.last_scanned ?? 0) - (a.last_visited ?? a.last_scanned ?? 0)
+                  )[0];
+                  if (existing) {
+                    setLoadNote(`recognized · loading saved zone`);
+                    setSelectedWorldId(existing.id);
+                    try {
+                      await onLoadSelected(existing.id);
+                    } catch (err: any) {
+                      setLoadNote(`load failed: ${err?.message || err}`);
+                    }
+                    return;
+                  }
+                }
+
+                await buildWorld(file);
+                // Auto-save: tag the world with the current GPS anchor so
+                // future visits to this geo bucket auto-load it.
+                try {
+                  const base = file.name.replace(/\\.(glb|gltf)$/i, "").trim() || "TinyWorld";
+                  const name = `${base} · ${new Date().toLocaleDateString()}`;
+                  const target = await createWorldRecord(name);
+                  await saveCurrentWorld(target.id, name);
+                  await fetchWorlds();
+                  setLoadNote(`saved · auto-loads next time you visit`);
+                } catch (err: any) {
+                  setLoadNote(`auto-save failed: ${err?.message || err}`);
+                }
+              }}
+            />
+          </label>
+          <p style={{ ...ui.sub, opacity: 0.55, marginTop: 4 }}>
+            drop a Scaniverse / Polycam mesh export · seeds a fresh tiny world
+          </p>
+          <a
+            href="/tinyworld/capture"
+            style={{
+              ...ui.sub,
+              opacity: 0.45,
+              marginTop: 14,
+              textDecoration: "underline",
+              cursor: "pointer",
+            }}
+          >
+            or capture with camera (experimental)
+          </a>
           {nodeInfo && nodeInfo.source !== "unresolved" ? (
             <p style={{ ...ui.sub, opacity: 0.65 }}>
               node: {nodeInfo.city ?? "unknown"} ({nodeInfo.source})
@@ -4622,6 +5985,111 @@ worker: none");
                 : ""}
             </p>
           ) : null}
+          {nodeInfo && nodeInfo.source !== "gps" ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (!("geolocation" in navigator)) {
+                  setLoadNote("this browser has no geolocation API");
+                  return;
+                }
+                setLoadNote("requesting location…");
+                navigator.geolocation.getCurrentPosition(
+                  (pos) => {
+                    const lat = pos.coords.latitude;
+                    const lon = pos.coords.longitude;
+                    setAnchor({ lat, lon });
+                    setLoadNote("got it — looking for saved worlds…");
+                    fetchWorlds({ lat, lon }).catch((e) => {
+                      setLoadNote(`fetch failed: ${e?.message || e}`);
+                    });
+                  },
+                  (err) => {
+                    if (err.code === 1) setLoadNote("location denied — enable in Settings › Safari › Location");
+                    else if (err.code === 2) setLoadNote("location unavailable");
+                    else if (err.code === 3) setLoadNote("location request timed out");
+                    else setLoadNote(`location error: ${err.message}`);
+                  },
+                  { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                );
+              }}
+              style={{
+                marginTop: 10,
+                padding: "8px 16px",
+                background: "rgba(138,43,226,0.10)",
+                border: "1px solid rgba(138,43,226,0.5)",
+                color: "#f5f1e8",
+                fontSize: 11,
+                letterSpacing: 1.5,
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                cursor: "pointer",
+              }}
+            >
+              USE MY LOCATION
+            </button>
+          ) : null}
+          <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "center", flexWrap: "wrap" }}>
+            <button
+              onClick={async () => {
+                try {
+                  const el: any = document.documentElement;
+                  const req = el.requestFullscreen || el.webkitRequestFullscreen || el.webkitEnterFullscreen;
+                  if (req) await req.call(el);
+                  const so: any = (window as any).screen?.orientation;
+                  if (so && typeof so.lock === "function") {
+                    so.lock("landscape").catch(() => undefined);
+                  }
+                } catch (e) {
+                  setLoadNote(`fullscreen unavailable: ${(e as any)?.message || e}`);
+                }
+              }}
+              style={{
+                padding: "6px 14px",
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.18)",
+                color: "#d6d6ff",
+                fontSize: 10,
+                letterSpacing: 1.3,
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                cursor: "pointer",
+              }}
+            >
+              FULLSCREEN
+            </button>
+            <button
+              onClick={async () => {
+                if (!window.confirm("Wipe ALL saved scans and worlds? This cannot be undone.")) return;
+                setLoadNote("clearing saved scans…");
+                try {
+                  const res = await fetch("/api/tinyworld-worlds", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", Accept: "application/json" },
+                    body: JSON.stringify({ action: "clearAll" }),
+                  });
+                  const data = await res.json().catch(() => ({}));
+                  if (!data?.ok) throw new Error(data?.error || "clear failed");
+                  savedWorldRef.current = null;
+                  setSelectedWorldId(null);
+                  await fetchWorlds();
+                  setLoadNote("cleared · ready for fresh upload");
+                } catch (e) {
+                  setLoadNote(`clear failed: ${(e as any)?.message || e}`);
+                }
+              }}
+              style={{
+                padding: "6px 14px",
+                background: "rgba(255,80,80,0.06)",
+                border: "1px solid rgba(255,80,80,0.35)",
+                color: "#ffb3b3",
+                fontSize: 10,
+                letterSpacing: 1.3,
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                cursor: "pointer",
+              }}
+            >
+              CLEAR SAVED SCANS
+            </button>
+          </div>
           {worlds.some((w) => w.hasSavedBlocks) && (
             <div style={ui.worldList}>
               <p style={ui.sub}>or load a saved world</p>
@@ -4633,7 +6101,6 @@ worker: none");
               {loadNote ? <p style={ui.sub}>{loadNote}</p> : null}
             </div>
           )}
-          <p style={ui.hint}>Scaniverse (iPhone) → Export GLB → drop here</p>
         </div>
       )}
       {(phase === "loading" || phase === "building") && (
@@ -4644,105 +6111,351 @@ worker: none");
       )}
       {phase === "ready" && !walking && (
         <>
-          <div style={ui.savePanel}>
-            <p style={ui.hudTitle}>SAVE / LOAD</p>
-            <select value={selectedWorldId} onChange={(e) => setSelectedWorldId(e.target.value)} style={ui.saveSelect}>
-              <option value="">Select world…</option>
-              {worlds.map((world) => (
-                <option key={world.id} value={world.id}>
-                  {world.name}{world.hasSavedBlocks ? ` · ${(world.savedBlockCount ?? 0).toLocaleString()} blocks` : ""}
-                </option>
-              ))}
-            </select>
-            <div style={ui.saveRow}>
-              <button style={ui.saveBtn} onClick={() => onLoadSelected()}>Load</button>
-              <button style={ui.saveBtn} onClick={onSaveSelected}>Save</button>
-              <button style={ui.saveBtn} onClick={onSaveAsSelected}>Save As</button>
-            </div>
-            <p style={ui.saveMeta}>{loadNote || "compact base64 blocks · SQLite-backed"}</p>
-          </div>
-          <div style={ui.hud}>
-            <p style={ui.hudTitle}>TINYWORLD</p>
-            <p style={ui.hudStat}>
-              {blocks.toLocaleString()} visible blocks
-              {moves ? `  ·  ${moves} moved` : ""}
-              {satiation ? `  ·  satiation ${satiation}` : ""}
-            </p>
-            <p style={ui.hudStat}>
-              W {ledger.world.toLocaleString()} · S {ledger.stockpile} · B {ledger.built} · V {ledger.void.toLocaleString()}
-            </p>
-            <p style={ui.hudStat}>
-              void {voidUi.phase}
-              {voidUi.creatures ? `  ·  ${voidUi.creatures} creature${voidUi.creatures > 1 ? "s" : ""}` : ""}
-              {voidUi.eaten ? `  ·  ${voidUi.eaten} eaten` : ""}
-            </p>
-            <p style={ui.hudStat}>
-              scan ◈ {scanUi.charge}s banked
-              {scanUi.scans ? `  ·  ${scanUi.scans} scanned` : ""}
-              {"  "}
-              <button style={ui.saveBtn} onClick={() => (window as any).__tw?.scan?.()}>SCAN · 10s</button>
-              <button style={ui.saveBtn} onClick={() => (window as any).__tw?.purge?.()}>PURGE · 5s</button>
-            </p>
-            <p style={ui.hudStat}>
-              {pressUi.built ? (
-                <>
-                  press ◆
-                  {pressUi.queued ? `  ·  refining ${pressUi.queued}` : ""}
-                  {pressUi.refined ? `  ·  ${pressUi.refined} refined` : ""}
-                  {"  "}
-                  <button style={ui.saveBtn} onClick={() => (window as any).__tw?.compress?.("dirt")}>PRESS 4·dirt</button>
-                  <button style={ui.saveBtn} onClick={() => (window as any).__tw?.refine?.("dirt")}>REFINE</button>
-                </>
-              ) : (
-                <>
-                  no press
-                  {"  "}
-                  <button style={ui.saveBtn} onClick={() => (window as any).__tw?.buildPress?.()}>BUILD PRESS · 12 stone</button>
-                </>
+          {/* Top-Right: Stockpile Summary */}
+          <div className="absolute top-6 right-6 flex flex-col gap-3 items-end pointer-events-none">
+            <div className="flex gap-4 items-center bg-black/40 backdrop-blur-md px-4 py-2 rounded-full border border-white/10">
+              <div className="flex items-center gap-1.5">
+                <Box className="w-4 h-4 text-amber-600" />
+                <span className="text-xs text-white/80 font-medium">{ledger.stockpile}</span>
+              </div>
+              {pressUi.built && (
+                <div className="flex items-center gap-1.5 border-l border-white/10 pl-4">
+                  <Cpu className="w-4 h-4 text-blue-400" />
+                  <span className="text-xs text-white/80 font-medium">{pressUi.refined}</span>
+                </div>
               )}
-            </p>
-            {shipUi.count > 0 && (
-              <p style={ui.hudStat}>
-                ships {shipUi.count}
-                {shipUi.flying ? `  ·  ${shipUi.flying} in flight` : ""}
-              </p>
+              {shipUi.count > 0 && (
+                <div className="flex items-center gap-1.5 border-l border-white/10 pl-4">
+                  <Ship className="w-4 h-4 text-yellow-500" />
+                  <span className="text-xs text-white/80 font-medium">{shipUi.count}</span>
+                </div>
+              )}
+              {bombUi.slugs > 0 && (
+                <div className="flex items-center gap-1.5 border-l border-white/10 pl-4" title="unstable slugs (press 4 stone → 1 slug)">
+                  <Zap className="w-4 h-4 text-fuchsia-400" />
+                  <span className="text-xs text-white/80 font-medium">{bombUi.slugs}</span>
+                </div>
+              )}
+              {bombUi.bombs > 0 && (
+                <div className="flex items-center gap-1.5 border-l border-white/10 pl-4" title="armed bombs">
+                  <Bomb className="w-4 h-4 text-rose-400" />
+                  <span className="text-xs text-white/80 font-medium">{bombUi.bombs}</span>
+                </div>
+              )}
+            </div>
+            {loadNote && (
+              <div className="text-[10px] text-white/40 uppercase tracking-widest">{loadNote}</div>
             )}
-            {(bombUi.slugs > 0 || bombUi.bombs > 0 || bombUi.detonations > 0) && (
-              <p style={ui.hudStat}>
-                slugs {bombUi.slugs}
-                {bombUi.bombs ? `  ·  ${bombUi.bombs} armed` : ""}
-                {bombUi.detonations ? `  ·  ${bombUi.detonations} returned` : ""}
-              </p>
+            {workerUi && (
+              <div className="text-[10px] uppercase tracking-widest mt-0.5" title={workerUi.error || workerUi.plan || workerUi.mode}>
+                <span className="text-white/40">{workerUi.name} · </span>
+                <span className={workerUi.error ? "text-rose-400" : workerUi.mode === "idle" ? "text-amber-300" : "text-emerald-300"}>{workerUi.mode}</span>
+                {workerUi.plan && <span className="text-white/40"> · {workerUi.plan}</span>}
+                {workerUi.error && <span className="text-rose-400"> · {workerUi.error}</span>}
+              </div>
             )}
-            <p style={ui.hudNote}>
-              {weather?.season ?? "NYC"} · {weather?.current?.label ?? "weather offline"}
-              {typeof weather?.current?.temperature === "number" ? `  ·  ${Math.round(weather.current.temperature)}°C` : ""}
-            </p>
           </div>
-          <button style={ui.walkBtn} onClick={() => enterWalkRef.current()}>Walk · F</button>
-          <button style={ui.cutBtn} onClick={toggleXray}>
-            {xray ? "X-ray: AUTO" : "X-ray: OFF"}
-          </button>
+
+          {/* Bottom-Right: Info & Scan */}
+          <div className="absolute bottom-8 right-8 flex flex-col items-end gap-4">
+            <div className="flex flex-col items-end gap-1 mb-2">
+              <div className="flex items-center gap-3 text-white/60">
+                <span className="text-[10px] uppercase tracking-tighter">{weather?.current?.label || "Sky Clear"}</span>
+                {weather?.modifiers?.isRaining ? <CloudRain className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
+              </div>
+              <div className="flex items-center gap-2 text-white/40 text-[10px]">
+                <Thermometer className="w-3 h-3" />
+                <span>{Math.round(weather?.current?.temperature ?? 22)}°C</span>
+                <Clock className="w-3 h-3 ml-2" />
+                <span className="uppercase">{voidUi.phase}</span>
+              </div>
+            </div>
+            
+            <div className="group relative">
+              <button 
+                onClick={() => (window as any).__tw?.scan?.()}>
+                <BotwStamina value={scanUi.charge} max={60} />
+              </button>
+              <div className="absolute right-full mr-4 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <span className="text-[10px] text-white/40 bg-black/60 px-2 py-1 rounded border border-white/5 whitespace-nowrap uppercase tracking-widest">
+                  Hold to Expand · 10s
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Bottom-Left: World Integrity & Prompts */}
+          <div className="absolute bottom-8 left-8 flex flex-col gap-6">
+            <div className="flex flex-col gap-2">
+              <MatterReadout health={ledger.world / (ledger.baseline || 1)} />
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <button 
+                className="group flex items-center gap-3"
+                onClick={() => enterWalkRef.current()}>
+                <div className="w-10 h-10 rounded-full border border-white/20 flex items-center justify-center group-hover:bg-white group-hover:text-black transition-colors">
+                  <span className="text-xs font-bold">F</span>
+                </div>
+                <span className="text-[11px] text-white/60 group-hover:text-white uppercase tracking-widest">Embody Worker</span>
+              </button>
+              
+              <button 
+                className="group flex items-center gap-3"
+                onClick={() => setShowActions(!showActions)}>
+                <div className="w-10 h-10 rounded-full border border-white/20 flex items-center justify-center group-hover:bg-blue-500/20 group-hover:border-blue-400 transition-colors">
+                  <Hammer className="w-5 h-5 text-white/80 group-hover:text-blue-400" />
+                </div>
+                <span className="text-[11px] text-white/60 group-hover:text-white uppercase tracking-widest">Structures</span>
+              </button>
+
+              <a
+                href="/tinyworld/capture"
+                className="group flex items-center gap-3 no-underline">
+                <div className="w-10 h-10 rounded-full border border-white/20 flex items-center justify-center group-hover:bg-purple-500/20 group-hover:border-purple-400 transition-colors">
+                  <Camera className="w-5 h-5 text-white/80 group-hover:text-purple-400" />
+                </div>
+                <span className="text-[11px] text-white/60 group-hover:text-white uppercase tracking-widest">Capture</span>
+              </a>
+            </div>
+          </div>
+
+          {/* Action Wheel / Overlay */}
+          {targetMode && (
+            <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[1100] pointer-events-none flex items-center gap-3 px-5 py-3 rounded-full bg-black/70 backdrop-blur-md border border-white/15">
+              <Crosshair className={"w-5 h-5 " + (targetMode === "placeBomb" ? "text-rose-300" : "text-cyan-300")} />
+              <div className="flex flex-col leading-tight">
+                <span className="text-[11px] uppercase tracking-widest text-white/80">
+                  {targetMode === "placeBomb" ? "Place Bomb — aim & click" : "Fly Ship — aim & click destination"}
+                </span>
+                <span className="text-[10px] text-white/40">Right-click or ESC to cancel</span>
+              </div>
+            </div>
+          )}
+          {showActions && (
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[1000]">
+              <div className="flex gap-8 p-12 flex-wrap justify-center max-w-5xl">
+                {!pressUi.built && (
+                  <button 
+                    onClick={() => { (window as any).__tw?.buildPress?.(); setShowActions(false); }}>
+                    <div className="w-24 h-24 rounded-full border-2 border-white/10 flex items-center justify-center group-hover:border-white/40 group-hover:bg-white/5 transition-all">
+                      <Hammer className="w-10 h-10 text-white/60 group-hover:text-white" />
+                    </div>
+                    <span className="text-xs text-white/40 uppercase tracking-widest">Build Press (12 Stone)</span>
+                  </button>
+                )}
+                {pressUi.built && (
+                  <button 
+                    onClick={() => { (window as any).__tw?.compress?.("dirt"); setShowActions(false); }}>
+                    <div className="w-24 h-24 rounded-full border-2 border-white/10 flex items-center justify-center group-hover:border-white/40 group-hover:bg-white/5 transition-all">
+                      <Box className="w-10 h-10 text-white/60 group-hover:text-white" />
+                    </div>
+                    <span className="text-xs text-white/40 uppercase tracking-widest">Compress Dirt</span>
+                  </button>
+                )}
+                {pressUi.built && (
+                  <button 
+                    className="group flex flex-col items-center gap-2"
+                    onClick={() => { (window as any).__tw?.makeSlug?.("stone"); setShowActions(false); }}>
+                    <div className="w-24 h-24 rounded-full border-2 border-fuchsia-400/20 flex items-center justify-center group-hover:border-fuchsia-400/60 group-hover:bg-fuchsia-500/10 transition-all">
+                      <Zap className="w-10 h-10 text-fuchsia-400/70 group-hover:text-fuchsia-300" />
+                    </div>
+                    <span className="text-xs text-white/40 uppercase tracking-widest">Make Slug (4 Stone)</span>
+                  </button>
+                )}
+                <button 
+                  onClick={() => { (window as any).__tw?.buildShip?.(); setShowActions(false); }}>
+                  <div className="w-24 h-24 rounded-full border-2 border-white/10 flex items-center justify-center group-hover:border-white/40 group-hover:bg-white/5 transition-all">
+                    <Ship className="w-10 h-10 text-white/60 group-hover:text-white" />
+                  </div>
+                  <span className="text-xs text-white/40 uppercase tracking-widest">Build Ship (1 Core + 8 Stone)</span>
+                </button>
+                {shipUi.count > 0 && (
+                  <button 
+                    className="group flex flex-col items-center gap-2"
+                    onClick={() => {
+                      setShowActions(false);
+                      setTargetMode("flyShip");
+                      if (!walkingRef.current) enterWalkRef.current();
+                    }}>
+                    <div className="w-24 h-24 rounded-full border-2 border-cyan-400/20 flex items-center justify-center group-hover:border-cyan-400/60 group-hover:bg-cyan-500/10 transition-all">
+                      <Crosshair className="w-10 h-10 text-cyan-400/70 group-hover:text-cyan-300" />
+                    </div>
+                    <span className="text-xs text-white/40 uppercase tracking-widest">Fly Ship (aim &amp; click)</span>
+                  </button>
+                )}
+                {shipUi.count > 0 && (
+                  <button 
+                    className="group flex flex-col items-center gap-2"
+                    onClick={() => { (window as any).__tw?.scrapShip?.(0); setShowActions(false); }}>
+                    <div className="w-24 h-24 rounded-full border-2 border-yellow-500/20 flex items-center justify-center group-hover:border-yellow-500/60 group-hover:bg-yellow-500/10 transition-all">
+                      <Ship className="w-10 h-10 text-yellow-500/60 group-hover:text-yellow-400" />
+                    </div>
+                    <span className="text-xs text-white/40 uppercase tracking-widest">Scrap Ship (recover core)</span>
+                  </button>
+                )}
+                {bombUi.slugs > 0 && (
+                  <button 
+                    className="group flex flex-col items-center gap-2"
+                    onClick={() => {
+                      setShowActions(false);
+                      setTargetMode("placeBomb");
+                      if (!walkingRef.current) enterWalkRef.current();
+                    }}>
+                    <div className="w-24 h-24 rounded-full border-2 border-rose-300/20 flex items-center justify-center group-hover:border-rose-300/60 group-hover:bg-rose-400/10 transition-all">
+                      <Crosshair className="w-10 h-10 text-rose-300/70 group-hover:text-rose-200" />
+                    </div>
+                    <span className="text-xs text-white/40 uppercase tracking-widest">Place Bomb (1 slug, aim &amp; click)</span>
+                  </button>
+                )}
+                {bombUi.bombs > 0 && (
+                  <button 
+                    className="group flex flex-col items-center gap-2"
+                    onClick={() => { (window as any).__tw?.detonate?.(0); setShowActions(false); }}>
+                    <div className="w-24 h-24 rounded-full border-2 border-rose-400/20 flex items-center justify-center group-hover:border-rose-400/70 group-hover:bg-rose-500/10 transition-all">
+                      <Bomb className="w-10 h-10 text-rose-400/70 group-hover:text-rose-300" />
+                    </div>
+                    <span className="text-xs text-white/40 uppercase tracking-widest">Detonate ({bombUi.bombs})</span>
+                  </button>
+                )}
+                <button 
+                  onClick={() => setShowActions(false)}>
+                  <X className="w-10 h-10" />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Mini Save Trigger (Top Left) */}
+          <div className="absolute top-6 left-6 group">
+            <button 
+              onClick={() => setShowSave(!showSave)}>
+              <Save className="w-4 h-4 text-white/40 group-hover:text-white/80" />
+            </button>
+            {showSave && (
+              <div className="mt-4 bg-black/80 backdrop-blur-xl border border-white/10 rounded-xl p-4 w-64 pointer-events-auto">
+                <select 
+                  value={selectedWorldId} 
+                  onChange={(e) => setSelectedWorldId(e.target.value)}>
+                  <option value="">Select world…</option>
+                  {worlds.map((world) => (
+                    <option key={world.id} value={world.id}>
+                      {world.name}{world.hasSavedBlocks ? ` · ${(world.savedBlockCount ?? 0).toLocaleString()}` : ""}
+                    </option>
+                  ))}
+                </select>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => onLoadSelected()} className="px-3 py-2 bg-white/10 hover:bg-white/20 rounded text-[10px] uppercase font-bold tracking-widest transition-colors">Load</button>
+                  <button onClick={onSaveSelected} className="px-3 py-2 bg-white/10 hover:bg-white/20 rounded text-[10px] uppercase font-bold tracking-widest transition-colors">Save</button>
+                  <button onClick={onSaveAsSelected} className="px-3 py-2 bg-white/10 hover:bg-white/20 rounded text-[10px] uppercase font-bold tracking-widest col-span-2 transition-colors">Save As New</button>
+                </div>
+              </div>
+            )}
+          </div>
         </>
       )}
       {walking && (
         <>
-          <div style={ui.crosshair}>＋</div>
-          <div style={ui.fpHud}>
-            <p style={ui.hudTitle}>WALK MODE</p>
-            <p style={ui.hudStat}>
-              HOLD to pick up · CLICK to place · RIGHT-CLICK / G to return
-              {carryLayer === "fruit" ? "  ·  E to eat" : ""}
-            </p>
-            <p style={ui.hudNote}>
-              WASD · mouse look · SPACE jump · ESC exit
-              {carryLayer ? `  ·  holding ${carryLayer}` : ""}
-              {moves ? `  ·  ${moves} moved` : ""}
-              {satiation ? `  ·  satiation ${satiation}` : ""}
-            </p>
+          {walkDebug && walkDebugUrlEnabledRef.current && (
+            <div className="absolute top-20 left-4 right-4 bg-black/80 text-white text-[10px] font-mono p-2 rounded border border-yellow-400/60 pointer-events-none z-[2000] leading-tight">
+              <div className="text-yellow-400 font-bold mb-1">WALK DEBUG</div>
+              <div>path: {walkDebug.path} · placed: {String(walkDebug.placed)}</div>
+              <div>workers: {walkDebug.workers} · ground: {walkDebug.groundSize} · mobile: {String(walkDebug.isMobile)}</div>
+              <div>spawn: ({walkDebug.spawn.sx.toFixed(1)}, {walkDebug.spawn.sy.toFixed(1)}, {walkDebug.spawn.sz.toFixed(1)})</div>
+              <div>prevCam: ({walkDebug.prevCam.x.toFixed(1)}, {walkDebug.prevCam.y.toFixed(1)}, {walkDebug.prevCam.z.toFixed(1)})</div>
+              <div>camAfter: ({walkDebug.camAfter.x.toFixed(1)}, {walkDebug.camAfter.y.toFixed(1)}, {walkDebug.camAfter.z.toFixed(1)})</div>
+              <div>vox: {walkDebug.voxel?.toFixed(2)} · eyeH: {walkDebug.eyeH?.toFixed(2)} · surfY: {walkDebug.sampledSurfaceY?.toFixed(2)}</div>
+            </div>
+          )}
+          {isMobileRef.current && (
+            <>
+              <div className="absolute bottom-8 left-12 z-50">
+                <Joystick 
+                  onMove={(x, y) => { joystickRef.current = { x, y, active: true }; }}
+                  onStop={() => { joystickRef.current = { x: 0, y: 0, active: false }; }}
+                />
+              </div>
+              <div className="absolute bottom-8 right-12 z-50">
+                <Joystick 
+                  onMove={(x, y) => { lookJoystickRef.current = { x, y, active: true }; }}
+                  onStop={() => { lookJoystickRef.current = { x: 0, y: 0, active: false }; }}
+                />
+              </div>
+            </>
+          )}
+          
+          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+            <div className="w-1.5 h-1.5 bg-white/40 rounded-full blur-[1px]"></div>
+          </div>
+          <div className="absolute bottom-12 left-1/2 -translate-x-1/2 flex flex-col items-center gap-4 pointer-events-none z-40">
+             <div className="flex items-center gap-8">
+               {!isMobileRef.current ? (
+                 <div className="flex flex-col items-center gap-1">
+                   <div className="w-10 h-10 rounded-full border border-white/20 flex items-center justify-center bg-black/20">
+                     <span className="text-xs font-bold text-white">M1</span>
+                   </div>
+                   <span className="text-[9px] text-white/40 uppercase tracking-widest">{carryLayer ? "Place" : "Pick Up"}</span>
+                 </div>
+               ) : (
+                 <button 
+                   className="pointer-events-auto flex flex-col items-center gap-1 active:scale-90 transition-transform"
+                   onTouchStart={(e) => { e.stopPropagation(); mobileActionsRef.current.action = true; }}
+                 >
+                   <div className="w-14 h-14 rounded-full border-2 border-white/30 flex items-center justify-center bg-white/10 backdrop-blur-md">
+                     <Crosshair className="w-6 h-6 text-white/80" />
+                   </div>
+                   <span className="text-[9px] text-white/40 uppercase tracking-widest">{carryLayer ? "Place" : "Pick Up"}</span>
+                 </button>
+               )}
+
+               {isMobileRef.current && (
+                 <button 
+                   className="pointer-events-auto flex flex-col items-center gap-1 active:scale-90 transition-transform"
+                   onTouchStart={(e) => { e.stopPropagation(); mobileActionsRef.current.jump = true; }}
+                 >
+                   <div className="w-14 h-14 rounded-full border-2 border-white/30 flex items-center justify-center bg-white/10 backdrop-blur-md">
+                     <ArrowUpCircle className="w-6 h-6 text-white/80" />
+                   </div>
+                   <span className="text-[9px] text-white/40 uppercase tracking-widest">Jump</span>
+                 </button>
+               )}
+
+               {carryLayer === "fruit" && (
+                 <div className="flex flex-col items-center gap-1">
+                   <div className="w-10 h-10 rounded-full border border-white/20 flex items-center justify-center bg-black/20">
+                     <span className="text-xs font-bold text-white">E</span>
+                   </div>
+                   <span className="text-[9px] text-white/40 uppercase tracking-widest">Eat</span>
+                 </div>
+               )}
+
+               <div className="flex flex-col items-center gap-1">
+                 <button 
+                   className="pointer-events-auto w-10 h-10 rounded-full border border-white/20 flex items-center justify-center bg-black/20 active:bg-white active:text-black transition-colors"
+                   onClick={() => {
+                     setWalking(false);
+                     walkingRef.current = false;
+                     if (orbitRef.current) orbitRef.current.enabled = true;
+                     if (fpRef.current && fpRef.current.isLocked) {
+                       try { fpRef.current.unlock(); } catch {}
+                     }
+                   }}
+                 >
+                   <span className="text-xs font-bold">{isMobileRef.current ? "X" : "ESC"}</span>
+                 </button>
+                 <span className="text-[9px] text-white/40 uppercase tracking-widest">Exit</span>
+               </div>
+             </div>
+             {carryLayer && (
+               <div className="px-4 py-1.5 bg-white/10 backdrop-blur-md rounded-full border border-white/10 flex items-center gap-3">
+                 <Box className="w-3.5 h-3.5 text-blue-400" />
+                 <span className="text-[10px] text-white/80 uppercase tracking-[0.2em]">{carryLayer}</span>
+               </div>
+             )}
           </div>
         </>
       )}
     </div>
   );
 }
+' sync_success=True sync_message='Synced 31 routes'
