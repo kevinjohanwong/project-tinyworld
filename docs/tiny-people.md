@@ -1,9 +1,15 @@
-# The Tiny People: Tech-Scavengers
+# The Tiny People: Ghibli Scavengers
 
 **Concept:** 
-The Tiny People are semi-autonomous micro-humanoids fighting to survive against "The Void." Rather than magic, their survival relies on micro-engineering and scavenging. They build their gear, armor, and eventual "Void Thrusters" out of the microscopic debris found in their immediate physical environment. 
+The Tiny People are pixelated, Studio Ghibli-style micro-humanoids fighting to survive against "The Void." Moving away from voxel-based geometry, they are rendered as **expressive 2D sprites** that billboard within the 3D world. Their survival relies on micro-engineering and scavenging, blending whimsical aesthetics with gritty industrial survival.
 
-Because they scavenge at a micro-scale, the physical materials available in their exact zip code—and the climate they endure—completely define their early-game culture and appearance.
+## Visual Aesthetic: Pixelated Ghibli
+The goal is to capture the charm of 90s-era pixel art combined with the soft, pastoral, yet technically detailed look of Studio Ghibli films (e.g., *Castle in the Sky*, *The Secret World of Arrietty*).
+
+- **Proportions**: Slightly oversized heads and eyes for readability.
+- **Animations**: Fluid, frame-by-frame pixel animations for walking, climbing, and emoting.
+- **Transparency**: Sprites use alpha-testing to maintain crisp pixel edges without "boxiness."
+- **Lighting**: Sprites receive world lighting and cast subtle "blob" or pixelated shadows to ground them in the 3D space.
 
 ## Regional & Climate Variations
 
