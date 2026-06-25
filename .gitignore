@@ -16,3 +16,13 @@ DerivedData/
 .DS_Store
 .env
 *.log
+
+# Local scan/runtime artifacts
+.venv-oldpath/
+data/backups/
+data/captures/
+data/*.wipe-backup-*
+debug-shots/
+tools/__pycache__/
+--full-page
+.route-backups/*.tsx
