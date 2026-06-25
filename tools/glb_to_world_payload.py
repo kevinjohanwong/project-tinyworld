@@ -81,6 +81,121 @@ def connected_keep(cols, min_size=6):
         if len(comp)>=min_size: keep.update(comp)
     return keep
 
+def decorate_vegetation(layers, floor, occupied, wall_cols):
+    if not floor:
+        return {"trees": 0, "shrubs": 0, "ground": 0}
+
+    xs=[x for x,_ in floor.keys()]
+    zs=[z for _,z in floor.keys()]
+    span=max(max(xs)-min(xs), max(zs)-min(zs), 1)
+    floor_items=list(floor.items())
+
+    def open_floor(x, z, radius=1):
+        if (x,z) in wall_cols:
+            return False
+        y=floor.get((x,z))
+        if y is None:
+            return False
+        for dx in range(-radius, radius+1):
+            for dz in range(-radius, radius+1):
+                if (x+dx,z+dz) in wall_cols:
+                    return False
+                if (x+dx,z+dz) not in floor:
+                    return False
+        return True
+
+    def add(layer, x, y, z):
+        p=(int(x),int(y),int(z))
+        if p in occupied:
+            return False
+        occupied.add(p)
+        layers[layer].append(p)
+        return True
+
+    tree_budget=max(8, min(46, len(floor_items)//120))
+    shrub_budget=max(18, min(120, len(floor_items)//45))
+    ground_budget=max(80, min(700, len(floor_items)//8))
+
+    tree_candidates=[]
+    for (x,z), y in floor_items:
+        if not open_floor(x,z,1):
+            continue
+        h=hash2(x,z)
+        # Prefer visual edges and corners so the middle of a scanned room remains walkable.
+        edge_score=min(abs(x-min(xs)), abs(x-max(xs)), abs(z-min(zs)), abs(z-max(zs)))
+        if edge_score > max(3, span//5) and (h % 100) > 18:
+            continue
+        if (h % 1000) < 115:
+            tree_candidates.append((h, x, y, z))
+    tree_candidates.sort()
+
+    planted=[]
+    min_spacing=max(5, span//18)
+    for h,x,y,z in tree_candidates:
+        if len(planted)>=tree_budget:
+            break
+        if any((x-px)**2+(z-pz)**2 < min_spacing*min_spacing for px,pz in planted):
+            continue
+        planted.append((x,z))
+        archetype=h % 4
+        height=3 + (h % 4)
+        if archetype == 0:
+            # Tiered voxel pine / cypress.
+            for i in range(1, height+2): add('trunks', x, y+i, z)
+            for level, radius in ((height-1,2),(height,2),(height+1,1),(height+2,1)):
+                for dx in range(-radius, radius+1):
+                    for dz in range(-radius, radius+1):
+                        if abs(dx)+abs(dz) <= radius+1:
+                            add('leaves', x+dx, y+level, z+dz)
+        elif archetype == 1:
+            # Rounded deciduous canopy.
+            for i in range(1, height+1): add('trunks', x, y+i, z)
+            for dy,radius in ((height-1,2),(height,2),(height+1,1)):
+                for dx in range(-radius, radius+1):
+                    for dz in range(-radius, radius+1):
+                        if dx*dx + dz*dz + (dy-height)**2 <= radius*radius+1:
+                            add('leaves', x+dx, y+dy, z+dz)
+            if h % 5 == 0:
+                add('fruit', x+1, y+height, z)
+        elif archetype == 2:
+            # Palm / umbrella silhouette, rare but matches the toy reference.
+            for i in range(1, height+3): add('trunks', x, y+i, z)
+            top=y+height+3
+            add('leaves', x, top, z)
+            for dx,dz in ((2,0),(-2,0),(0,2),(0,-2),(1,1),(-1,1),(1,-1),(-1,-1)):
+                add('leaves', x+dx, top-1, z+dz)
+                if abs(dx)+abs(dz)>2:
+                    add('leaves', x+dx, top-2, z+dz)
+        else:
+            # Tiny street-tree / bonsai shape.
+            for i in range(1, height): add('trunks', x, y+i, z)
+            for dx in (-1,0,1):
+                for dz in (-1,0,1):
+                    if abs(dx)+abs(dz) <= 2:
+                        add('leaves', x+dx, y+height, z+dz)
+            add('leaves', x, y+height+1, z)
+
+    shrubs=0
+    ground=0
+    for (x,z), y in floor_items:
+        if (x,z) in wall_cols:
+            continue
+        h=hash2(x+17,z-31)
+        if shrubs < shrub_budget and (h % 1000) < 95 and open_floor(x,z,0):
+            for dx,dz in ((0,0),(1,0),(0,1)) if h % 2 == 0 else ((0,0),(-1,0),(0,-1)):
+                if add('leaves', x+dx, y+1, z+dz):
+                    shrubs += 1
+            if h % 9 == 0 and add('fruit', x, y+2, z):
+                shrubs += 1
+        elif ground < ground_budget and (h % 1000) < 140 and open_floor(x,z,0):
+            # Ground sparkle: fresh grass and tiny flower/berry pixels.
+            if add('grass', x, y+1, z):
+                ground += 1
+            if h % 13 == 0 and add('fruit', x, y+2, z):
+                ground += 1
+
+    return {"trees": len(planted), "shrubs": shrubs, "ground": ground}
+
 def convert(path):
     tris, mn, mx = load_triangles(path)
     tris, mn, mx, rot_deg = rotate_to_cardinal(tris)
@@ -165,7 +280,6 @@ def convert(path):
         layers['dirt'].append((x,y-1,z))
     for p in solid_wall: layers['wall'].append(p)
     for p in ceiling: layers['ceiling'].append(p)
-    # Preserve non-structural surface details as stone/metal accents when not colliding.
     occupied=set()
     ordered=['dryGrass','dirt','wall','ceiling']
     for name in ordered:
@@ -174,6 +288,8 @@ def convert(path):
             if p in occupied: continue
             occupied.add(p); uniq.append(p)
         layers[name]=uniq
+    vegetation_stats=decorate_vegetation(layers, floor, occupied, keep_cols)
+    # Preserve non-structural surface details as stone/metal accents when not colliding.
     for x,y,z in set(allsurf):
         if y<=0 or (x,y,z) in occupied: continue
         if (x,z) in keep_cols: continue
@@ -210,6 +326,10 @@ def convert(path):
             'mesh_triangles': int(len(tris)),
             'floor_plane': 'dominant-low-plane',
             'rotated_deg': int(rot_deg),
+            'vegetation': {
+                'style': 'blocky-brooke-v2',
+                **vegetation_stats,
+            },
         },
         'savedAt': int(time.time()*1000),
     }
