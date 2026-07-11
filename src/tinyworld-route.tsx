@@ -96,7 +96,7 @@ const OUTLINE_SHADER = {
 
 const NYC = { lat: 40.7128, lon: -74.006, timezone: "America/New_York" };
 const MAX_TRIANGLES = 220_000;
-const TARGET_DIVS = 345;
+const TARGET_DIVS = 690;
 const MAX_TREES = 160;
 const MAX_WATER = 10;
 const TERRAIN_DEPTH = 5;
@@ -283,7 +283,7 @@ self.onmessage = async (event) => {
     }
 
     const span = Math.max(maxX - minX, maxY - minY, maxZ - minZ) || 1;
-    const voxel = Math.max(span / TARGET_DIVS, 0.025);
+    const voxel = Math.max(span / TARGET_DIVS, 0.015);
     const centerX = (minX + maxX) / 2;
     const centerZ = (minZ + maxZ) / 2;
     const floorMap = new Map();
@@ -1292,16 +1292,33 @@ export default function TinyWorld() {
           if (!active) return;
           const lat = position.coords.latitude;
           const lon = position.coords.longitude;
+          // The GPS visibility gate is 150m (GPS_VISIBILITY_KM). A coarse fix
+          // (>150m accuracy) places you outside your own zone's radius, so the
+          // API hides it and auto-load silently shows "no zone here". Surface
+          // the reported accuracy so that failure mode is diagnosable.
+          const acc = Math.round(position.coords.accuracy || 0);
           setAnchor({ lat, lon });
+          if (acc > 150) {
+            setLoadNote(`GPS fix is coarse (±${acc}m) — your zone may sit just outside the 150m range; step into open sky for a tighter lock`);
+          }
           // Re-fetch the worlds list with real GPS coords so the API reports
           // nodeSource="gps" and the auto-load gate downstream can fire.
           fetchWorldsRef.current?.({ lat, lon }).catch(() => undefined);
         },
-        () => {
+        (err) => {
           if (!active) return;
+          // Don't silently pretend we're in NYC — name why the geo gate didn't
+          // engage so the user isn't left staring at a default node.
+          const why = err?.code === 1 ? "location permission denied"
+            : err?.code === 2 ? "position unavailable (needs HTTPS + location enabled)"
+            : err?.code === 3 ? "timed out getting a GPS fix"
+            : "geolocation failed";
+          setLoadNote(`couldn't read your location — ${why}; showing default node`);
           setAnchor({ lat: NYC.lat, lon: NYC.lon });
         },
-        { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 },
+        // High accuracy + fresh fix: a 150m gate needs satellite-grade precision,
+        // not a cached wifi/cell estimate that can be off by hundreds of meters.
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
       );
     }
     return () => {
@@ -1330,15 +1347,22 @@ export default function TinyWorld() {
     const data = await res.json();
     if (data?.ok && Array.isArray(data.worlds)) {
       if (data.node) setNodeInfo({ source: data.node.source, city: data.node.city, hiddenCount: data.hiddenCount ?? 0 });
-      // GLB upload is the MVP capture path. Whitelist only worlds whose name
-      // matches a known GLB-import pattern; everything else (pre-seeded test
-      // worlds, old geometric scans) is hidden. Override with ?showGeometric=1.
+      // Show two kinds of worlds:
+      //  1. Anything the user has actually scanned + saved (hasSavedBlocks) —
+      //     GLB uploads and OpenMVS camera scans. These are real worlds
+      //     and must always be loadable, regardless of how they were named.
+      //  2. GLB-pattern names (the MVP capture path) even before they have
+      //     saved blocks, so a fresh upload still surfaces.
+      // Only nameless, never-saved pre-seeded test/geometric stubs stay hidden.
+      // Override and show everything with ?showGeometric=1.
       const _showAll = !!new URLSearchParams(window.location.search).get("showGeometric");
       const _glbPattern = /^(Scaniverse|Polycam|GLB Upload|LiDAR Scan)/i;
-      const _glbOnly = _showAll ? data.worlds : data.worlds.filter((w: WorldRecord) => _glbPattern.test(w.name || ""));
-      setWorlds(_glbOnly);
-      setSelectedWorldId((current) => current || _glbOnly.find((world: WorldRecord) => world.hasSavedBlocks)?.id || _glbOnly[0]?.id || "");
-      return _glbOnly as WorldRecord[];
+      const _visible = _showAll
+        ? data.worlds
+        : data.worlds.filter((w: WorldRecord) => w.hasSavedBlocks || _glbPattern.test(w.name || ""));
+      setWorlds(_visible);
+      setSelectedWorldId((current) => current || _visible.find((world: WorldRecord) => world.hasSavedBlocks)?.id || _visible[0]?.id || "");
+      return _visible as WorldRecord[];
     }
     setWorlds([]);
     setSelectedWorldId("");
@@ -1372,9 +1396,11 @@ export default function TinyWorld() {
     return () => clearTimeout(t);
   }, []);
 
-  // Auto-load most-recent saved world at GPS tier: requires the browser to
-  // have shared real coordinates so we know we're physically at the save.
-  // Bypass with ?noauto=1.
+  // Auto-load the zone NEAREST the GPS fix — regardless of who created it —
+  // so walking up to any scanned spot drops you straight in. The API already
+  // limits the list to the visibility radius, so anything here is in range.
+  // If there is no zone nearby, fall through to the idle screen, which prompts
+  // for a scan/upload. Requires real GPS coords; bypass with ?noauto=1.
   useEffect(() => {
     if (autoLoadRef.current) return;
     if (typeof window === "undefined") return;
@@ -1383,16 +1409,26 @@ export default function TinyWorld() {
     if (params.get("world")) return;
     if (phase !== "idle") return;
     if (!nodeInfo || nodeInfo.source !== "gps") return;
-    const savedWorlds = worlds.filter((w) => w.hasSavedBlocks);
-    if (savedWorlds.length === 0) return;
-    // Prefer the most recently visited save in this geo bucket.
-    const best = savedWorlds.slice().sort((a: any, b: any) =>
-      (b.last_visited ?? b.last_scanned ?? 0) - (a.last_visited ?? a.last_scanned ?? 0)
-    )[0];
+    const zones = worlds.filter((w) => w.hasSavedBlocks);
+    if (zones.length === 0) {
+      // Nothing scanned here yet — prompt a scan (idle screen shows UPLOAD GLB).
+      setLoadNote("no zone here yet — upload a scan to plant one");
+      return;
+    }
+    // Nearest first. distanceMeters is populated on the GPS-tier fetch; fall
+    // back to nodeDistanceKm (server-rounded km) if it's missing.
+    const dist = (w: WorldRecord) => {
+      if (typeof w.distanceMeters === "number" && Number.isFinite(w.distanceMeters)) return w.distanceMeters;
+      const nd = (w as any).nodeDistanceKm;
+      if (typeof nd === "number" && Number.isFinite(nd)) return nd * 1000;
+      return Infinity;
+    };
+    const best = zones.slice().sort((a, b) => dist(a) - dist(b))[0];
     if (!best) return;
     autoLoadRef.current = true;
     setSelectedWorldId(best.id);
-    setLoadNote(`auto-loading ${best.name} (saved here)`);
+    const away = Number.isFinite(dist(best)) ? ` (${Math.round(dist(best))}m away)` : "";
+    setLoadNote(`auto-loading nearest zone: ${best.name}${away}`);
     const t = setTimeout(() => {
       onLoadSelected(best.id).catch((e) => {
         setLoadNote(`auto-load failed: ${e?.message || e}`);
@@ -1904,6 +1940,23 @@ export default function TinyWorld() {
     ghostMesh.visible = false;
     scene.add(ghostMesh);
 
+    // Task 4: size the cursor (hover/charge highlight + placement ghost) to the
+    // 4x4x4 volume that LARGE-mode bulk ops actually affect. bulkHarvestAround /
+    // bulkPlaceAround sweep cells at offsets -1..+2 around the anchor, so the
+    // cube's geometric center sits +0.5 voxel from the anchor cell center on
+    // each axis. Drone mode stays single-cell.
+    const BULK_SPAN = 4;
+    const sizeCursorToMode = (obj: THREE.Object3D, wx: number, wy: number, wz: number) => {
+      if (sentinelModeRef.current === "large") {
+        const half = 0.5 * voxel;
+        obj.position.set(wx + half, wy + half, wz + half);
+        obj.scale.setScalar(BULK_SPAN);
+      } else {
+        obj.position.set(wx, wy, wz);
+        obj.scale.setScalar(1);
+      }
+    };
+
     // Hover-lift + snap held-block mesh (BotW block feel). A standalone opaque
     // block that animates from a grabbed block's origin to a hold position
     // (lift) and from hold to the snapped target (place). Distinct from
@@ -2082,6 +2135,19 @@ export default function TinyWorld() {
       tetherPool.push(line);
     }
     const takeFx = (pool: any[]) => pool.find((m) => !m.visible) || null;
+    // Reposition/scale a single instanced-mesh slot. Restored helper — its
+    // accidental deletion (greedy "// ... existing code ..." merge) left
+    // spawnSettleFx/tickPhysicalFx calling an undefined fn, which threw a
+    // ReferenceError inside the render loop on every block placement and
+    // surfaced as the red "LOOP CRASH" overlay.
+    const setBlockMatrix = (mesh: any, slot: number, vx: number, vy: number, vz: number, scale = 1, lift = 0) => {
+      dummy.position.set((vx - cxRound) * voxel, vy * voxel + lift, (vz - czRound) * voxel);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(scale, scale, scale);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(slot, dummy.matrix);
+      mesh.instanceMatrix.needsUpdate = true;
+    };
     const spawnDustFx = (vx: number, vy: number, vz: number) => {
       const dust = takeFx(dustPool);
       if (!dust) return;
@@ -6319,6 +6385,13 @@ export default function TinyWorld() {
       pos: new THREE.Vector3(0, 4 * voxel, 0),
       target: new THREE.Vector3(),
       bobPhase: Math.random() * Math.PI * 2,
+      mode: "escort" as "escort" | "travel" | "inspect",
+      poi: null as any,
+      phaseUntil: 0,
+      nextRoam: 0,
+      seed0: Math.random() * Math.PI * 2,
+      seed1: Math.random() * Math.PI * 2,
+      seed2: Math.random() * Math.PI * 2,
       group: null as any,
       core: null as any,
       light: null as any,
@@ -6405,6 +6478,49 @@ export default function TinyWorld() {
       orbSay(pick.text, pick.mood);
     };
 
+    // Orb roaming: the companion isn't leashed to the player. It floats in a
+    // loose, drifting shell around the active body (always kept just outside
+    // the figure — never clipping through it) and periodically peels off to
+    // inspect a point of interest — an open rift, a void creature, or just an
+    // interesting patch of terrain — then drifts back, so it feels alive
+    // rather than glued to the shoulder.
+    const orbPickPoi = (): any => {
+      const rifts = riftMarkersRef.current.filter((m: any) => m && m.visible !== false && m.parent);
+      if (rifts.length) return rifts[(Math.random() * rifts.length) | 0].position.clone();
+      if (voidCreatures.length) return voidCreatures[(Math.random() * voidCreatures.length) | 0].group.position.clone();
+      return null;
+    };
+    const orbAmbientPoint = (center: any): any => {
+      // Prefer an actual terrain column within roaming range of the player.
+      try {
+        const keys = Array.from(colMap.keys());
+        if (keys.length) {
+          for (let tries = 0; tries < 6; tries++) {
+            const k = keys[(Math.random() * keys.length) | 0] as string;
+            const set = colMap.get(k);
+            if (!set || set.size === 0) continue;
+            const ci = k.indexOf(",");
+            const vx = parseInt(k.slice(0, ci), 10);
+            const vz = parseInt(k.slice(ci + 1), 10);
+            let topY = -Infinity;
+            set.forEach((y: number) => { if (y > topY) topY = y; });
+            const wx = (vx - cxRound) * voxel;
+            const wz = (vz - czRound) * voxel;
+            const dx = wx - center.x, dz = wz - center.z;
+            if (dx * dx + dz * dz > (voxel * 26) * (voxel * 26)) continue;
+            return new THREE.Vector3(wx, (topY + 2.2) * voxel, wz);
+          }
+        }
+      } catch (e) {}
+      const a = Math.random() * Math.PI * 2;
+      const r = voxel * (8 + Math.random() * 10);
+      return new THREE.Vector3(
+        center.x + Math.cos(a) * r,
+        center.y + voxel * (2 + Math.random() * 5),
+        center.z + Math.sin(a) * r,
+      );
+    };
+
     const tickOrb = (now: number) => {
       if (!orbRef.group) makeOrbBody();
       if (!orbRef.visible) orbShow(true);
@@ -6422,19 +6538,133 @@ export default function TinyWorld() {
         activeForward.set(-Math.sin(sentinelYaw), 0, -Math.cos(sentinelYaw));
       }
       activeRight.crossVectors(activeForward, new THREE.Vector3(0, 1, 0)).normalize();
-      const orbitT = now * 0.0012;
-      const orbitRadius = isDrone ? voxel * 1.0 : voxel * 1.15;
-      const orbitY = Math.sin(orbitT * 1.9) * (isDrone ? voxel * 0.22 : voxel * 0.3);
-      const orbitX = Math.cos(orbitT * 1.35) * orbitRadius;
-      const orbitZ = Math.sin(orbitT * 1.35) * orbitRadius * 0.55;
-      const target = activeCenter.clone()
-        .add(new THREE.Vector3(0, activeUp, 0))
-        .add(activeRight.multiplyScalar(orbitX))
-        .add(activeForward.multiplyScalar(orbitZ))
-        .add(new THREE.Vector3(0, orbitY, 0));
+      const base = activeCenter.clone().add(new THREE.Vector3(0, activeUp, 0));
 
-      orbRef.target.copy(target);
-      orbRef.pos.lerp(orbRef.target, Math.min(1, dt * 5.5));
+      // Body-clearance guard: keep the orb outside a capsule around the figure
+      // so it never visually clips into the body, in ANY mode. Horizontal
+      // standoff from the body axis, tapering to a rounded cap above the head
+      // and below the feet so the orb can still pass directly overhead.
+      const clearR = (isDrone ? 1.7 : 2.3) * voxel;
+      const bodyBotY = activeCenter.y - voxel * 0.4;
+      const bodyTopY = activeCenter.y + activeUp * 2.0;
+      const clearBody = (v: any) => {
+        let need = clearR;
+        if (v.y > bodyTopY) need = clearR - (v.y - bodyTopY);
+        else if (v.y < bodyBotY) need = clearR - (bodyBotY - v.y);
+        if (need <= 0) return v; // well above/below the capsule — no clip possible
+        const dx = v.x - activeCenter.x;
+        const dz = v.z - activeCenter.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d >= need) return v;
+        if (d < 1e-4) {
+          v.x = activeCenter.x + activeRight.x * need;
+          v.z = activeCenter.z + activeRight.z * need;
+        } else {
+          const s = need / d;
+          v.x = activeCenter.x + dx * s;
+          v.z = activeCenter.z + dz * s;
+        }
+        return v;
+      };
+
+      // Terrain-clearance guard: keep the orb out of solid voxels so it never
+      // visually passes through scanned geometry (floors, walls, structures).
+      // Sphere-vs-voxel push-out against the static colMap; if buried, eject up.
+      const orbR = voxel * 1.0;
+      const orbCells = Math.ceil(orbR / voxel + 0.5);
+      const orbHalf = voxel * 0.5;
+      const clearTerrain = (v: any) => {
+        const cvx = Math.round(v.x / voxel) + cxRound;
+        const cvy = Math.round(v.y / voxel);
+        const cvz = Math.round(v.z / voxel);
+        let px = 0, py = 0, pz = 0, hit = false;
+        for (let dx = -orbCells; dx <= orbCells; dx++) {
+          for (let dy = -orbCells; dy <= orbCells; dy++) {
+            for (let dz = -orbCells; dz <= orbCells; dz++) {
+              const vx = cvx + dx, vy = cvy + dy, vz = cvz + dz;
+              if (!solidAt(vx, vy, vz)) continue;
+              const wx = (vx - cxRound) * voxel;
+              const wy = vy * voxel;
+              const wz = (vz - czRound) * voxel;
+              // closest point on this voxel's AABB to the orb centre
+              const qx = Math.max(wx - orbHalf, Math.min(v.x, wx + orbHalf));
+              const qy = Math.max(wy - orbHalf, Math.min(v.y, wy + orbHalf));
+              const qz = Math.max(wz - orbHalf, Math.min(v.z, wz + orbHalf));
+              const ex = v.x - qx, ey = v.y - qy, ez = v.z - qz;
+              const d2 = ex * ex + ey * ey + ez * ez;
+              if (d2 >= orbR * orbR) continue;
+              if (d2 < 1e-6) { py += orbR; hit = true; continue; } // buried — eject up
+              const d = Math.sqrt(d2);
+              const pen = (orbR - d) / d;
+              px += ex * pen; py += ey * pen; pz += ez * pen;
+              hit = true;
+            }
+          }
+        }
+        if (hit) {
+          // clamp combined correction so stacked voxels can't launch the orb
+          const pm = Math.sqrt(px * px + py * py + pz * pz);
+          if (pm > orbR) { const s = orbR / pm; px *= s; py *= s; pz *= s; }
+          v.x += px; v.y += py; v.z += pz;
+        }
+        return v;
+      };
+
+      // Roaming state machine. Pinned to an escort shell during the opening
+      // cinematic so the orb stays close for the intro dialogue.
+      const pinned = openingRef.active;
+      if (pinned) {
+        orbRef.mode = "escort"; orbRef.poi = null; orbRef.nextRoam = now + 4000;
+      } else if (orbRef.mode === "escort" && now >= orbRef.nextRoam) {
+        const poi = orbPickPoi();
+        if (poi && Math.random() < 0.8) {
+          orbRef.poi = poi; orbRef.mode = "travel"; orbRef.phaseUntil = now + 9000;
+        } else if (Math.random() < 0.55) {
+          orbRef.poi = orbAmbientPoint(base); orbRef.mode = "travel"; orbRef.phaseUntil = now + 8000;
+        }
+        orbRef.nextRoam = now + 4500 + Math.random() * 4500;
+      }
+
+      const tSec = now * 0.001;
+      let lerpK = dt * 3.0;
+      if (orbRef.mode === "travel" && orbRef.poi) {
+        // Fly out to the point of interest with a gentle bob.
+        orbRef.target.copy(orbRef.poi);
+        orbRef.target.y += Math.sin(tSec * 1.7 + orbRef.seed0) * voxel * 0.4;
+        lerpK = dt * 2.4;
+        if (orbRef.pos.distanceTo(orbRef.poi) < voxel * 1.8 || now >= orbRef.phaseUntil) {
+          orbRef.mode = "inspect"; orbRef.phaseUntil = now + 2200 + Math.random() * 2400;
+        }
+      } else if (orbRef.mode === "inspect" && orbRef.poi) {
+        // Circle the point of interest closely while looking it over.
+        const ia = tSec * 1.4 + orbRef.seed1;
+        orbRef.target.set(
+          orbRef.poi.x + Math.cos(ia) * voxel * 1.5,
+          orbRef.poi.y + Math.sin(tSec * 1.1 + orbRef.seed2) * voxel * 0.7,
+          orbRef.poi.z + Math.sin(ia) * voxel * 1.5,
+        );
+        if (now >= orbRef.phaseUntil) {
+          orbRef.mode = "escort"; orbRef.poi = null; orbRef.nextRoam = now + 2500 + Math.random() * 3500;
+        }
+      } else {
+        // Escort: a loose, drifting shell around the body. Radius stays outside
+        // the figure (it never passes through the body) but still swings in and
+        // out and rides up and down so it never sits rigidly at the shoulder.
+        orbRef.mode = "escort";
+        const ang = tSec * 0.6 + Math.sin(tSec * 0.27 + orbRef.seed0) * 1.7;
+        const rad = voxel * (3.6 + 1.3 * Math.sin(tSec * 0.43 + orbRef.seed1));
+        const hy = voxel * (0.7 * Math.sin(tSec * 0.61 + orbRef.seed2) + 0.35 * Math.sin(tSec * 1.27));
+        orbRef.target.copy(base)
+          .add(activeRight.clone().multiplyScalar(Math.cos(ang) * rad))
+          .add(activeForward.clone().multiplyScalar(Math.sin(ang) * rad * 0.85))
+          .add(new THREE.Vector3(0, hy, 0));
+      }
+
+      clearBody(orbRef.target);
+      clearTerrain(orbRef.target);
+      orbRef.pos.lerp(orbRef.target, Math.min(1, lerpK));
+      clearBody(orbRef.pos);
+      clearTerrain(orbRef.pos);
       orbRef.bobPhase += dt * 2.2;
       const bob = Math.sin(orbRef.bobPhase) * voxel * 0.12;
       const pulse = 1 + Math.sin(now * 0.004) * 0.06;
@@ -7686,7 +7916,7 @@ export default function TinyWorld() {
               miningPill.textContent = `MINING ${layerName.toUpperCase()} ${Math.round(pct * 100)}%`;
               miningPill.style.opacity = "1";
             }
-            highlight.position.set((cs.vx - cxRound) * voxel, cs.vy * voxel, (cs.vz - czRound) * voxel);
+            sizeCursorToMode(highlight, (cs.vx - cxRound) * voxel, cs.vy * voxel, (cs.vz - czRound) * voxel);
             hlMat.color.setHex(pct < 0.5 ? 0xffeb6a : 0xffa040);
             highlight.visible = true;
             if (pct >= 1) {
@@ -7704,7 +7934,7 @@ export default function TinyWorld() {
             if ((frameCount % 3) === 0) {
               const hit = marchRay();
               if (hit) {
-                highlight.position.set((hit.vx - cxRound) * voxel, hit.vy * voxel, (hit.vz - czRound) * voxel);
+                sizeCursorToMode(highlight, (hit.vx - cxRound) * voxel, hit.vy * voxel, (hit.vz - czRound) * voxel);
                 const lyr = (hit.mesh.userData?.layer as string) || "block";
                 const hardness = MOVE_MS[lyr] ?? 500;
                 if (!isFinite(hardness)) hlMat.color.setHex(0xe06868);
@@ -7730,9 +7960,9 @@ export default function TinyWorld() {
             if ((frameCount % 2) === 0) {
               const target = getPlacementTarget();
               if (target) {
-                ghostMesh.position.set(target.world.x, target.world.y, target.world.z);
+                sizeCursorToMode(ghostMesh, target.world.x, target.world.y, target.world.z);
                 ghostMesh.visible = true;
-                (ghostMesh.material as any).opacity = 0.45;
+                (ghostMesh.material as any).opacity = sentinelModeRef.current === "large" ? 0.28 : 0.45;
               } else {
                 // No valid target — only the held block shows.
                 ghostMesh.visible = false;
@@ -8862,7 +9092,7 @@ export default function TinyWorld() {
                    <div>BULK · 4×4×4</div>
                    <div style={{ color: "rgba(255,95,189,0.7)" }}>HULL INTEGRITY · 100%</div>
                  </div>
-               </div>
+                </div>
              )}
              {walking && sentinelMode === "drone" && (
                <div className="pointer-events-none fixed top-[3vh] left-1/2 -translate-x-1/2 z-20 px-4 py-1 rounded-full border border-cyan-300/40 bg-black/30 backdrop-blur-md" style={{ boxShadow: "0 0 18px rgba(103,232,249,0.3)" }}>

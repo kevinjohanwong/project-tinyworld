@@ -36,10 +36,99 @@ DB_PATH = TW_ROOT / "data" / "tinyworld.db"
 SCAN_ROOT = PG_ROOT / "scans"
 GLB_PYTHON = os.environ.get("GLB_PYTHON", "python3")
 
+# COLMAP registration quality gate. History across 13 scans: 60/60 frames
+# registered → great world; 25-30/60 → usable; 10-14/60 → tiny fragment world
+# that LOOKS like success (the "sometimes it works" flakiness). Below
+# RETRY_RATIO we retry once with denser frames + exhaustive matching; below
+# the hard floor we fail loudly instead of minting a fragment.
+RETRY_RATIO = 0.5
+MIN_REGISTERED = 16
+MIN_RATIO = 0.30
+
+# Per-stage hang protection (seconds). A wedged stage should fail the scan,
+# not hang the worker forever.
+T_EXTRACT = 300
+# 51MB/180-frame scans need ~27min for exhaustive fallback matching on CPU;
+# 1800 killed them mid-mapper. Route-level INFER_TIMEOUT still bounds the whole job.
+T_COLMAP = 3600
+T_OPENMVS = 2400
+T_ALIGN = 600
+T_VOXELIZE = 900
+
 
 def run(cmd: list[str], cwd: Path, timeout: int | None = None) -> None:
     print(f"[old-path] $ {' '.join(cmd)}", flush=True)
-    subprocess.run(cmd, cwd=str(cwd), check=True, timeout=timeout)
+    try:
+        subprocess.run(cmd, cwd=str(cwd), check=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"stage timed out after {timeout}s: {' '.join(cmd[:3])}")
+
+
+def colmap_quality(scan_dir: Path) -> dict:
+    summary_path = scan_dir / "colmap" / "summary.json"
+    frames = len(list((scan_dir / "frames").glob("*.jpg")))
+    if not summary_path.exists():
+        return {"registered": 0, "frames": frames, "ratio": 0.0, "best_model": 0}
+    s = json.loads(summary_path.read_text())
+    registered = int(s.get("registered_images") or 0)
+    return {
+        "registered": registered,
+        "frames": frames,
+        "ratio": (registered / frames) if frames else 0.0,
+        "best_model": int(s.get("best_model") or 0),
+        "models": s.get("models"),
+        "mean_reproj_px": s.get("mean_reprojection_error_px"),
+    }
+
+
+def extract_and_map(scan_id: str, scan_dir: Path, fps: str, matcher: str) -> dict:
+    frames_dir = scan_dir / "frames"
+    if frames_dir.exists():
+        shutil.rmtree(frames_dir)  # stale frames from another fps would corrupt timing
+    run(["bun", "scripts/extract_frames.ts", scan_id, "--fps", fps, "--quality", "2"], PG_ROOT, timeout=T_EXTRACT)
+    run(["bun", "scripts/run_colmap.ts", scan_id, "--matcher", matcher, "--reset"], PG_ROOT, timeout=T_COLMAP)
+    q = colmap_quality(scan_dir)
+    q.update({"fps": fps, "matcher": matcher})
+    print(f"[old-path] colmap ({matcher}, fps {fps}): {q['registered']}/{q['frames']} frames registered", flush=True)
+    return q
+
+
+def sfm_with_fallback(scan_id: str, scan_dir: Path, fps: str, matcher: str) -> dict:
+    q1 = extract_and_map(scan_id, scan_dir, fps, matcher)
+    if q1["ratio"] >= RETRY_RATIO:
+        return q1
+
+    # Weak registration — stash attempt 1, retry with denser frames + exhaustive
+    # matching (helps when motion is fast or the loop revisits areas out of order).
+    print(f"[old-path] weak registration ({q1['registered']}/{q1['frames']}) — retrying with fps 4 + exhaustive", flush=True)
+    stashes = []
+    for name in ("frames", "colmap"):
+        src, dst = scan_dir / name, scan_dir / f"{name}_attempt1"
+        if dst.exists():
+            shutil.rmtree(dst)
+        if src.exists():
+            src.rename(dst)
+            stashes.append((src, dst))
+
+    try:
+        q2 = extract_and_map(scan_id, scan_dir, "4", "exhaustive")
+    except (SystemExit, subprocess.CalledProcessError) as e:
+        print(f"[old-path] fallback attempt failed ({e}) — restoring first attempt", flush=True)
+        q2 = {"registered": -1}
+
+    if q2["registered"] >= q1["registered"]:
+        for _, dst in stashes:
+            shutil.rmtree(dst, ignore_errors=True)
+        q2["fallback_used"] = True
+        return q2
+
+    print(f"[old-path] fallback did worse ({q2['registered']} < {q1['registered']}) — restoring first attempt", flush=True)
+    for src, dst in stashes:
+        if src.exists():
+            shutil.rmtree(src)
+        dst.rename(src)
+    q1["fallback_tried"] = True
+    return q1
 
 
 def prepare_scan(capture_id: str, scan_id: str, reset: bool) -> Path:
@@ -148,7 +237,7 @@ def main() -> None:
     ap.add_argument("--reset", action="store_true")
     ap.add_argument("--fps", default="2")
     ap.add_argument("--matcher", default="sequential", choices=["sequential", "exhaustive"])
-    ap.add_argument("--target-divs", default="220")
+    ap.add_argument("--target-divs", default="690")
     ap.add_argument("--skip-texture", action="store_true")
     ap.add_argument("--skip-run", action="store_true", help="only prepare scan folder")
     args = ap.parse_args()
@@ -159,13 +248,19 @@ def main() -> None:
     if args.skip_run:
         return
 
-    run(["bun", "scripts/extract_frames.ts", scan_id, "--fps", args.fps, "--quality", "2"], PG_ROOT)
-    run(["bun", "scripts/run_colmap.ts", scan_id, "--matcher", args.matcher], PG_ROOT)
+    quality = sfm_with_fallback(scan_id, scan_dir, args.fps, args.matcher)
+    (scan_dir / "quality.json").write_text(json.dumps(quality, indent=2))
+    if quality["registered"] < MIN_REGISTERED or quality["ratio"] < MIN_RATIO:
+        raise SystemExit(
+            f"scan quality too low: only {quality['registered']}/{quality['frames']} frames registered "
+            f"(need at least {MIN_REGISTERED} and {int(MIN_RATIO * 100)}%). "
+            "Rescan slowly with steady, overlapping motion — pan less, walk less, keep features in view."
+        )
 
-    openmvs_cmd = ["bun", "scripts/run_openmvs.ts", scan_id]
+    openmvs_cmd = ["bun", "scripts/run_openmvs.ts", scan_id, "--model", str(quality["best_model"])]
     if args.skip_texture:
         openmvs_cmd.append("--skip-texture")
-    run(openmvs_cmd, PG_ROOT)
+    run(openmvs_cmd, PG_ROOT, timeout=T_OPENMVS)
 
     run(
         [
@@ -179,6 +274,7 @@ def main() -> None:
             str(scan_dir / "openmvs" / "scene_aligned.glb"),
         ],
         PG_ROOT,
+        timeout=T_ALIGN,
     )
 
     payload_path = scan_dir / "openmvs" / "tinyworld_world.json"
@@ -186,15 +282,20 @@ def main() -> None:
         [
             "env",
             f"TARGET_DIVS={args.target_divs}",
+            # COLMAP/OpenMVS scan meshes are scale-ambiguous, so keep the span/TARGET_DIVS
+            # normalization here (VOXEL_M=auto) rather than the map path's fixed 0.5m metric.
+            "VOXEL_M=auto",
             GLB_PYTHON,
             str(TW_ROOT / "tools" / "glb_to_world_payload.py"),
             str(scan_dir / "openmvs" / "scene_aligned.glb"),
             str(payload_path),
         ],
         TW_ROOT,
+        timeout=T_VOXELIZE,
     )
 
     result = update_world_from_payload(args.world_id, payload_path, "pre_openmvs_old_path")
+    result["colmap_quality"] = {k: quality.get(k) for k in ("registered", "frames", "ratio", "matcher", "fps", "fallback_used")}
     print(json.dumps({"ok": True, **result}, indent=2))
 
 
