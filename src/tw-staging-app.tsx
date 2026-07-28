@@ -18725,6 +18725,10 @@ export default function TinyWorld() {
       const wsm = wm?.userData?.slotMap as Map<string, number> | undefined;
       if (wsm) for (const key of wsm.keys()) { const pp = key.split(","); waterCells.push([+pp[0], +pp[1], +pp[2]]); }
       if (springCtrl) for (const c of springCtrl.waterCells()) waterCells.push(c);
+      // Particle water owns the pool when active (the CA spring never ticks,
+      // so its cell list is empty) — without this the moisture field sees NO
+      // water and the whole field dries to arid tan (KJ Jul 28 screenshot).
+      if (pwCtrl) for (const c of pwCtrl.waterCells()) waterCells.push(c);
       // Irrigation set (greens dryGrass near water) — dilate by IRRIG_R.
       const next = new Set<string>();
       for (const [wx, wy, wz] of waterCells) {

@@ -270,10 +270,32 @@ export function createParticleWater(ctx: PWaterCtx) {
     return report();
   }
 
+  // Occupied voxel cells of the particle pool (deduped, world voxel coords) —
+  // feeds recomputeMoisture so irrigation/aridity/waterlogging see the
+  // particle water exactly like they saw the CA spring's cells. Called on the
+  // moisture cadence (~8s), so a linear pass over <=29k particles is free.
+  function waterCells(): Array<[number, number, number]> {
+    const st = lastState;
+    if (!st) return [];
+    const out: Array<[number, number, number]> = [];
+    const seen = new Set<number>();
+    const n3 = st.count * 3;
+    for (let i = 0; i < n3; i += 3) {
+      const cx = Math.floor(st.pos[i]);
+      const cy = Math.floor(st.pos[i + 1]);
+      const cz = Math.floor(st.pos[i + 2]);
+      const key = ((cx & 1023) << 20) | ((cy & 1023) << 10) | (cz & 1023);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push([box.x0 + cx, box.y0 + cy, box.z0 + cz]);
+    }
+    return out;
+  }
+
   function dispose() {
     driver.dispose();
     fluid.dispose();
   }
 
-  return { renderFrame, report, knob, dispose, fluid: () => fluid, terrain: () => terrain };
+  return { renderFrame, report, knob, waterCells, dispose, fluid: () => fluid, terrain: () => terrain };
 }

@@ -430,8 +430,13 @@ const COMPOSITE_FRAG = /* glsl */ `
     // --- hand-painted depth bands: the sim gives true 3D shape, the color is
     // flat Ghibli cels. Band edges wobble with a slow warp = brushwork, and the
     // steps are narrow smoothsteps = crisp but antialiased. ---
+    // Warp amplitude scales with thickness: a uniformly-shallow sheet sits AT
+    // the first band edge, and constant warp flips it across that edge every
+    // half-wavelength — the whole pond reads as a blue/bed checkerboard. Deep
+    // pools keep the full painterly band wobble; thin sheets go flat.
     float warp = (sin(Pp.x * 1.4 + uTime * 0.8) + sin(Pp.z * 1.15 - uTime * 0.6)
-                + 0.5 * sin((Pp.x + Pp.z) * 2.6 + uTime * 1.2)) * uBandWarp;
+                + 0.5 * sin((Pp.x + Pp.z) * 2.6 + uTime * 1.2)) * uBandWarp
+                * smoothstep(0.55, 2.2, thick);
     float tw = thick + warp;
     // fwidth-AA HARD band edges: flat cels that stay crisp at any distance
     float aa = fwidth(tw) * 1.4 + 1e-4;
@@ -439,19 +444,19 @@ const COMPOSITE_FRAG = /* glsl */ `
     base = mix(base, uColDeep, smoothstep(2.8 - aa, 2.8 + aa, tw));
     base = mix(base, uColAbyss, smoothstep(6.8 - aa, 6.8 + aa, tw));
 
-    // shallows: the ground reads through a flat aqua wash + a crisp caustic web
+    // shallows: the ground reads through a flat aqua wash
     vec2 refrUv = vUv + N.xy * clamp(thick, 0.0, 3.0) * 0.03;
     float refrLin = sceneLin(refrUv);
     if (refrLin < lin) refrUv = vUv;
     vec3 seen = texture2D(uScene, refrUv).rgb * mix(vec3(1.0), uColShallow * 1.5, 0.74);
-    // caustics: dim, soft-edged, and warped off the sine grid — a faint
-    // organic shimmer, not a checkerboard lattice over the bed
-    vec2 cp = Pp.xz * 0.9 + N.xz * 1.5 + vec2(warp * 1.9, -warp * 1.4);
-    float c1 = sin(cp.x * 3.1 + uTime * 1.2) + sin(cp.y * 2.7 - uTime * 0.9) + sin((cp.x + cp.y) * 2.2 + uTime * 0.7);
-    float web = smoothstep(0.5, 0.82, clamp(c1 * 0.33 + 0.5, 0.0, 1.0));
+    // Caustic web REMOVED (KJ Jul 28: still read as a checkerboard over the
+    // bed even dimmed/off-grid). Shallow water is a calm flat aqua wash; the
+    // ripple normals + sparkle glints above carry the "alive" read instead.
     seen = mix(seen, uColShallow * 1.2, 0.78) * 1.06;
-    seen += uColHighlight * web * 0.16 * sVis;
-    float clarity = 1.0 - smoothstep(0.2, 0.85, tw);
+    // Clarity from the UNWARPED thickness: the warp is a band-edge stylization
+    // and must not modulate how much bed reads through, or it re-creates the
+    // checker as alternating bed/water patches.
+    float clarity = 1.0 - smoothstep(0.2, 0.85, thick);
     vec3 water = mix(base, seen, clarity * 0.55);
 
     // --- two-tone toon light: shadow side goes cool blue-violet, never gray ---

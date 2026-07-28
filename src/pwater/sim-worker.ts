@@ -14,10 +14,19 @@ import {
 const DT = 1 / 60;
 const MAX_TICKS_PER_PASS = 8;
 // CPU-bound catch-up: when the backlog exceeds ~4 frames the device can't
-// sustain 60 ticks/s — take double-size steps (the solver's per-substep CFL
+// sustain 60 ticks/s — take bigger steps (the solver's per-substep CFL
 // clamp vmax = 0.45H/sdt keeps them stable) so sim time tracks real time
-// instead of running the water in slow motion.
+// instead of running the water in slow motion. Escalates 2x -> 4x with the
+// backlog, so true-speed water holds down to ~1/4 the ideal tick rate
+// (phone-class devices); the CFL clamp trades top droplet speed, not
+// stability, at the big sizes.
 const CATCHUP_BACKLOG = 4 * DT;
+function catchupDt(pending: number): number {
+  if (pending >= 3 * CATCHUP_BACKLOG) return DT * 4;
+  if (pending >= 1.5 * CATCHUP_BACKLOG) return DT * 3;
+  if (pending >= CATCHUP_BACKLOG) return DT * 2;
+  return DT;
+}
 const CALM_SPEED = 0.05; // matches the page's static-frame gate
 const SNAP_MIN_MS = 12; // ≤ ~80 snapshots/s; render extrapolates between them
 
@@ -115,7 +124,7 @@ function pump() {
       pending += dtReal * Math.max(1, timeScale);
       let guard = MAX_TICKS_PER_PASS;
       while (pending >= DT && guard-- > 0) {
-        const stepDt = pending >= CATCHUP_BACKLOG ? DT * 2 : DT;
+        const stepDt = catchupDt(pending);
         sim.step(stepDt, opts);
         pending -= stepDt;
         simmed += stepDt;
