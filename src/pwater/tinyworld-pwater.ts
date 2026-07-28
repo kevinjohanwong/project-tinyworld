@@ -101,7 +101,11 @@ export function createParticleWater(ctx: PWaterCtx) {
     }
   }
   const sx = origin.x - box.x0 + 0.5;
-  const sy = origin.y - box.y0 + 0.5;
+  // Source floats 2 cells above the sited outlet — the sandbox's own source
+  // geometry (its spring hovered 2 cells over the bowl floor). The drops fall
+  // as a small visible cascade instead of a sub-visible dribble at floor
+  // level, and the mouth stays clear of the pool's back-pressure gate longer.
+  const sy = origin.y - box.y0 + 2.0;
   const sz = origin.z - box.z0 + 0.5;
   const terrain: Terrain = {
     nx, ny, nz, solid,

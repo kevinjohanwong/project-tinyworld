@@ -52,7 +52,11 @@ export interface Terrain {
 const BASE_D = 0.6;
 const BASE_H = 1.2;
 const BASE_R = 0.28;
-const BASE_MAX_N = 6000;
+// 10000 (sandbox shipped 6000): TinyWorld basins are bigger than the sandbox
+// scenarios — the slope bed needs ~16k particles at the 70% tier just to
+// reach its lip, and a cap hit STOPS the source (reads as "water stopped
+// spawning"). Headroom lets the overtop river find equilibrium first.
+const BASE_MAX_N = 10000;
 let D = BASE_D; // rest particle spacing (cells)
 let H = BASE_H; // kernel radius
 let R = BASE_R; // contact radius vs terrain
