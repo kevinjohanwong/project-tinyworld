@@ -11,8 +11,12 @@
 //  - Rendering is the SSFR pipeline (fluid-ssfr.ts) with unitScale = voxel,
 //    so every hand-tuned band/pattern reads exactly like the sandbox.
 //
-// KJ's optimal settings (IMG_6228, Jul 28): source 45 drops/s, viscosity
-// 0.23, flow 1x, sleep ON, evap ON, drop tier 70%, debug balls hidden.
+// KJ's optimal settings (IMG_6228, Jul 28): viscosity 0.23, flow 1x,
+// sleep ON, evap ON, drop tier 70%, debug balls hidden. Emit rate raised
+// 45 -> 160 (Jul 28, KJ: "rate of water is too slow") — at tier 0.7 the
+// pool cap is ~29k particles, and 45 drops/s left the divot one particle
+// deep for minutes, stuck in the tan shallows look (clay bed read-through
+// + caustic web) instead of reaching the blue depth bands.
 import { createDriver, SNAP_MAX_P, type DriverCtl, type FrameState, type SimDriver, type SimSource } from "./sim-driver";
 import { MAX_FOAM } from "./foam";
 import type { Terrain } from "./particles";
@@ -38,7 +42,7 @@ export type PWaterCtx = {
 };
 
 const DEFAULTS = {
-  emitRate: 45,
+  emitRate: 160,
   viscosity: 0.23,
   timeScale: 1,
   sleep: true,
