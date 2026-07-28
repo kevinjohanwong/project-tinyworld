@@ -18623,6 +18623,7 @@ export default function TinyWorld() {
         if (new URLSearchParams(window.location.search).get("pwater") !== "0") {
           try {
             const _sOrigin = (_springMeta.spring as any)?.origin;
+            (window as any).__twPWaterError = _sOrigin ? "init-started" : "no-spring-origin-in-meta";
             if (_sOrigin) {
               pwCtrl = createParticleWater({
                 THREE, renderer, scene, colMap,
@@ -18636,8 +18637,13 @@ export default function TinyWorld() {
               (window as any).__twPWater = pwCtrl;
               (renderer as any).__twPWaterDispose = () => { try { pwCtrl?.dispose(); } catch { /* already down */ } };
               console.log("[tw] particle water active:", pwCtrl.report().box);
+              (window as any).__twPWaterError = null;
             }
-          } catch (e) { console.warn("[tw] particle water init failed (non-fatal):", e); pwCtrl = null; }
+          } catch (e: any) {
+            console.warn("[tw] particle water init failed (non-fatal):", e);
+            (window as any).__twPWaterError = String(e?.stack || e?.message || e);
+            pwCtrl = null;
+          }
         }
         (window as any).__tw.irrigationReport = () => ({ on: irrigationOn, irrigated: irrigatedCols.size, R: IRRIG_R, V: IRRIG_V, fruitDroughtMult: FRUIT_DROUGHT_MULT });
         (window as any).__tw.aridReport = () => { let full = 0, arid = 0; for (const d of aridCols.values()) { if (d > 0) arid++; if (d >= 0.999) full++; } return { on: aridEnabled && irrigationOn, arid, full, near: ARID_NEAR, far: ARID_FAR, rainHeldMs: Math.max(0, GREEN_HOLD_MS - (Date.now() - lastGrassRainMs)) }; };

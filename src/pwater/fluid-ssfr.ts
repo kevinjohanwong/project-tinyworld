@@ -12,11 +12,10 @@
 //      highlight shapes, solid scalloped foam, white shoreline rim.
 // The renderer is read-only over sim state: it never feeds back into physics.
 
-
 export interface FluidRenderer {
   updateParticles(pos: Float32Array, speed: Float32Array, count: number): void;
   updateFoam(pos: Float32Array, fade: Float32Array, count: number): void;
-  render(scene: any, camera: any, sunDirWorld: any, sunLight?: any): void;
+  render(scene: THREE.Scene, camera: THREE.PerspectiveCamera, sunDirWorld: THREE.Vector3, sunLight?: THREE.DirectionalLight): void;
   resize(w: number, h: number): void;
   dispose(): void;
   smooth(cfg: Partial<{ mode: "curv" | "gauss"; curvIters: number; dtFrac: number; preGauss: number; gaussIters: number; div: number; warm: boolean; warmIters: number; warmBlend: number }>): Record<string, unknown>;
@@ -316,11 +315,8 @@ const COMPOSITE_FRAG = /* glsl */ `
   uniform vec3 uColSSS;
   uniform float uBandWarp;
   uniform float uFoamTh;
-  // World units per sandbox unit. Every hand-tuned pattern frequency,
-  // thickness threshold and band constant was authored in the sandbox's
-  // cell-scale world; normalizing Pw (as Pp) and thick by this runs the
-  // shader at those numerics at ANY world scale (TinyWorld voxels are
-  // ~20-70x smaller than a sandbox cell).
+  // World units per sandbox unit: normalizing Pw (as Pp) and thick by this
+  // runs every hand-tuned band/frequency at sandbox numerics at any scale.
   uniform float uWorldScale;
   uniform sampler2D uShadowMap;
   uniform mat4 uShadowMat;
@@ -586,12 +582,13 @@ const COMPOSITE_FRAG = /* glsl */ `
 `;
 
 // THREE is injected (TinyWorld loads three dynamically from esm.sh — a
-// bundled "three" import here would create a second, incompatible instance).
-// unitScale = world units per sandbox unit (1 in the sandbox; the TinyWorld
-// runtime passes its voxel size so the tuned look carries over unchanged).
+// bundled "three" import here would be a second, incompatible instance).
+// unitScale = world units per sandbox unit (1 in the sandbox; TinyWorld
+// passes its voxel size so the tuned look carries over unchanged). Type
+// annotations referencing THREE.* remain type-only — vite strips them.
 export function createFluidRenderer(
   THREE: any,
-  renderer: any,
+  renderer: THREE.WebGLRenderer,
   maxN: number,
   particleD: number,
   unitScale = 1,
@@ -600,19 +597,19 @@ export function createFluidRenderer(
   // resolve every frame plus 4x depth/color fill for the whole opaque scene,
   // and dpr>1 already supersamples the blocky terrain. Water edges never used
   // it (the fluid surface is reconstructed in the composite, not rasterized).
-  const rtOpts: any = {
-    minFilter: any,
-    magFilter: any,
+  const rtOpts: THREE.RenderTargetOptions = {
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
     depthBuffer: true,
   };
   const sceneRT = new THREE.WebGLRenderTarget(2, 2, rtOpts);
   sceneRT.depthTexture = new THREE.DepthTexture(2, 2);
   sceneRT.depthTexture.type = THREE.UnsignedIntType;
 
-  const depthOpts: any = {
-    minFilter: any,
-    magFilter: any,
-    type: any,
+  const depthOpts: THREE.RenderTargetOptions = {
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    type: THREE.FloatType,
     depthBuffer: true,
   };
   const depthRT = new THREE.WebGLRenderTarget(2, 2, depthOpts);
@@ -624,21 +621,21 @@ export function createFluidRenderer(
   const histRT = new THREE.WebGLRenderTarget(2, 2, { ...depthOpts, depthBuffer: false });
   let histValid = false;
   const thickRT = new THREE.WebGLRenderTarget(2, 2, {
-    minFilter: any,
-    magFilter: any,
-    type: any,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    type: THREE.HalfFloatType,
     depthBuffer: false,
   });
   const thickA = new THREE.WebGLRenderTarget(2, 2, {
-    minFilter: any,
-    magFilter: any,
-    type: any,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    type: THREE.HalfFloatType,
     depthBuffer: false,
   });
   const thickB = new THREE.WebGLRenderTarget(2, 2, {
-    minFilter: any,
-    magFilter: any,
-    type: any,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    type: THREE.HalfFloatType,
     depthBuffer: false,
   });
 
@@ -654,9 +651,9 @@ export function createFluidRenderer(
   quadGeo.setAttribute("iSpeed", iSpeed);
   quadGeo.instanceCount = 0;
 
-  // Threshold base is the SANDBOX-unit base drop (0.6) scaled to world units,
-  // NOT the construction-time particleD — so s below equals the drop tier at
-  // any world scale (sandbox behavior at unitScale 1, drop scale 1 unchanged).
+  // Threshold base = the SANDBOX base drop (0.6) scaled to world units, NOT
+  // the construction particleD — so s in setParticleD equals the drop tier at
+  // any world scale (sandbox behavior unchanged at unitScale 1, scale 1).
   const baseD = 0.6 * unitScale;
   const RADIUS = particleD * 0.85;
   const depthMat = new THREE.ShaderMaterial({
@@ -678,7 +675,7 @@ export function createFluidRenderer(
       uSceneDepth: { value: sceneRT.depthTexture },
       uInvRes: { value: new THREE.Vector2() },
     },
-    blending: any,
+    blending: THREE.AdditiveBlending,
     depthTest: false,
     depthWrite: false,
     transparent: true,
@@ -716,10 +713,10 @@ export function createFluidRenderer(
     // MAX blending, not additive: coverage is the UNION of sprites capped at
     // 1, so dense churn can't saturate into one solid cap — the composite's
     // swirl carve keeps visible texture inside big foam fields.
-    blending: any,
-    blendEquation: any,
-    blendSrc: any,
-    blendDst: any,
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.MaxEquation,
+    blendSrc: THREE.OneFactor,
+    blendDst: THREE.OneFactor,
     depthTest: false,
     depthWrite: false,
     transparent: true,
@@ -733,7 +730,7 @@ export function createFluidRenderer(
     vertexShader: FS_VERT,
     fragmentShader: BLUR_FRAG,
     uniforms: {
-      uDepth: { value: null as any },
+      uDepth: { value: null as THREE.Texture | null },
       uDir: { value: new THREE.Vector2(1, 0) },
       uInvRes: { value: new THREE.Vector2() },
       uThresh: { value: particleD * 1.6 },
@@ -746,7 +743,7 @@ export function createFluidRenderer(
     vertexShader: FS_VERT,
     fragmentShader: CURV_FRAG,
     uniforms: {
-      uDepth: { value: null as any },
+      uDepth: { value: null as THREE.Texture | null },
       uInvRes: { value: new THREE.Vector2() },
       uCxy: { value: new THREE.Vector2() },
       uDtFrac: { value: 0.6 },
@@ -778,7 +775,7 @@ export function createFluidRenderer(
     vertexShader: FS_VERT,
     fragmentShader: WARM_FRAG,
     uniforms: {
-      uRaw: { value: null as any },
+      uRaw: { value: null as THREE.Texture | null },
       uPrev: { value: histRT.texture },
       uThresh: { value: particleD * 1.6 },
       uBlend: { value: smoothCfg.warmBlend },
@@ -795,7 +792,7 @@ export function createFluidRenderer(
   const copyMat = new THREE.ShaderMaterial({
     vertexShader: FS_VERT,
     fragmentShader: COPY_FRAG,
-    uniforms: { uTex: { value: null as any } },
+    uniforms: { uTex: { value: null as THREE.Texture | null } },
     depthTest: false,
     depthWrite: false,
   });
@@ -808,7 +805,7 @@ export function createFluidRenderer(
     uniforms: {
       uScene: { value: sceneRT.texture },
       uSceneDepth: { value: sceneRT.depthTexture },
-      uFluidDepth: { value: null as any },
+      uFluidDepth: { value: null as THREE.Texture | null },
       uThick: { value: thickRT.texture },
       uInvRes: { value: new THREE.Vector2() },
       uProjXY: { value: new THREE.Vector2(1, 1) },
@@ -836,7 +833,7 @@ export function createFluidRenderer(
       uFoamTh: { value: 0.34 },
       uWorldScale: { value: unitScale },
       uDebugShadow: { value: 0 },
-      uShadowMap: { value: null as any },
+      uShadowMap: { value: null as THREE.Texture | null },
       uShadowMat: { value: new THREE.Matrix4() },
       uShadowRes: { value: new THREE.Vector2(2048, 2048) },
       uShadowOn: { value: 0 },
@@ -859,7 +856,7 @@ export function createFluidRenderer(
     vertexShader: FS_VERT,
     fragmentShader: THICK_BLUR_FRAG,
     uniforms: {
-      uTex: { value: null as any },
+      uTex: { value: null as THREE.Texture | null },
       uDir: { value: new THREE.Vector2(1, 0) },
       uInvRes: { value: new THREE.Vector2() },
     },
@@ -891,7 +888,7 @@ export function createFluidRenderer(
   let camSnapValid = false;
   const perfState = { mode: "full" as "full" | "static", itersRun: 0, staticFrames: 0 };
 
-  function cameraUnchanged(camera: any): boolean {
+  function cameraUnchanged(camera: THREE.PerspectiveCamera): boolean {
     const a = camera.matrixWorld.elements;
     const b = camera.projectionMatrix.elements;
     let same = camSnapValid;
@@ -957,7 +954,7 @@ export function createFluidRenderer(
     foamDirty = true;
   }
 
-  function render(scene: any, camera: any, sunDirWorld: any, sunLight?: any) {
+  function render(scene: THREE.Scene, camera: THREE.PerspectiveCamera, sunDirWorld: THREE.Vector3, sunLight?: THREE.DirectionalLight) {
     const prevTarget = renderer.getRenderTarget();
     camera.updateMatrixWorld();
     const camSame = cameraUnchanged(camera);
@@ -979,7 +976,7 @@ export function createFluidRenderer(
     perfState.staticFrames = 0;
 
     renderer.setRenderTarget(sceneRT);
-    renderer.setClearColor(compMat.uniforms.uFogColor.value as any, 1);
+    renderer.setClearColor(compMat.uniforms.uFogColor.value as THREE.Color, 1);
     renderer.clear();
     renderer.render(scene, camera);
 
@@ -992,7 +989,7 @@ export function createFluidRenderer(
     renderer.render(depthScene, camera);
 
     blurMat.uniforms.uWorldK.value = (depthRT.height / (2 * Math.tan((camera.fov * Math.PI) / 360))) * particleD * 0.7;
-    let src: any = depthRT;
+    let src: THREE.WebGLRenderTarget = depthRT;
     const gaussPasses = smoothCfg.mode === "gauss" ? smoothCfg.gaussIters : smoothCfg.preGauss;
     for (let it = 0; it < gaussPasses; it++) {
       blurMat.uniforms.uDepth.value = src.texture;
@@ -1011,7 +1008,7 @@ export function createFluidRenderer(
         2 / (depthRT.height * camera.projectionMatrix.elements[5]),
       );
       curvMat.uniforms.uDtFrac.value = smoothCfg.dtFrac;
-      let ping: any = src === blurA ? blurB : blurA;
+      let ping: THREE.WebGLRenderTarget = src === blurA ? blurB : blurA;
       const warmHot = smoothCfg.warm && histValid && smoothCfg.warmIters > 0;
       if (warmHot) {
         // Lever 1: seed from last frame's converged surface (reprojected),
@@ -1019,12 +1016,12 @@ export function createFluidRenderer(
         warmMat.uniforms.uRaw.value = src.texture;
         warmMat.uniforms.uThresh.value = curvMat.uniforms.uThresh.value;
         warmMat.uniforms.uBlend.value = smoothCfg.warmBlend;
-        (warmMat.uniforms.uProjXY.value as any).set(camera.projectionMatrix.elements[0], camera.projectionMatrix.elements[5]);
-        (warmMat.uniforms.uPrevProjXY.value as any).set(prevProj.elements[0], prevProj.elements[5]);
-        (warmMat.uniforms.uCamWorld.value as any).copy(camera.matrixWorld);
-        (warmMat.uniforms.uView.value as any).copy(camera.matrixWorldInverse);
-        (warmMat.uniforms.uPrevVP.value as any).multiplyMatrices(prevProj, prevView);
-        (warmMat.uniforms.uPrevCamWorld.value as any).copy(prevCamWorld);
+        (warmMat.uniforms.uProjXY.value as THREE.Vector2).set(camera.projectionMatrix.elements[0], camera.projectionMatrix.elements[5]);
+        (warmMat.uniforms.uPrevProjXY.value as THREE.Vector2).set(prevProj.elements[0], prevProj.elements[5]);
+        (warmMat.uniforms.uCamWorld.value as THREE.Matrix4).copy(camera.matrixWorld);
+        (warmMat.uniforms.uView.value as THREE.Matrix4).copy(camera.matrixWorldInverse);
+        (warmMat.uniforms.uPrevVP.value as THREE.Matrix4).multiplyMatrices(prevProj, prevView);
+        (warmMat.uniforms.uPrevCamWorld.value as THREE.Matrix4).copy(prevCamWorld);
         renderer.setRenderTarget(ping);
         renderer.render(warmScene, fsCam);
         const swap = src === depthRT ? (ping === blurA ? blurB : blurA) : src;
@@ -1079,8 +1076,8 @@ export function createFluidRenderer(
     const shadow = shadowsOn ? sunLight?.shadow : undefined;
     if (shadow?.map) {
       compMat.uniforms.uShadowMap.value = shadow.map.texture;
-      (compMat.uniforms.uShadowMat.value as any).copy(shadow.matrix);
-      (compMat.uniforms.uShadowRes.value as any).set(shadow.mapSize.x, shadow.mapSize.y);
+      (compMat.uniforms.uShadowMat.value as THREE.Matrix4).copy(shadow.matrix);
+      (compMat.uniforms.uShadowRes.value as THREE.Vector2).set(shadow.mapSize.x, shadow.mapSize.y);
       compMat.uniforms.uShadowOn.value = 1;
     } else {
       compMat.uniforms.uShadowOn.value = 0;
@@ -1088,7 +1085,7 @@ export function createFluidRenderer(
     compMat.uniforms.uTime.value = (performance.now() - t0) / 1000;
     renderer.setRenderTarget(prevTarget);
     renderer.render(compScene, fsCam);
-    renderer.setClearColor(compMat.uniforms.uFogColor.value as any, 1);
+    renderer.setClearColor(compMat.uniforms.uFogColor.value as THREE.Color, 1);
     particlesDirty = false;
     foamDirty = false;
     sceneDirty = false;
