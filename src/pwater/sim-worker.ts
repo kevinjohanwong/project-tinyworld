@@ -13,6 +13,11 @@ import {
 
 const DT = 1 / 60;
 const MAX_TICKS_PER_PASS = 8;
+// CPU-bound catch-up: when the backlog exceeds ~4 frames the device can't
+// sustain 60 ticks/s — take double-size steps (the solver's per-substep CFL
+// clamp vmax = 0.45H/sdt keeps them stable) so sim time tracks real time
+// instead of running the water in slow motion.
+const CATCHUP_BACKLOG = 4 * DT;
 const CALM_SPEED = 0.05; // matches the page's static-frame gate
 const SNAP_MIN_MS = 12; // ≤ ~80 snapshots/s; render extrapolates between them
 
@@ -110,12 +115,13 @@ function pump() {
       pending += dtReal * Math.max(1, timeScale);
       let guard = MAX_TICKS_PER_PASS;
       while (pending >= DT && guard-- > 0) {
-        sim.step(DT, opts);
-        pending -= DT;
-        simmed += DT;
+        const stepDt = pending >= CATCHUP_BACKLOG ? DT * 2 : DT;
+        sim.step(stepDt, opts);
+        pending -= stepDt;
+        simmed += stepDt;
         ticks++;
       }
-      if (pending >= DT) pending = pending % DT; // fell behind: drop backlog
+      if (pending >= DT) pending = pending % DT; // still behind: drop backlog
     }
     if (simmed > 0) {
       foam.step(sim, simmed);

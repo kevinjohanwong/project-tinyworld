@@ -444,13 +444,15 @@ const COMPOSITE_FRAG = /* glsl */ `
     float refrLin = sceneLin(refrUv);
     if (refrLin < lin) refrUv = vUv;
     vec3 seen = texture2D(uScene, refrUv).rgb * mix(vec3(1.0), uColShallow * 1.5, 0.74);
-    vec2 cp = Pp.xz * 0.9 + N.xz * 1.5;
+    // caustics: dim, soft-edged, and warped off the sine grid — a faint
+    // organic shimmer, not a checkerboard lattice over the bed
+    vec2 cp = Pp.xz * 0.9 + N.xz * 1.5 + vec2(warp * 1.9, -warp * 1.4);
     float c1 = sin(cp.x * 3.1 + uTime * 1.2) + sin(cp.y * 2.7 - uTime * 0.9) + sin((cp.x + cp.y) * 2.2 + uTime * 0.7);
-    float web = smoothstep(0.60, 0.68, clamp(c1 * 0.33 + 0.5, 0.0, 1.0));
-    seen = mix(seen, uColShallow * 1.2, 0.62) * 1.15;
-    seen += uColHighlight * web * 0.5 * sVis;
+    float web = smoothstep(0.5, 0.82, clamp(c1 * 0.33 + 0.5, 0.0, 1.0));
+    seen = mix(seen, uColShallow * 1.2, 0.78) * 1.06;
+    seen += uColHighlight * web * 0.16 * sVis;
     float clarity = 1.0 - smoothstep(0.2, 0.85, tw);
-    vec3 water = mix(base, seen, clarity * 0.7);
+    vec3 water = mix(base, seen, clarity * 0.55);
 
     // --- two-tone toon light: shadow side goes cool blue-violet, never gray ---
     float litD = dot(Nw, sunW);

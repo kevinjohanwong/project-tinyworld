@@ -15,6 +15,9 @@ import {
 
 const DT = 1 / 60;
 const MAX_TICKS_PER_FRAME = 8;
+// Mirrors the worker's CPU-bound catch-up: double-size steps once the backlog
+// exceeds ~4 frames, so slow devices keep real-time water instead of slow-mo.
+const CATCHUP_BACKLOG = 4 * DT;
 const CALM_SPEED = 0.05;
 // Worker extrapolation horizon: bridge up to 3 frames of snapshot gap (a slow
 // solver batch) before render motion pauses; beyond that, guessing diverges
@@ -114,9 +117,10 @@ class InlineDriver implements SimDriver {
       this.pending += dtReal * Math.max(1, c.timeScale);
       let guard = MAX_TICKS_PER_FRAME;
       while (this.pending >= DT && guard-- > 0) {
-        sim.step(DT, opts);
-        this.pending -= DT;
-        simmed += DT;
+        const stepDt = this.pending >= CATCHUP_BACKLOG ? DT * 2 : DT;
+        sim.step(stepDt, opts);
+        this.pending -= stepDt;
+        simmed += stepDt;
         ticks++;
       }
       if (this.pending >= DT) this.pending = this.pending % DT;
