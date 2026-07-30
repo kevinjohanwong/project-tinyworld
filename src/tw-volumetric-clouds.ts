@@ -46,14 +46,14 @@ const fragmentShader = `
   uniform float uIntruder;
   uniform int uDebug;
 
-  const int PRIMARY_STEPS = 132;
+  const int PRIMARY_STEPS = 168;   // raised for the 4x-smaller features (finer sampling kills salt-pepper)
   const int LIGHT_STEPS = 8;
   const float PI = 3.141592653589793;
 
   // --- Cauliflower (packed-sphere METABALL) tuning — the mesh-first shape. ---
   // The cloud silhouette IS the isosurface of big packed spheres: between-lobe
   // valleys fall below ISO and carve to sky, so the outline bulges per-lobe.
-  #define BASE_FREQ 0.072    // big cauliflower head size (lower = bigger heads)
+  #define BASE_FREQ 0.288    // cauliflower head size (lower = bigger heads); ×4 from 0.072 = clouds 4x smaller
   #define ISO 0.25           // metaball isosurface level (lower = fuller mass)
   #define ISO_W 0.22         // isosurface softness (wider = less speckle)
 
@@ -212,11 +212,13 @@ const fragmentShader = `
       // FUZZ: high-freq value-noise fbm breaks the smooth lobe edges into small
       // wisps so the silhouette reads soft/fuzzy, not clean-rounded. Value noise
       // (not worley) stays smooth per-step → wispier edge without salt-pepper grain.
+      // Weights dialed DOWN for the 4x-smaller clouds: the same erosion at 4x the
+      // world-frequency under fixed steps aliases into salt-pepper, so carve gentler.
       float fuzz = valueNoise(wp * 6.3 + 12.4) * 0.62 + valueNoise(wp * 11.7 + 47.2) * 0.38;
       // Boundary band: 1 near the surface, 0 deep in the core and out in sky.
       float band = smoothstep(cov - 0.14, cov + 0.02, mass)
         * (1.0 - smoothstep(cov + 0.14, cov + 0.42, mass));
-      eroded = mass - (lobeErode * 0.22 + (fuzz - 0.35) * 0.20) * band;
+      eroded = mass - (lobeErode * 0.15 + (fuzz - 0.35) * 0.10) * band;
     }
     float d = smoothstep(cov, cov + 0.40, eroded);
     return clamp(d * uDensity, 0.0, 1.0);
@@ -308,14 +310,17 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
   const { THREE, scene, camera } = options;
   const span = Math.max(12, options.span);
   const center = options.center?.clone?.() ?? new THREE.Vector3();
-  const innerRadius = span * 0.72;
+  // Inner radius = the clear "bubble" over the island. Pulled in from 0.72 so the
+  // ring closes toward the isle and clouds sit a little closer.
+  const innerRadius = span * 0.42;
   // Wide annulus so ~4x more distinct clouds surround the island and extend out
   // (masses are world-space placed → area ~4x ⇒ ~4x cloud count), clear over the isle.
   const outerRadius = span * 2.85;
-  // Cloud BAND (where density lives). Flat base near island level, very tall
-  // ceiling so cumulus can build dramatic vertical towers (not a flat layer).
+  // Cloud BAND (where density lives). Flat base near island level. Ceiling scaled
+  // down ~4x (was 2.05) to match the 4x-smaller clouds — small cumulus, short
+  // proportional towers, not tiny puffs stranded in a tall empty box.
   const baseHeight = -span * 0.12;
-  const topHeight = Math.max(span * 2.05, baseHeight + 18);
+  const topHeight = Math.max(span * 0.9, baseHeight + 10);
   const bandHalf = (topHeight - baseHeight) * 0.5;
   // The marching BOX is wider AND taller than the band (×1.18 margin on every
   // axis) so wobbled edges and tall towers round off in free space instead of
