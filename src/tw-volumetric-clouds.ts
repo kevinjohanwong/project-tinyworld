@@ -46,7 +46,7 @@ const fragmentShader = `
   uniform float uIntruder;
   uniform int uDebug;
 
-  const int PRIMARY_STEPS = 100;
+  const int PRIMARY_STEPS = 132;
   const int LIGHT_STEPS = 8;
   const float PI = 3.141592653589793;
 
@@ -257,7 +257,7 @@ const fragmentShader = `
     float segment = farT - nearT;
     float stepLength = segment / float(PRIMARY_STEPS);
     float jitter = hash31(vec3(gl_FragCoord.xy, mod(uTime * 17.0, 97.0)));
-    float t = nearT + jitter * stepLength * 0.35;
+    float t = nearT + jitter * stepLength * 0.95;
     float transmittance = 1.0;
     vec3 radiance = vec3(0.0);
     float accumulatedDensity = 0.0;
@@ -305,7 +305,9 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
   const span = Math.max(12, options.span);
   const center = options.center?.clone?.() ?? new THREE.Vector3();
   const innerRadius = span * 0.72;
-  const outerRadius = span * 1.55;
+  // Wide annulus so ~4x more distinct clouds surround the island and extend out
+  // (masses are world-space placed → area ~4x ⇒ ~4x cloud count), clear over the isle.
+  const outerRadius = span * 2.85;
   // Cloud BAND (where density lives). Flat base near island level, very tall
   // ceiling so cumulus can build dramatic vertical towers (not a flat layer).
   const baseHeight = -span * 0.12;
