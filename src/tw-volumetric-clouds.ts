@@ -47,7 +47,7 @@ const fragmentShader = `
   uniform int uDebug;
 
   const int PRIMARY_STEPS = 56;
-  const int LIGHT_STEPS = 6;
+  const int LIGHT_STEPS = 8;
   const float PI = 3.141592653589793;
 
   float hash31(vec3 p) {
@@ -92,7 +92,7 @@ const fragmentShader = `
     vec3 p = worldPosition - uCenter;
     float radius = length(p.xz);
     vec2 dir = radius > 0.001 ? p.xz / radius : vec2(1.0, 0.0);
-    vec2 wind = vec2(uTime * 0.006, uTime * 0.0025);
+    vec2 wind = vec2(uTime * 0.004, uTime * 0.0018);
 
     // --- Irregular ring boundary: break the perfect circle ---
     // Sample noise around the ring (a function of DIRECTION, so it is periodic
@@ -118,43 +118,54 @@ const fragmentShader = `
     // --- Discrete cumulus cells with blue-sky gaps (not a continuous sheet) ---
     // Product of two octaves makes rounder, isolated blobs; threshold high so
     // distinct puffs separate with real sky between them.
-    float cLarge = weather(p.xz / uOuterRadius * 1.6 + wind);
-    float cSmall = valueNoise(vec3(p.xz / uOuterRadius * 3.0 + wind * 1.5, 5.0));
+    float cLarge = weather(p.xz / uOuterRadius * 2.0 + wind);
+    float cSmall = valueNoise(vec3(p.xz / uOuterRadius * 3.6 + wind * 1.5, 5.0));
     float cellField = cLarge * (0.65 + 0.35 * cSmall);
     float cellThresh = 1.0 - uCoverage;
     float cell = smoothstep(cellThresh - 0.02, cellThresh + 0.22, cellField);
     if (cell <= 0.001) return 0.0;
 
-    // --- Per-cell tower height: strong cells billow up, weak cells stay low ---
-    // (Ghibli cumulus of varied height) on a common flat base. Power curve so a
-    // few cells tower well above the rest instead of an even lumpy top.
-    float towerField = valueNoise(vec3(p.xz / uOuterRadius * 1.6 + wind * 2.4, 2.2));
-    // Power curve: most cells sit low, a few build into tall towers → dramatic
-    // height variation rather than an even lumpy top.
-    float heightFrac = mix(0.26, 1.0, pow(mix(0.5, towerField, uTower), 1.9)) * mix(0.5, 1.0, cell);
-    float baseY = uBaseHeight * 0.55;
+    // --- Per-cell tower height: TALL by default, a few short — fill the ceiling.
+    float towerField = valueNoise(vec3(p.xz / uOuterRadius * 2.0 + wind * 2.4, 2.2));
+    float heightFrac = mix(0.55, 1.0, pow(mix(0.5, towerField, uTower), 1.3)) * mix(0.60, 1.0, cell);
+    float baseY = uBaseHeight;                       // flat cumulus base
     float topY = uBaseHeight + (uTopHeight - uBaseHeight) * heightFrac;
     float band = max(topY - baseY, 0.001);
-    float h = (p.y - baseY) / band;
+    float h = (p.y - baseY) / band;                  // 0 at base → 1 at tower top
     if (h <= 0.0 || h >= 1.0) return 0.0;
 
-    // Fuller vertical profile: flat base, dense body persisting high, rounded
-    // cumulus crown (density holds up the tower rather than tapering early).
-    float vertical = smoothstep(0.0, 0.05, h) * (1.0 - smoothstep(0.82, 1.0, h));
-    vertical *= mix(0.95, 1.45, smoothstep(0.04, 0.55, h));
+    // --- Dome silhouette: the cloud narrows toward the top so a tower reads as
+    // a rounded billowing mass, not a flat slab — but gently, so the tower still
+    // FILLS its height instead of pinching off low.
+    // Full body low-down, dome only near the crown → bulging cumulus, not a
+    // triangular peak.
+    float need = mix(cellThresh - 0.06, cellThresh + 0.30, smoothstep(0.35, 1.0, h));
+    float column = smoothstep(need - 0.05, need + 0.22, cellField);
+    if (column <= 0.001) return 0.0;
 
-    vec3 advected = p / uOuterRadius * vec3(3.8, 6.4, 3.8)
-      + vec3(wind.x * 1.8, -uTime * 0.0015, wind.y * 1.8);
-    float shape = baseShape(advected);
-    float d = smoothstep(0.30, 0.66, shape * 0.55 + cell * 0.60) * cell * vertical * ringMask;
+    // Vertical density profile: sharp flat cumulus base, full body, soft top.
+    float vertical = smoothstep(0.0, 0.025, h) * (1.0 - smoothstep(0.88, 1.0, h));
+
+    // Cauliflower surface: BILLOWED noise (1-|2n-1|) makes rounded ridged lobes
+    // at several scales, so the cloud stacks into puffy cauliflower bumps that
+    // the self-shadow pass reveals as real cumulus form (not a smooth meringue).
+    vec3 advected = p / uOuterRadius * vec3(3.2, 3.2, 3.2)
+      + vec3(wind.x * 1.4, -uTime * 0.0012, wind.y * 1.4);
+    float b1 = 1.0 - abs(valueNoise(advected * 2.1) * 2.0 - 1.0);
+    float b2 = 1.0 - abs(valueNoise(advected * 4.6 + vec3(3.1, 1.7, 8.2)) * 2.0 - 1.0);
+    float b3 = 1.0 - abs(valueNoise(advected * 10.0 + vec3(-4.3, 8.8, 2.9)) * 2.0 - 1.0);
+    float caul = b1 * 0.55 + b2 * 0.30 + b3 * 0.15;
+    float d = column * vertical * ringMask;
+    // Cauliflower dominates the silhouette so SIDES bulge with lobes too (not
+    // just the crown); column just sets the overall mass.
+    float surface = caul * 0.88 + column * 0.34;
+    d *= smoothstep(0.40, 0.60, surface);   // tighter band → crisp defined edges
+    // …and modulates lobe DENSITY through the body so the self-shadow pass
+    // reveals rounded bumps everywhere (more contrast = more lobe definition).
+    d *= 0.40 + 0.60 * caul;
     if (detail && d > 0.01) {
-      // Billow erosion: high-freq lumps carve cauliflower edges while the dense
-      // core stays full, so the silhouette reads puffy, not smooth.
-      float e1 = valueNoise(advected * 3.4 + vec3(19.0, -7.0, 3.0));
-      float e2 = valueNoise(advected * 8.1 + vec3(-4.0, 11.0, 6.0));
-      float erosion = e1 * 0.62 + e2 * 0.38;
-      float heightErosion = mix(1.0 - erosion, pow(erosion, 3.0), smoothstep(0.32, 0.68, h));
-      d = smoothstep(0.05 + heightErosion * 0.20, 0.86, d);
+      float e = 1.0 - abs(valueNoise(advected * 12.0 + vec3(3.0, 5.0, -9.0)) * 2.0 - 1.0);
+      d = smoothstep(0.05, 0.80, d * (0.86 + 0.28 * e));
     }
     return clamp(d * uDensity, 0.0, 1.0);
   }
@@ -184,7 +195,7 @@ const fragmentShader = `
       opticalDepth += densityAt(samplePosition, false) * stride;
       stride *= 1.7;
     }
-    return exp(-opticalDepth * 0.5);
+    return exp(-opticalDepth * 0.65);
   }
 
   void main() {
@@ -212,9 +223,10 @@ const fragmentShader = `
         float keyT = lightTransmittance(p, stepLength);
         float powder = 1.0 - exp(-density * 5.5);
         // Sky-color fill so shadowed sides read the ambient sky (warm at dusk,
-        // blue-ish shaded bases at noon) instead of going near-black.
-        vec3 ambient = uSkyColor * (0.24 + 0.40 * powder);
-        vec3 direct = uKeyColor * uKeyIntensity * keyT * (0.34 + phase * 3.4) * (0.34 + 0.66 * powder);
+        // blue-ish shaded bases at noon) instead of going near-black. Kept low
+        // so lit lobes stay bright white, not washed gray.
+        vec3 ambient = uSkyColor * (0.20 + 0.34 * powder);
+        vec3 direct = uKeyColor * uKeyIntensity * keyT * (0.48 + phase * 3.8) * (0.40 + 0.60 * powder);
         float extinction = density * 0.5;
         float stepT = exp(-extinction * stepLength);
         vec3 source = ambient + direct;
@@ -225,9 +237,12 @@ const fragmentShader = `
       t += stepLength;
     }
 
-    float alpha = clamp(1.0 - transmittance, 0.0, 0.94);
-    if (alpha < 0.006) discard;
-    vec3 color = radiance / max(alpha, 0.02);
+    float rawAlpha = clamp(1.0 - transmittance, 0.0, 0.97);
+    vec3 color = radiance / max(rawAlpha, 0.02);
+    // Sharpen coverage: push the thin hazy fringe toward transparent and let the
+    // body go solid → crisp defined cumulus edges, no foggy skirt or box halo.
+    float alpha = smoothstep(0.05, 0.50, rawAlpha) * 0.97;
+    if (alpha < 0.02) discard;
     if (uDebug == 1) color = vec3(clamp(accumulatedDensity * 0.08, 0.0, 1.0));
     if (uDebug == 2) color = vec3(transmittance);
     gl_FragColor = vec4(color, alpha);
@@ -240,9 +255,10 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
   const center = options.center?.clone?.() ?? new THREE.Vector3();
   const innerRadius = span * 0.72;
   const outerRadius = span * 1.55;
-  // Cloud BAND (where density lives). Flat-ish base, tall crown for towers.
-  const baseHeight = -span * 0.14;
-  const topHeight = Math.max(span * 1.30, baseHeight + 14);
+  // Cloud BAND (where density lives). Flat base near island level, very tall
+  // ceiling so cumulus can build dramatic vertical towers (not a flat layer).
+  const baseHeight = -span * 0.12;
+  const topHeight = Math.max(span * 1.70, baseHeight + 18);
   const bandHalf = (topHeight - baseHeight) * 0.5;
   // The marching BOX is wider AND taller than the band (×1.18 margin on every
   // axis) so wobbled edges and tall towers round off in free space instead of
@@ -260,8 +276,8 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
     uSkyColor: { value: new THREE.Color(0x87b5e5) },
     uKeyIntensity: { value: 1 },
     uTime: { value: 0 },
-    uCoverage: { value: 0.66 },
-    uDensity: { value: 1.65 },
+    uCoverage: { value: 0.72 },
+    uDensity: { value: 2.40 },
     uInnerRadius: { value: innerRadius },
     uOuterRadius: { value: outerRadius },
     uBaseHeight: { value: -bandHalf },
