@@ -84,6 +84,7 @@ async function boot() {
   ring.configure({
     coverage: pick("cov", defaults.uCoverage), density: pick("den", defaults.uDensity),
     wobble: pick("wob", defaults.uWobble), tower: pick("tow", defaults.uTower), intruder: pick("intr", defaults.uIntruder),
+    tuft: pick("tuft", defaults.uTuft ?? 0.6),
   });
   log("module loaded; capturing…");
   await capture();

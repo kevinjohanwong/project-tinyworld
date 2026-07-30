@@ -44,16 +44,17 @@ const fragmentShader = `
   uniform float uWobble;
   uniform float uTower;
   uniform float uIntruder;
+  uniform float uTuft;
   uniform int uDebug;
 
-  const int PRIMARY_STEPS = 168;   // raised for the 4x-smaller features (finer sampling kills salt-pepper)
+  const int PRIMARY_STEPS = 132;
   const int LIGHT_STEPS = 8;
   const float PI = 3.141592653589793;
 
   // --- Cauliflower (packed-sphere METABALL) tuning — the mesh-first shape. ---
   // The cloud silhouette IS the isosurface of big packed spheres: between-lobe
   // valleys fall below ISO and carve to sky, so the outline bulges per-lobe.
-  #define BASE_FREQ 0.288    // cauliflower head size (lower = bigger heads); ×4 from 0.072 = clouds 4x smaller
+  #define BASE_FREQ 0.072    // big cauliflower head size (lower = bigger heads)
   #define ISO 0.25           // metaball isosurface level (lower = fuller mass)
   #define ISO_W 0.22         // isosurface softness (wider = less speckle)
 
@@ -212,15 +213,33 @@ const fragmentShader = `
       // FUZZ: high-freq value-noise fbm breaks the smooth lobe edges into small
       // wisps so the silhouette reads soft/fuzzy, not clean-rounded. Value noise
       // (not worley) stays smooth per-step → wispier edge without salt-pepper grain.
-      // Weights dialed DOWN for the 4x-smaller clouds: the same erosion at 4x the
-      // world-frequency under fixed steps aliases into salt-pepper, so carve gentler.
       float fuzz = valueNoise(wp * 6.3 + 12.4) * 0.62 + valueNoise(wp * 11.7 + 47.2) * 0.38;
       // Boundary band: 1 near the surface, 0 deep in the core and out in sky.
       float band = smoothstep(cov - 0.14, cov + 0.02, mass)
         * (1.0 - smoothstep(cov + 0.14, cov + 0.42, mass));
-      eroded = mass - (lobeErode * 0.15 + (fuzz - 0.35) * 0.10) * band;
+      eroded = mass - (lobeErode * 0.22 + (fuzz - 0.35) * 0.20) * band;
     }
     float d = smoothstep(cov, cov + 0.40, eroded);
+
+    // === SMALL TUFTS: sparse little puffs for scale variety ===
+    // Separate from the big cauliflower masses: small soft puffs sprinkled AROUND
+    // and between the towers so the sky reads varied (big masses + little wisps),
+    // not one uniform scale. Built from value-noise fbm (smooth per raymarch step
+    // → no salt-pepper grain, unlike high-freq worley), gated sparse so they stay
+    // occasional wisps not a second carpet, thin, low-to-mid in the band, and
+    // MAX'd into the field so they fill sky gaps rather than darkening a mass.
+    if (detail && uTuft > 0.001) {
+      vec3 tp = worldPosition * (BASE_FREQ * 3.2)
+        + vec3(wind.x * 3.0, -churn * 1.4, wind.y * 3.0);
+      float puff = valueNoise(tp) * 0.65 + valueNoise(tp * 2.1 + 19.0) * 0.35;
+      // sparse, varied placement — only some stretches of the ring host a tuft
+      float tplace = valueNoise(worldPosition * BASE_FREQ * 1.1 + vec3(41.0, wind.y * 2.0, 17.0));
+      float tgate = smoothstep(0.58, 0.82, tplace);
+      // sit low-to-mid in the band (small clouds hang lower than the towers)
+      float vfall = (1.0 - smoothstep(0.32, 1.0, hb)) * baseGate;
+      float tuft = smoothstep(0.60, 0.82, puff) * tgate * ringMask * vfall;
+      d = max(d, tuft * uTuft * 0.6);
+    }
     return clamp(d * uDensity, 0.0, 1.0);
   }
 
@@ -310,17 +329,14 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
   const { THREE, scene, camera } = options;
   const span = Math.max(12, options.span);
   const center = options.center?.clone?.() ?? new THREE.Vector3();
-  // Inner radius = the clear "bubble" over the island. Pulled in from 0.72 so the
-  // ring closes toward the isle and clouds sit a little closer.
-  const innerRadius = span * 0.42;
+  const innerRadius = span * 0.72;
   // Wide annulus so ~4x more distinct clouds surround the island and extend out
   // (masses are world-space placed → area ~4x ⇒ ~4x cloud count), clear over the isle.
   const outerRadius = span * 2.85;
-  // Cloud BAND (where density lives). Flat base near island level. Ceiling scaled
-  // down ~4x (was 2.05) to match the 4x-smaller clouds — small cumulus, short
-  // proportional towers, not tiny puffs stranded in a tall empty box.
+  // Cloud BAND (where density lives). Flat base near island level, very tall
+  // ceiling so cumulus can build dramatic vertical towers (not a flat layer).
   const baseHeight = -span * 0.12;
-  const topHeight = Math.max(span * 0.9, baseHeight + 10);
+  const topHeight = Math.max(span * 2.05, baseHeight + 18);
   const bandHalf = (topHeight - baseHeight) * 0.5;
   // The marching BOX is wider AND taller than the band (×1.18 margin on every
   // axis) so wobbled edges and tall towers round off in free space instead of
@@ -347,6 +363,7 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
     uWobble: { value: 0.38 },
     uTower: { value: 0.85 },
     uIntruder: { value: 0.4 },
+    uTuft: { value: 0.6 },
     uDebug: { value: 0 },
   };
 
@@ -379,6 +396,7 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
     wobble: uniforms.uWobble.value,
     tower: uniforms.uTower.value,
     intruder: uniforms.uIntruder.value,
+    tuft: uniforms.uTuft.value,
     debug: 0,
   };
 
@@ -389,6 +407,7 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
     uniforms.uWobble.value = Math.max(0, Math.min(1, state.wobble));
     uniforms.uTower.value = Math.max(0, Math.min(1, state.tower));
     uniforms.uIntruder.value = Math.max(0, Math.min(1.5, state.intruder));
+    uniforms.uTuft.value = Math.max(0, Math.min(1.5, state.tuft));
     uniforms.uDebug.value = Math.max(0, Math.min(2, Math.round(state.debug)));
   };
 
