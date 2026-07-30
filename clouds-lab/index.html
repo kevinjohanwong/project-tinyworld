@@ -62,7 +62,7 @@ scene.add(amb);
 // --- cameras (fixed) matching the two reference framings ---
 const cameras = {
   // ref 1: low vista looking up at towering cloud masses (tall framing)
-  vista: (() => { const c = new THREE.PerspectiveCamera(62, W / H, 0.5, SPAN * 40); c.position.set(0, SPAN * 0.12, SPAN * 2.9); c.lookAt(0, SPAN * 0.7, 0); return c; })(),
+  vista: (() => { const c = new THREE.PerspectiveCamera(60, W / H, 0.5, SPAN * 40); c.position.set(0, SPAN * 0.35, SPAN * 3.7); c.lookAt(0, SPAN * 1.05, 0); return c; })(),
   // ref 2: aerial looking down at the island ringed / intruded by cloud
   aerial: (() => { const c = new THREE.PerspectiveCamera(52, W / H, 0.5, SPAN * 40); c.position.set(SPAN * 1.25, SPAN * 1.85, SPAN * 1.25); c.lookAt(0, -SPAN * 0.05, 0); return c; })(),
 };
@@ -108,8 +108,10 @@ async function post(name, data) {
 }
 
 async function capture() {
-  const times = [0, 40, 80];
-  const fast = new URLSearchParams(location.search).has("fast");
+  const qp = new URLSearchParams(location.search);
+  const one = qp.has("one");
+  const times = one ? [0] : [0, 40, 80];
+  const fast = qp.has("fast") || one;
   const tods = fast ? ["noon"] : ["noon", "dusk"];
   const cams = fast ? ["vista"] : ["vista", "aerial"];
   for (const todName of tods) {
