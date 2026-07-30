@@ -140,8 +140,12 @@ const fragmentShader = `
     float ring = smoothstep(innerR, innerR * 1.18, radius)
       * (1.0 - smoothstep(outerR * 0.78, outerR, radius));
 
-    // --- Sparse intruder clouds drifting in over the island center. ---
-    float intrField = valueNoise(vec3(p.xz / uOuterRadius * 0.85 - vec2(uTime * 0.012, uTime * 0.006), 21.0));
+    // --- Sparse intruder clouds drifting ACROSS and AROUND the island center.
+    // A linear wind carries patches across, plus a slow perpendicular sway so
+    // the path curves and arcs around rather than sliding dead-straight. ---
+    vec2 intrDrift = vec2(uTime * 0.012, uTime * 0.006)
+      + vec2(sin(uTime * 0.05) * 0.18, cos(uTime * 0.04) * 0.18);
+    float intrField = valueNoise(vec3(p.xz / uOuterRadius * 0.85 - intrDrift, 21.0));
     float intruder = smoothstep(0.70, 0.90, intrField) * uIntruder
       * (1.0 - smoothstep(uOuterRadius * 0.76, uOuterRadius, radius));
     float ringMask = max(ring, intruder);
@@ -337,7 +341,7 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
     uTopHeight: { value: bandHalf },
     uWobble: { value: 0.38 },
     uTower: { value: 0.85 },
-    uIntruder: { value: 0.7 },
+    uIntruder: { value: 0.4 },
     uDebug: { value: 0 },
   };
 
