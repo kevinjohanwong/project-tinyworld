@@ -1,0 +1,131 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>clouds-lab</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}#hud{position:fixed;top:6px;left:8px;color:#fff;font:12px monospace;text-shadow:0 0 3px #000;z-index:9}</style>
+</head>
+<body>
+<div id="hud">booting…</div>
+<script type="module">
+import * as THREE from "https://esm.sh/three@0.165.0";
+
+const hud = document.getElementById("hud");
+const log = (m) => { hud.textContent = m; console.log(m); };
+
+const SPAN = 30;
+const W = 960, H = 600;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H);
+renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+// --- gradient sky dome (per-TOD colors set at capture time) ---
+const skyU = { top: { value: new THREE.Color(0x2a54c0) }, horizon: { value: new THREE.Color(0xbcd6f0) } };
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(SPAN * 8, 32, 16),
+  new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, uniforms: skyU,
+    vertexShader: `varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0);} `,
+    fragmentShader: `varying vec3 vP; uniform vec3 top; uniform vec3 horizon;
+      void main(){ float h = clamp(normalize(vP).y*1.4+0.15, 0.0, 1.0); gl_FragColor = vec4(mix(horizon, top, smoothstep(0.0,1.0,h)), 1.0);} `,
+  })
+);
+scene.add(sky);
+
+// --- island silhouette (scale + intrusion reference, NOT the subject) ---
+const islandMat = new THREE.MeshStandardMaterial({ color: 0x5c8a3a, roughness: 0.95 });
+const rockMat = new THREE.MeshStandardMaterial({ color: 0x7a6a52, roughness: 1 });
+const island = new THREE.Group();
+const top = new THREE.Mesh(new THREE.IcosahedronGeometry(SPAN * 0.42, 2), islandMat);
+top.scale.set(1, 0.32, 1); top.position.y = 0; island.add(top);
+const base = new THREE.Mesh(new THREE.ConeGeometry(SPAN * 0.3, SPAN * 0.6, 7), rockMat);
+base.position.y = -SPAN * 0.34; base.rotation.y = 0.4; island.add(base);
+// a couple of little peaks so the top isn't a smooth dome
+for (let i = 0; i < 3; i++) {
+  const p = new THREE.Mesh(new THREE.ConeGeometry(SPAN * 0.06, SPAN * 0.14, 5), islandMat);
+  p.position.set((i - 1) * SPAN * 0.16, SPAN * 0.05, (i % 2) * SPAN * 0.1);
+  island.add(p);
+}
+island.position.y = -SPAN * 0.05;
+scene.add(island);
+
+const sun = new THREE.DirectionalLight(0xffffff, 2.0);
+scene.add(sun);
+const amb = new THREE.HemisphereLight(0xbcd6f0, 0x40402f, 0.7);
+scene.add(amb);
+
+// --- cameras (fixed) matching the two reference framings ---
+const cameras = {
+  // ref 1: low vista looking up at cloud towers on the horizon
+  vista: (() => { const c = new THREE.PerspectiveCamera(55, W / H, 0.5, SPAN * 40); c.position.set(0, 3, SPAN * 2.7); c.lookAt(0, SPAN * 0.35, 0); return c; })(),
+  // ref 2: aerial looking down at the island ringed / intruded by cloud
+  aerial: (() => { const c = new THREE.PerspectiveCamera(52, W / H, 0.5, SPAN * 40); c.position.set(SPAN * 1.25, SPAN * 1.85, SPAN * 1.25); c.lookAt(0, -SPAN * 0.05, 0); return c; })(),
+};
+
+const TOD = {
+  noon: { dir: new THREE.Vector3(0.35, 0.92, 0.18), key: new THREE.Color(1.0, 0.98, 0.92), top: new THREE.Color(0.24, 0.5, 0.86), horizon: new THREE.Color(0.74, 0.85, 0.96), sky: new THREE.Color(0.6, 0.78, 0.95), keyI: 1.5 },
+  dusk: { dir: new THREE.Vector3(-0.82, 0.24, -0.2), key: new THREE.Color(1.0, 0.6, 0.38), top: new THREE.Color(0.2, 0.28, 0.5), horizon: new THREE.Color(0.96, 0.62, 0.45), sky: new THREE.Color(0.7, 0.55, 0.6), keyI: 1.05 },
+};
+
+let ring = null;
+async function boot() {
+  const mod = await import("/module.js?t=" + Date.now());
+  const defaults = await (await fetch("/defaults?t=" + Date.now())).json();
+  ring = mod.createVolumetricCloudRing({ THREE, scene, camera: cameras.vista, span: SPAN, enabled: true });
+  // apply production scalar defaults (coverage/density/wobble/tower/intruder…) so lab == ship
+  // URL params override for live tuning, e.g. ?intr=1.4&cov=0.7 (mechanism checks only).
+  const q = new URLSearchParams(location.search);
+  const pick = (k, d) => (q.has(k) ? +q.get(k) : d);
+  ring.configure({
+    coverage: pick("cov", defaults.uCoverage), density: pick("den", defaults.uDensity),
+    wobble: pick("wob", defaults.uWobble), tower: pick("tow", defaults.uTower), intruder: pick("intr", defaults.uIntruder),
+  });
+  log("module loaded; capturing…");
+  await capture();
+}
+
+function applyTOD(t) {
+  sun.position.copy(t.dir).multiplyScalar(SPAN * 3);
+  sun.color.copy(t.key);
+  skyU.top.value.copy(t.top); skyU.horizon.value.copy(t.horizon);
+  amb.color.copy(t.horizon);
+}
+
+function frame(camera, t, uTime) {
+  ring.update({ elapsedSeconds: uTime, keyDirection: t.dir, keyColor: t.key, skyColor: t.sky, keyIntensity: t.keyI });
+  renderer.render(scene, camera); // warm
+  renderer.render(scene, camera);
+  return renderer.domElement.toDataURL("image/png");
+}
+
+async function post(name, data) {
+  await fetch("/shot", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, data }) });
+}
+
+async function capture() {
+  const times = [0, 40, 80];
+  for (const todName of ["noon", "dusk"]) {
+    const t = TOD[todName];
+    applyTOD(t);
+    for (const camName of ["vista", "aerial"]) {
+      const cam = cameras[camName];
+      for (let i = 0; i < times.length; i++) {
+        const data = frame(cam, t, times[i]);
+        await post(`${todName}-${camName}-t${i}.png`, data);
+        log(`captured ${todName}-${camName}-t${i}`);
+      }
+    }
+  }
+  await fetch("/done", { method: "POST" });
+  log("DONE");
+}
+
+boot().catch((e) => { log("ERR " + e.message); console.error(e); document.title = "ERR"; });
+</script>
+</body>
+</html>
