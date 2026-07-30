@@ -201,12 +201,16 @@ const fragmentShader = `
       float med = clamp(1.0 - worleyF1(wp * 2.15 + 31.7), 0.0, 1.0);
       float fin = clamp(1.0 - worleyF1(wp * 3.9 + 63.1), 0.0, 1.0);
       float lobeErode = med * 0.70 + fin * 0.30;
+      // FUZZ: high-freq value-noise fbm breaks the smooth lobe edges into small
+      // wisps so the silhouette reads soft/fuzzy, not clean-rounded. Value noise
+      // (not worley) stays smooth per-step → wispier edge without salt-pepper grain.
+      float fuzz = valueNoise(wp * 6.3 + 12.4) * 0.62 + valueNoise(wp * 11.7 + 47.2) * 0.38;
       // Boundary band: 1 near the surface, 0 deep in the core and out in sky.
       float band = smoothstep(cov - 0.14, cov + 0.02, mass)
         * (1.0 - smoothstep(cov + 0.14, cov + 0.42, mass));
-      eroded = mass - lobeErode * band * 0.22;
+      eroded = mass - (lobeErode * 0.22 + (fuzz - 0.35) * 0.20) * band;
     }
-    float d = smoothstep(cov, cov + 0.34, eroded);
+    float d = smoothstep(cov, cov + 0.40, eroded);
     return clamp(d * uDensity, 0.0, 1.0);
   }
 
@@ -284,7 +288,7 @@ const fragmentShader = `
     vec3 color = radiance / max(rawAlpha, 0.02);
     // Sharpen coverage: push the thin hazy fringe toward transparent and let the
     // body go solid → crisp defined cumulus edges, no foggy skirt or box halo.
-    float alpha = smoothstep(0.05, 0.50, rawAlpha) * 0.97;
+    float alpha = smoothstep(0.035, 0.60, rawAlpha) * 0.97;
     if (alpha < 0.02) discard;
     if (uDebug == 1) color = vec3(clamp(accumulatedDensity * 0.08, 0.0, 1.0));
     if (uDebug == 2) color = vec3(transmittance);
