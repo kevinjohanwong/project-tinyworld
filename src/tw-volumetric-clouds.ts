@@ -129,7 +129,7 @@ const fragmentShader = `
     vec3 p = worldPosition - uCenter;
     float radius = length(p.xz);
     vec2 dir = radius > 0.001 ? p.xz / radius : vec2(1.0, 0.0);
-    vec2 wind = vec2(uTime * 0.004, uTime * 0.0018);
+    vec2 wind = vec2(uTime * 0.0075, uTime * 0.0032);
 
     // --- Irregular ring boundary: break the perfect circle (bays/headlands). ---
     float lobeA = valueNoise(vec3(dir * 1.6, uTime * 0.010 + 4.0));
@@ -181,7 +181,11 @@ const fragmentShader = `
     //     full while the silhouette bulges per-lobe at EVERY height. This replaces
     //     the old max(lobes, solidBase), whose flat 0.64 floor plateaued the lower
     //     body into a smooth wall (lobes only won at the peaks = flat body).
-    vec3 wp = worldPosition * BASE_FREQ + vec3(wind.x * 2.0, -uTime * 0.0016, wind.y * 2.0);
+    // Churn: the lobe field scrolls through worley-space so lobes grow/shrink/roll
+    // (cumulus "boil"), plus a slow domain-warp so masses evolve, not just slide.
+    float churn = uTime * 0.0042;
+    vec3 warp = vec3(valueNoise(worldPosition * BASE_FREQ * 0.5 + uTime * 0.003)) * 0.35;
+    vec3 wp = worldPosition * BASE_FREQ + vec3(wind.x * 2.4, -churn, wind.y * 2.4) + warp;
 
     // Overall rounded mass: coarse packed-sphere field → several big billowing
     // piles, tapered UP so the crown separates into towers, full & merged low.
