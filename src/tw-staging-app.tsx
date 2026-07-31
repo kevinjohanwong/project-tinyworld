@@ -2662,7 +2662,7 @@ export default function TinyWorld() {
       // URL (?gibounce= / ?gishadow=) so it can be dialed on a phone with no
       // console. (?bounce is already taken by the hemi bounce rig, so these are
       // gi-prefixed to avoid the collision.)
-      bounce: __diagParams.has("gibounce") ? Math.max(0, Number(__diagParams.get("gibounce")) || 0) : 1.5,
+      bounce: __diagParams.has("gibounce") ? Math.max(0, Number(__diagParams.get("gibounce")) || 0) : 1.9,
       shadow: __diagParams.has("gishadow") ? Math.max(0, Math.min(1, Number(__diagParams.get("gishadow")) || 0)) : 0.42,
     };
     const raygiPass = new ShaderPass(RAYGI_COMPOSITE_SHADER);
@@ -2943,13 +2943,35 @@ export default function TinyWorld() {
     // Both ramp with the key (sun by day, moon at night at a fainter fraction),
     // so at night bounce dims with the moon instead of inventing light.
     // Kill: ?bounce=0 · live: __tw.bounce({hemi,under,moonFrac,enabled}).
+    const _bounceNum = (k: string, d: number) => {
+      const v = __diagParams.get(k);
+      const n = v == null ? NaN : parseFloat(v);
+      return Number.isFinite(n) ? n : d;
+    };
     const BOUNCE = {
       enabled: __diagParams.get("bounce") !== "0",
-      hemi: 0.42,    // × palette hemiI (palette already authored day/night curve)
-      under: 0.16,   // × key intensity → ground-bounce uplight
+      // ?hemi= / ?under= scale the raster fill (works on mobile too, where RayGI
+      // is off and the fill is the ONLY thing lifting shadowed faces). Lower =
+      // deeper wall shadows. Defaults preserve the shipped look.
+      hemi: _bounceNum("hemi", 0.42),    // × palette hemiI (palette already authored day/night curve)
+      under: _bounceNum("under", 0.16),   // × key intensity → ground-bounce uplight
       moonFrac: 0.5, // moonlight bounces at half weight
       giScale: 0.6, // raster-rig share while RayGI composites — raised from 0.45 when per-surface bounce strength shrank the GI fill (Jul 25)
     };
+    // ?shadowfill= is the master "how dark are shadows" dial: scales EVERY
+    // non-key fill (amb + fill + hemi + under) at once, so a cast shadow (which
+    // sees no sun) goes darker uniformly. Works on mobile (no RayGI there).
+    // ?amb= / ?fill= fine-tune the two the hemi/under knob didn't cover — amb
+    // (flat AmbientLight) is the biggest cast-shadow lifter.
+    // AMBIENT OFF ON DESKTOP (KJ Jul 31: "ambient off is the right call"): the
+    // flat unoccluded AmbientLight washed cast shadows; on desktop RayGI (dialed
+    // up to bounce 1.9) + the occluded hemi rig now carry the shadow fill, so
+    // the flat lamp defaults to 0 and shadows read deep. Mobile keeps ambient
+    // (no RayGI there → would crush to black), so its default stays 1.
+    // Override either way with ?amb=N (e.g. ?amb=1 restores desktop ambient).
+    const SHADOWFILL = _bounceNum("shadowfill", 1);
+    const AMB_SCALE = _bounceNum("amb", isMobileRef.current ? 1 : 0);
+    const FILL_SCALE = _bounceNum("fill", 1);
     const _groundAlbedo = new THREE.Color(PAL.grass)
       .lerp(new THREE.Color(PAL.dirt), 0.35)
       .lerp(new THREE.Color(PAL.dryGrass), 0.18);
@@ -2967,9 +2989,9 @@ export default function TinyWorld() {
       hemi.color.setHex(hemiSHex);
       _bounceGround.copy(_groundAlbedo).multiply(keyC);
       hemi.groundColor.copy(_bounceGround);
-      hemi.intensity = hemiIPal * BOUNCE.hemi * giScale;
+      hemi.intensity = hemiIPal * BOUNCE.hemi * giScale * SHADOWFILL;
       under.color.copy(_bounceGround);
-      under.intensity = keyI * BOUNCE.under * giScale;
+      under.intensity = keyI * BOUNCE.under * giScale * SHADOWFILL;
     };
     (window as any).__twBounce = { cfg: BOUNCE, apply: _applyBounce, last: _lastBounce };
     // Seed at build — the live tint loop is gated off under a ?tod= override,
@@ -3004,12 +3026,16 @@ export default function TinyWorld() {
       sun.intensity = lightBase.sunI * (1 - 0.85 * m);
       moon.intensity = lightBase.moonI * (1 - 0.80 * m);
       rim.intensity = lightBase.rimI * (1 - 0.90 * m);
-      fill.intensity = lightBase.fillI * (1 - 0.60 * m);
+      fill.intensity = lightBase.fillI * (1 - 0.60 * m) * FILL_SCALE * SHADOWFILL;
       _intAmbTmp.setHex(lightBase.ambHex).lerp(INT_AMB_WARM, 0.65 * m);
       amb.color.copy(_intAmbTmp);
-      amb.intensity = lightBase.ambI * (1 + 0.45 * m);
+      amb.intensity = lightBase.ambI * (1 + 0.45 * m) * AMB_SCALE * SHADOWFILL;
     };
     (window as any).__twInterior = { state: interiorState, base: lightBase };
+    // Seed once so ?amb=/?fill=/?shadowfill= apply even under a ?tod= override
+    // (the live tint loop that calls this every update is gated off in static
+    // previews). Identity for sun/moon/rim at mix 0 — only carries the scales.
+    _applyInteriorMix();
 
     // ── Emissive-casts-light (Campaign-Evolved): the super tree's night glow
     // is a REAL light. One budgeted PointLight (castShadow off — iOS VRAM),
