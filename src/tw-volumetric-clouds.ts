@@ -45,6 +45,8 @@ const fragmentShader = `
   uniform float uTower;
   uniform float uIntruder;
   uniform float uTuft;
+  uniform float uDetailNear;
+  uniform float uDetailFar;
   uniform int uDebug;
 
   const int PRIMARY_STEPS = 132;
@@ -205,11 +207,26 @@ const fragmentShader = `
     // only in the boundary BAND (near the coverage threshold), nothing in the
     // solid core → bumpy rounded surface top-to-bottom. Done BEFORE the single
     // smoothstep so the isosurface stays smooth (no near-threshold grain flicker).
+    // Distance-aware detail: the FINE grain sources (fine worley, fuzz, tufts)
+    // are what turn the distant ring into salt-pepper. Gate them by camera
+    // distance — full near the camera, faded to zero far away — so close clouds
+    // get rich small-scale cauliflower + tufts while the far ring stays clean.
+    // detail=false (light march) skips this entirely (coarse-only, cheap).
+    float detailGate = 0.0;
+    if (detail) {
+      float camDist = length(worldPosition - uCameraPosition);
+      detailGate = 1.0 - smoothstep(uDetailNear, uDetailFar, camDist);
+    }
+
     float eroded = mass;
     if (detail) {
       float med = clamp(1.0 - worleyF1(wp * 2.15 + 31.7), 0.0, 1.0);
       float fin = clamp(1.0 - worleyF1(wp * 3.9 + 63.1), 0.0, 1.0);
-      float lobeErode = med * 0.70 + fin * 0.30;
+      // NEAR-ONLY extra-fine lobe octave: small cauliflower balls that bloom up
+      // close and fade out at distance — "more cauliflower up close" without
+      // regraining the far ring. Fully distance-gated.
+      float fin2 = clamp(1.0 - worleyF1(wp * 7.3 + 91.4), 0.0, 1.0);
+      float lobeErode = med * 0.70 + (fin * 0.30 + fin2 * 0.34) * detailGate;
       // FUZZ: high-freq value-noise fbm breaks the smooth lobe edges into small
       // wisps so the silhouette reads soft/fuzzy, not clean-rounded. Value noise
       // (not worley) stays smooth per-step → wispier edge without salt-pepper grain.
@@ -217,7 +234,7 @@ const fragmentShader = `
       // Boundary band: 1 near the surface, 0 deep in the core and out in sky.
       float band = smoothstep(cov - 0.14, cov + 0.02, mass)
         * (1.0 - smoothstep(cov + 0.14, cov + 0.42, mass));
-      eroded = mass - (lobeErode * 0.22 + (fuzz - 0.35) * 0.20) * band;
+      eroded = mass - (lobeErode * 0.22 + (fuzz - 0.35) * 0.20 * detailGate) * band;
     }
     float d = smoothstep(cov, cov + 0.40, eroded);
 
@@ -228,7 +245,7 @@ const fragmentShader = `
     // → no salt-pepper grain, unlike high-freq worley), gated sparse so they stay
     // occasional wisps not a second carpet, thin, low-to-mid in the band, and
     // MAX'd into the field so they fill sky gaps rather than darkening a mass.
-    if (detail && uTuft > 0.001) {
+    if (detail && uTuft > 0.001 && detailGate > 0.001) {
       vec3 tp = worldPosition * (BASE_FREQ * 3.2)
         + vec3(wind.x * 3.0, -churn * 1.4, wind.y * 3.0);
       float puff = valueNoise(tp) * 0.65 + valueNoise(tp * 2.1 + 19.0) * 0.35;
@@ -238,7 +255,8 @@ const fragmentShader = `
       // sit low-to-mid in the band (small clouds hang lower than the towers)
       float vfall = (1.0 - smoothstep(0.32, 1.0, hb)) * baseGate;
       float tuft = smoothstep(0.60, 0.82, puff) * tgate * ringMask * vfall;
-      d = max(d, tuft * uTuft * 0.6);
+      // Distance-gated: tufts bloom near the camera, vanish far (no distant grain).
+      d = max(d, tuft * uTuft * 0.7 * detailGate);
     }
     return clamp(d * uDensity, 0.0, 1.0);
   }
@@ -364,6 +382,10 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
     uTower: { value: 0.85 },
     uIntruder: { value: 0.4 },
     uTuft: { value: 0.6 },
+    // Distance-aware detail band (world units). Fine lobes/tufts are full inside
+    // uDetailNear and gone beyond uDetailFar → rich close clouds, clean far ring.
+    uDetailNear: { value: outerRadius * 0.45 },
+    uDetailFar: { value: outerRadius * 1.3 },
     uDebug: { value: 0 },
   };
 
@@ -397,6 +419,8 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
     tower: uniforms.uTower.value,
     intruder: uniforms.uIntruder.value,
     tuft: uniforms.uTuft.value,
+    detailNear: 0.45,
+    detailFar: 1.3,
     debug: 0,
   };
 
@@ -408,6 +432,10 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
     uniforms.uTower.value = Math.max(0, Math.min(1, state.tower));
     uniforms.uIntruder.value = Math.max(0, Math.min(1.5, state.intruder));
     uniforms.uTuft.value = Math.max(0, Math.min(1.5, state.tuft));
+    const dNear = Math.max(0.05, state.detailNear);
+    const dFar = Math.max(dNear + 0.05, state.detailFar);
+    uniforms.uDetailNear.value = outerRadius * dNear;
+    uniforms.uDetailFar.value = outerRadius * dFar;
     uniforms.uDebug.value = Math.max(0, Math.min(2, Math.round(state.debug)));
   };
 

@@ -65,6 +65,9 @@ const cameras = {
   vista: (() => { const c = new THREE.PerspectiveCamera(60, W / H, 0.5, SPAN * 40); c.position.set(0, SPAN * 0.35, SPAN * 3.7); c.lookAt(0, SPAN * 1.05, 0); return c; })(),
   // ref 2: aerial looking down at the island ringed / intruded by cloud
   aerial: (() => { const c = new THREE.PerspectiveCamera(52, W / H, 0.5, SPAN * 40); c.position.set(SPAN * 1.25, SPAN * 1.85, SPAN * 1.25); c.lookAt(0, -SPAN * 0.05, 0); return c; })(),
+  // FAR: pulled way back so the WHOLE ring is distant — the frame that must stay
+  // CLEAN (no salt-pepper grain) after distance-gating. island small, ring wraps.
+  far: (() => { const c = new THREE.PerspectiveCamera(46, W / H, 0.5, SPAN * 60); c.position.set(0, SPAN * 1.1, SPAN * 9.0); c.lookAt(0, SPAN * 0.5, 0); return c; })(),
 };
 
 const TOD = {
@@ -111,10 +114,11 @@ async function post(name, data) {
 async function capture() {
   const qp = new URLSearchParams(location.search);
   const one = qp.has("one");
-  const times = one ? [0] : [0, 40, 80];
-  const fast = qp.has("fast") || one;
+  const pair = qp.has("pair"); // close(vista) + far, noon t0 — distance-gate A/B
+  const times = (one || pair) ? [0] : [0, 40, 80];
+  const fast = qp.has("fast") || one || pair;
   const tods = fast ? ["noon"] : ["noon", "dusk"];
-  const cams = fast ? ["vista"] : ["vista", "aerial"];
+  const cams = pair ? ["vista", "far"] : (fast ? ["vista"] : ["vista", "aerial"]);
   for (const todName of tods) {
     const t = TOD[todName];
     applyTOD(t);
