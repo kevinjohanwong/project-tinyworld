@@ -2963,14 +2963,17 @@ export default function TinyWorld() {
     // sees no sun) goes darker uniformly. Works on mobile (no RayGI there).
     // ?amb= / ?fill= fine-tune the two the hemi/under knob didn't cover — amb
     // (flat AmbientLight) is the biggest cast-shadow lifter.
-    // AMBIENT OFF ON DESKTOP (KJ Jul 31: "ambient off is the right call"): the
-    // flat unoccluded AmbientLight washed cast shadows; on desktop RayGI (dialed
-    // up to bounce 1.9) + the occluded hemi rig now carry the shadow fill, so
-    // the flat lamp defaults to 0 and shadows read deep. Mobile keeps ambient
-    // (no RayGI there → would crush to black), so its default stays 1.
-    // Override either way with ?amb=N (e.g. ?amb=1 restores desktop ambient).
+    // AMBIENT OFF EVERYWHERE (KJ Jul 31: "ambient off is the right call" +
+    // "same treatment on mobile"): the flat unoccluded AmbientLight washed cast
+    // shadows. Desktop: RayGI (bounce 1.9) + occluded hemi rig carry the fill.
+    // Mobile: verified via a ?mobile=1 A/B that the full-strength hemi/under
+    // bounce rig + baked AO + GTAO (composer path in the overview) hold the
+    // shadows graded WITHOUT crushing to black, so ambient defaults to 0 there
+    // too. CAVEAT: the mobile WALK path is a direct render (no GTAO) — recesses
+    // lean on hemi/under + baked AO only; on-device walk check pending.
+    // Override with ?amb=N (e.g. ?amb=1 restores the old washed ambient).
     const SHADOWFILL = _bounceNum("shadowfill", 1);
-    const AMB_SCALE = _bounceNum("amb", isMobileRef.current ? 1 : 0);
+    const AMB_SCALE = _bounceNum("amb", 0);
     const FILL_SCALE = _bounceNum("fill", 1);
     const _groundAlbedo = new THREE.Color(PAL.grass)
       .lerp(new THREE.Color(PAL.dirt), 0.35)
