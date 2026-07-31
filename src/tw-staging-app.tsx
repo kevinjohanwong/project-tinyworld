@@ -2902,12 +2902,25 @@ export default function TinyWorld() {
       moon.castShadow = _initNight;
     }
 
+    // Cloud raymarch cost is per-fragment GPU (a 132-step march full-screen).
+    // On iOS that can trip the GPU watchdog and lose the WebGL context, so
+    // mobile gets a lighter march (still real volumetric depth, softer detail).
+    // Desktop keeps the full 132/8. Override live with ?cloudsteps=N&cloudlight=M.
+    const _cloudStepsParam = Number(__diagParams.get("cloudsteps"));
+    const _cloudLightParam = Number(__diagParams.get("cloudlight"));
+    const _cloudMobile = isMobileRef.current;
     const volumetricClouds = createVolumetricCloudRing({
       THREE,
       scene,
       camera,
       span,
       enabled: __diagParams.get("clouds") === "1",
+      primarySteps: Number.isFinite(_cloudStepsParam) && _cloudStepsParam > 0
+        ? _cloudStepsParam
+        : (_cloudMobile ? 56 : 132),
+      lightSteps: Number.isFinite(_cloudLightParam) && _cloudLightParam > 0
+        ? _cloudLightParam
+        : (_cloudMobile ? 4 : 8),
     });
     const _cloudKeyDir = new THREE.Vector3();
     const _cloudSkyColor = new THREE.Color(tp.bg);

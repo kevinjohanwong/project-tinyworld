@@ -5,6 +5,10 @@ type CloudRingOptions = {
   span: number;
   center?: any;
   enabled?: boolean;
+  // Raymarch step counts. Fewer = cheaper GPU (mobile safety), softer detail.
+  // Defaults match the desktop look (132 / 8).
+  primarySteps?: number;
+  lightSteps?: number;
 };
 
 type CloudUpdate = {
@@ -389,11 +393,17 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
     uDebug: { value: 0 },
   };
 
+  const primarySteps = Math.max(24, Math.round(options.primarySteps ?? 132));
+  const lightSteps = Math.max(2, Math.round(options.lightSteps ?? 8));
+  const frag = fragmentShader
+    .replace("const int PRIMARY_STEPS = 132;", `const int PRIMARY_STEPS = ${primarySteps};`)
+    .replace("const int LIGHT_STEPS = 8;", `const int LIGHT_STEPS = ${lightSteps};`);
+
   const material = new THREE.ShaderMaterial({
     name: "TinyWorldVolumetricCloudRing",
     uniforms,
     vertexShader,
-    fragmentShader,
+    fragmentShader: frag,
     side: THREE.BackSide,
     transparent: true,
     depthWrite: false,
