@@ -2550,6 +2550,21 @@ export default function TinyWorld() {
     cameraRef.current = camera;
 
     const __diagParams = new URLSearchParams(location.search);
+    // MOBILE MATCHES DESKTOP (KJ Jul 31: "mobile needs to match desktop — just
+    // resolution lower"). Unify the pipeline on mobile: run the same composer
+    // path (RayGI + GTAO + bloom) that desktop uses, INCLUDING while walking,
+    // and pay for it by rendering at a lower internal resolution. Gated to
+    // STAGING by default because the full pipeline risks iOS GPU/VRAM OOM that
+    // can't be verified headless — promote to prod once KJ confirms on-device.
+    // ?mobilematch=1/0 forces it either way; ?mobileres=N sets the render scale;
+    // ?mobilefast=1 restores the old direct-render walk path.
+    const _isStaging = window.location.pathname.includes("tinyworld-staging");
+    const _mobileMatchDesktop = __diagParams.get("mobilematch") === "1" ? true
+      : __diagParams.get("mobilematch") === "0" ? false : _isStaging;
+    const _mobileRes = (() => {
+      const v = Number(__diagParams.get("mobileres"));
+      return Number.isFinite(v) && v > 0 ? v : 0.67;
+    })();
     let renderer: THREE.WebGLRenderer;
     try {
       renderer = new THREE.WebGLRenderer({ antialias: __diagParams.get("aa") !== "0", preserveDrawingBuffer: true, failIfMajorPerformanceCaveat: false });
@@ -2566,7 +2581,10 @@ export default function TinyWorld() {
       try { cancelAnimationFrame(rafRef.current); } catch { /* ignore */ }
       setLoadNote("3D context lost (device memory) — reload to restore.");
     }, false);
-    renderer.setPixelRatio(1);
+    // Lower internal resolution on mobile in match-desktop mode to pay for the
+    // full composer pipeline; everything else (composer/normalTarget) reads
+    // renderer.getPixelRatio(), so this cascades. Desktop + prod-mobile = 1.
+    renderer.setPixelRatio(isMobileRef.current && _mobileMatchDesktop ? _mobileRes : 1);
     renderer.setSize(W, H);
     // Soft voxel shadows, matching the voxel-spike reference. BasicShadowMap
     // (a hard single tap) snapped the shadow boundary to the coarse overview
@@ -2652,7 +2670,7 @@ export default function TinyWorld() {
     (window as any).__twRayGI?.gi?.dispose?.();
     const raygiState = {
       enabled: raygi.supported && (_raygiFlag === "1" ? true : _raygiFlag === "0" ? false
-        : !isMobileRef.current),
+        : (!isMobileRef.current || _mobileMatchDesktop)),
       // Rebalanced for per-surface strength (avg ground ~0.3–0.35) + reach
       // falloff: bounce up from 0.55 (implicit strength=1 era) to keep dark-px
       // fill; shadow slightly shallower than 0.5 because the strength-scaled
@@ -19870,7 +19888,11 @@ export default function TinyWorld() {
           (renderer as any).__twScratchV2 = new THREE.Vector2();
         }
         const _panelsOff = (renderer as any).__twPanelsOff;
-        const _isMobileWalkRender = isMobileRef.current && walkingRef.current;
+        // In match-desktop mode, route mobile-walk through the composer too (so
+        // RayGI/GTAO/bloom run while walking, matching desktop); ?mobilefast=1
+        // restores the old direct-render fast path if iOS can't sustain it.
+        const _isMobileWalkRender = isMobileRef.current && walkingRef.current
+          && (!_mobileMatchDesktop || __diagParams.get("mobilefast") === "1");
         // ── Shadow throttle decision: repaint the shadow maps only when a
         //    caster moved this frame (see the autoUpdate note at renderer init).
         if (_shadowThrottle.on) {
