@@ -2657,6 +2657,15 @@ export default function TinyWorld() {
     ssaoPass.blendIntensity = 0.55;
     composer.addPass(ssaoPass);
     ssaoPass.enabled = __diagParams.get("ssao") !== "0";
+    // PERF round 1 (fidelity-neutral): when RayGI or the outline pass is on we
+    // ALREADY render the scene's view-normals + depth into normalTarget every
+    // frame (MeshNormalMaterial override). GTAO would otherwise render the exact
+    // same G-buffer a SECOND time (its internal _renderGBuffer pass). Reusing
+    // ours makes GTAO read identical inputs → byte-identical AO, one fewer
+    // full-scene geometry pass whenever GI is on. setGBuffer() is wired below,
+    // once normalTarget exists; the prepass guard in the render loop is widened
+    // so the buffer is always fresh when GTAO reads it. Escape hatch ?gtaogbuf=0.
+    const _gtaoReuse = __diagParams.get("gtaogbuf") !== "0";
 
     // ─── RayGI (hybrid ray-traced lighting prototype, Jul 25) ─────────────
     // Secondary DDA ray pass over a 3D-texture voxel volume: per-pixel
@@ -2724,11 +2733,23 @@ export default function TinyWorld() {
     const normalTarget = new THREE.WebGLRenderTarget(dbSize.x, dbSize.y, {
       minFilter: THREE.NearestFilter,
       magFilter: THREE.NearestFilter,
-      type: THREE.UnsignedByteType,
+      // HalfFloat (was UnsignedByte): matches GTAO's own normal-buffer precision
+      // exactly, so when GTAO reuses this G-buffer (PERF round 1) the AO is
+      // byte-identical instead of coarser on angled faces. Also gives the outline
+      // pass higher-precision normals (strictly better, never worse). One
+      // screen-size RGBA16F target — negligible next to the geometry pass saved.
+      type: THREE.HalfFloatType,
     });
     normalTarget.depthTexture = new THREE.DepthTexture(dbSize.x, dbSize.y);
     normalTarget.depthTexture.type = THREE.UnsignedIntType;
     const normalMaterial = new THREE.MeshNormalMaterial();
+    // PERF round 1: hand GTAO our shared normal+depth G-buffer so it skips its
+    // own per-frame full-scene normal render (setGBuffer → _renderGBuffer=false).
+    // Same MeshNormalMaterial encoding (rgb=normal*0.5+0.5, NORMAL_VECTOR_TYPE=1)
+    // and separate depth sampled from .x (DEPTH_SWIZZLING='x'), so AO is
+    // identical. The prepass guard below guarantees normalTarget is rendered
+    // whenever GTAO is enabled, so it's never stale.
+    if (_gtaoReuse) ssaoPass.setGBuffer(normalTarget.depthTexture, normalTarget.texture);
     const outlinePass = new ShaderPass(OUTLINE_SHADER);
     outlinePass.uniforms.tNormal.value = normalTarget.texture;
     outlinePass.uniforms.tDepth.value = normalTarget.depthTexture;
@@ -19987,7 +20008,12 @@ export default function TinyWorld() {
           _resetRenderState();
           const _outlineOn = !!(window as any).__twOutline?.state?.enabled;
           const _giOn = raygiState.enabled && raygi.ready() && phaseRef.current === "ready";
-          if (_outlineOn || _giOn) {
+          // PERF round 1: also render the shared normal G-buffer when GTAO will
+          // reuse it (see setGBuffer above). This is net-neutral in the GI-off
+          // case (GTAO would have rendered its own normal pass anyway) and saves
+          // a full-scene pass whenever GI is on (one buffer feeds both).
+          const _gtaoReadsNormal = _gtaoReuse && ssaoPass.enabled;
+          if (_outlineOn || _giOn || _gtaoReadsNormal) {
             scene.overrideMaterial = normalMaterial;
             renderer.setRenderTarget(normalTarget);
             renderer.clear();
