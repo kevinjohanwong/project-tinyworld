@@ -31,6 +31,7 @@ import { createSpring } from "@/water-spring-runtime";
 import { createParticleWater } from "@/pwater/tinyworld-pwater";
 import { installWaterSurface } from "@/water-surface-shader";
 import { createRayGI, RAYGI_COMPOSITE_SHADER, RAYGI_BOUNCE_STRENGTH } from "@/tw-raygi";
+import { createVolumetricCloudRing } from "@/tw-volumetric-clouds";
 import type { GreedyWall } from "@/wall-greedy";
 import { WARSHIP_DIMS, warshipBlocks } from "@/tw-warship-vox";
 import {
@@ -2210,6 +2211,13 @@ export default function TinyWorld() {
     zoneRaisesRef.current = [];
     (rendererRef.current as any)?.__twViewportCleanup?.();
     (rendererRef.current as any)?.__twPWaterDispose?.(); // terminate the sim worker
+    // dispose() frees three's GPU objects but NOT the underlying WebGL context.
+    // On iOS WebKit the context stays live until GC, and the per-tab context cap
+    // (~8-16) is hit fast when rebuilding worlds / navigating in and out — the
+    // next getContext then returns a DEAD context and three's getMaxPrecision
+    // crashes with "null is not an object (…getShaderPrecisionFormat(…).precision)".
+    // forceContextLoss() actually releases the context so it can't accumulate.
+    try { (rendererRef.current as any)?.forceContextLoss?.(); } catch { /* already gone */ }
     rendererRef.current?.dispose?.();
     rendererRef.current = null;
     if (mountRef.current) mountRef.current.innerHTML = "";
@@ -2542,8 +2550,23 @@ export default function TinyWorld() {
     cameraRef.current = camera;
 
     const __diagParams = new URLSearchParams(location.search);
-    const renderer = new THREE.WebGLRenderer({ antialias: __diagParams.get("aa") !== "0", preserveDrawingBuffer: true });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: __diagParams.get("aa") !== "0", preserveDrawingBuffer: true, failIfMajorPerformanceCaveat: false });
+    } catch (glErr) {
+      // A dead/exhausted WebGL context makes three's init throw the cryptic
+      // "getShaderPrecisionFormat(…).precision" error. Surface a clear,
+      // actionable message instead so it doesn't read as a broken build.
+      throw new Error("graphics context unavailable — too many 3D views are open. Fully close this tab (or other TinyWorld tabs) and reload. (" + ((glErr as any)?.message || glErr) + ")");
+    }
+    // If iOS drops the context under memory pressure, stop the render loop
+    // cleanly rather than spamming GL errors; a reload rebuilds it.
+    renderer.domElement.addEventListener("webglcontextlost", (ev) => {
+      ev.preventDefault();
+      try { cancelAnimationFrame(rafRef.current); } catch { /* ignore */ }
+      setLoadNote("3D context lost (device memory) — reload to restore.");
+    }, false);
+    renderer.setPixelRatio(1);
     renderer.setSize(W, H);
     // Soft voxel shadows, matching the voxel-spike reference. BasicShadowMap
     // (a hard single tap) snapped the shadow boundary to the coarse overview
@@ -2835,6 +2858,21 @@ export default function TinyWorld() {
       sun.castShadow = !_initNight;
       moon.castShadow = _initNight;
     }
+
+    const volumetricClouds = createVolumetricCloudRing({
+      THREE,
+      scene,
+      camera,
+      span,
+      enabled: __diagParams.get("clouds") === "1",
+    });
+    const _cloudKeyDir = new THREE.Vector3();
+    const _cloudSkyColor = new THREE.Color(tp.bg);
+    (window as any).__twClouds = {
+      state: volumetricClouds.state,
+      configure: volumetricClouds.configure,
+      mesh: volumetricClouds.mesh,
+    };
 
     // HERO light — NEUTRALIZED by the single-light collapse. Kept as a live object
     // (intensity 0, castShadow off, no shadow map allocated) only so the per-frame
@@ -11440,7 +11478,10 @@ export default function TinyWorld() {
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height, false);
-      if (composerRef.current) composerRef.current.setSize(width, height);
+      if (composerRef.current) {
+        composerRef.current.setPixelRatio(renderer.getPixelRatio());
+        composerRef.current.setSize(width, height);
+      }
       const db = renderer.getDrawingBufferSize(new THREE.Vector2());
       normalTarget.setSize(db.x, db.y);
       outlinePass.uniforms.resolution.value.set(db.x, db.y);
@@ -19825,10 +19866,23 @@ export default function TinyWorld() {
           try { camera.updateMatrixWorld(); __tilesUpdate(); }
           catch (e) { if (!(window as any).__twTilesErr) { (window as any).__twTilesErr = String(e); console.error("[tinyworld] tiles update error:", e); } }
         }
+        if (volumetricClouds.state.enabled) {
+          const _cloudKey = moon.intensity > sun.intensity ? moon : sun;
+          _cloudKeyDir.copy(_cloudKey.position).sub(_cloudKey.target.position).normalize();
+          if (scene.background && (scene.background as any).isColor) _cloudSkyColor.copy(scene.background as any);
+          volumetricClouds.update({
+            elapsedSeconds: performance.now() * 0.001,
+            keyDirection: _cloudKeyDir,
+            keyColor: _cloudKey.color,
+            skyColor: _cloudSkyColor,
+            keyIntensity: _cloudKey.intensity,
+          });
+        }
         const _resetRenderState = () => {
           renderer.setRenderTarget(null);
-          renderer.setViewport(0, 0, renderer.domElement.width, renderer.domElement.height);
-          renderer.setScissor(0, 0, renderer.domElement.width, renderer.domElement.height);
+          const _viewSize = renderer.getSize((renderer as any).__twViewportSize || ((renderer as any).__twViewportSize = new THREE.Vector2()));
+          renderer.setViewport(0, 0, _viewSize.x, _viewSize.y);
+          renderer.setScissor(0, 0, _viewSize.x, _viewSize.y);
           renderer.setScissorTest(false);
           renderer.autoClear = true;
         };
