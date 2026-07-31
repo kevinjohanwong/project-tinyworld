@@ -2658,8 +2658,12 @@ export default function TinyWorld() {
       // fill; shadow slightly shallower than 0.5 because the strength-scaled
       // bounce no longer refills lit penumbra the way v1.1's uniform fill did.
       // Testbed-measured (Jul 25): shadow=0 isolation → lit +0.8 / dark +10.6.
-      bounce: 1.5,
-      shadow: 0.42,
+      // Live-tunable via __tw.raygi({bounce,shadow}); also overridable from the
+      // URL (?gibounce= / ?gishadow=) so it can be dialed on a phone with no
+      // console. (?bounce is already taken by the hemi bounce rig, so these are
+      // gi-prefixed to avoid the collision.)
+      bounce: __diagParams.has("gibounce") ? Math.max(0, Number(__diagParams.get("gibounce")) || 0) : 1.5,
+      shadow: __diagParams.has("gishadow") ? Math.max(0, Math.min(1, Number(__diagParams.get("gishadow")) || 0)) : 0.42,
     };
     const raygiPass = new ShaderPass(RAYGI_COMPOSITE_SHADER);
     raygiPass.enabled = false;
