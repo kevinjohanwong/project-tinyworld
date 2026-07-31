@@ -2553,14 +2553,14 @@ export default function TinyWorld() {
     // MOBILE MATCHES DESKTOP (KJ Jul 31: "mobile needs to match desktop — just
     // resolution lower"). Unify the pipeline on mobile: run the same composer
     // path (RayGI + GTAO + bloom) that desktop uses, INCLUDING while walking,
-    // and pay for it by rendering at a lower internal resolution. Gated to
-    // STAGING by default because the full pipeline risks iOS GPU/VRAM OOM that
-    // can't be verified headless — promote to prod once KJ confirms on-device.
-    // ?mobilematch=1/0 forces it either way; ?mobileres=N sets the render scale;
-    // ?mobilefast=1 restores the old direct-render walk path.
-    const _isStaging = window.location.pathname.includes("tinyworld-staging");
-    const _mobileMatchDesktop = __diagParams.get("mobilematch") === "1" ? true
-      : __diagParams.get("mobilematch") === "0" ? false : _isStaging;
+    // and pay for it by rendering at a lower internal resolution. DEFAULT OFF
+    // everywhere (Jul 31): the full pipeline was verified to OOM iOS on KJ's
+    // iPhone (WebGL context lost → device-memory handler). The heavy VRAM
+    // consumers (RayGI 3D volume, normal prepass, temporal history, GTAO/bloom
+    // targets) are resolution-independent, so "lower res" can't rescue it on
+    // iOS Safari. Opt-in only via ?mobilematch=1 (safe on a Mac; risky on iOS).
+    // ?mobileres=N sets the render scale; ?mobilefast=1 restores direct-render walk.
+    const _mobileMatchDesktop = __diagParams.get("mobilematch") === "1";
     const _mobileRes = (() => {
       const v = Number(__diagParams.get("mobileres"));
       return Number.isFinite(v) && v > 0 ? v : 0.67;
