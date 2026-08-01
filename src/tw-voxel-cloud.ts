@@ -21,6 +21,8 @@ export interface VoxelCloudOptions {
   innerScale?: number; // clear-zone radius (× span)
   outerScale?: number; // band reach (× span)
   topScale?: number; // band height (× span)
+  towerFrac?: number; // fraction of clouds built as tall stacked nimbus towers
+  towerLevels?: number; // vertical stack count per tower
 }
 
 export interface VoxelCloudUpdate {
@@ -51,11 +53,15 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
 
   const state = {
     enabled: opts.enabled ?? false,
-    count: opts.count ?? 120,
+    // count reduced 120→76 and the ring pushed out (outer 1.7→2.4, top 2.0→2.4)
+    // so the tall TOWERS read as horizon nimbus with sky around them instead of
+    // drowning in a maxed-out overhead wall. Push back up via ?cloudcount= if a
+    // denser bank is wanted.
+    count: opts.count ?? 76,
     sizeScale: opts.sizeScale ?? 1,
     inner: opts.innerScale ?? 0.7,
-    outer: opts.outerScale ?? 1.7,
-    top: opts.topScale ?? 2.0,
+    outer: opts.outerScale ?? 2.4,
+    top: opts.topScale ?? 2.4,
     opacity: 0.94,
     edgeFade: 0.26,
     // VOXEL-SIZE VARIATION: a fraction of clouds are built as CLUSTERS of small
@@ -64,6 +70,15 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     fineFrac: 0.5, // fraction of clouds rendered fine (cluster of small pieces)
     fineScale: 0.46, // per-sub-piece scale (× the cloud's footprint) → voxel fineness
     fineSpread: 0.3, // how tightly the sub-pieces pack within the footprint
+    // TALL NIMBUS TOWERS: a fraction of clouds are built by STACKING pieces
+    // vertically into one large billowing mass (wide fluffy base → bulging mid
+    // → tapering crown). This is the only formation with real VERTICAL
+    // development — cumulonimbus grandeur, not a low puff.
+    towerFrac: opts.towerFrac ?? 0.34, // fraction of clouds built as tall stacked towers
+    towerLevels: opts.towerLevels ?? 6, // vertical stack count (more = taller)
+    towerStep: 0.5, // vertical rise per level (× level width; <1 = overlapping/continuous)
+    towerWidth: 1.15, // base footprint multiplier for towers (larger formations)
+    towerLean: 0.5, // horizontal wander/lean of the stack (billow, not a straight column)
     fuzz: 0.35, // fuzzy shading power (0 = flat faces)
     fuzzTiling: 0.55, // fuzzy noise scale
     backlight: 0.6, // "play to light": sun-through glow strength
@@ -210,15 +225,48 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       // span a large vertical range (from just below island level up high) so
       // they stack into a curtain of cloud filling the frame, not a thin low
       // band of separated blobs. topY = span*top(=2) is the tall envelope.
-      const baseY = topY * (rnd() * 0.5 - 0.06);
+      let baseY = topY * (rnd() * 0.5 - 0.06);
       // The cloud's overall footprint (screen size). Voxel granularity is what
       // we VARY per cloud below — coarse clouds use one piece at this footprint,
       // fine clouds pack several smaller pieces into it.
       const footprint = state.sizeScale * (0.8 + rnd() * 1.1) * (span * 0.34);
-      const fine = rnd() < state.fineFrac;
+      const roll = rnd();
 
       let obj: any;
-      if (fine) {
+      if (roll < state.towerFrac) {
+        // TOWER (nimbus): stack pieces vertically into one tall billowing mass.
+        // Pieces overlap (step<1) so the column reads continuous, not beaded;
+        // the width profile bulges at mid and tapers to a rounded crown.
+        obj = new THREE.Group();
+        const levels = Math.max(2, Math.round(state.towerLevels));
+        const leanA = rnd() * Math.PI * 2;
+        const leanX = Math.cos(leanA) * footprint * state.towerLean;
+        const leanZ = Math.sin(leanA) * footprint * state.towerLean;
+        let y = 0;
+        for (let j = 0; j < levels; j++) {
+          const f = j / (levels - 1); // 0 base → 1 crown
+          // billow profile: ~0.7 at base, ~1.0 mid, taper to ~0.15 crown
+          const prof = Math.sin((0.24 + f * 0.72) * Math.PI);
+          const lw = footprint * state.towerWidth * (0.42 + 0.62 * prof);
+          const nSub = f < 0.62 ? 2 : 1; // fuller lower body, single tapering crown
+          for (let p = 0; p < nSub; p++) {
+            const sub = pieces[Math.floor(rnd() * pieces.length)].clone(true);
+            sub.scale.setScalar(lw * (0.82 + rnd() * 0.4));
+            sub.rotation.y = rnd() * Math.PI * 2;
+            const pa = rnd() * Math.PI * 2;
+            const pr = lw * 0.32 * Math.sqrt(rnd());
+            sub.position.set(
+              Math.cos(pa) * pr + leanX * f,
+              y + (rnd() - 0.5) * lw * 0.2,
+              Math.sin(pa) * pr + leanZ * f,
+            );
+            obj.add(sub);
+          }
+          y += lw * state.towerStep; // rise proportional to this level's width
+        }
+        // anchor the tower LOW so it rises up through the frame
+        baseY = topY * (rnd() * 0.12 - 0.14);
+      } else if (rnd() < state.fineFrac) {
         // FINE: cluster of small pieces → same footprint, finer voxels. Each
         // sub-piece is fineScale× the footprint, so its voxels read ~2× smaller;
         // packing 3–5 of them overlapping rebuilds a cloud of similar size out
@@ -319,7 +367,12 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       (next.top !== undefined && next.top !== state.top) ||
       (next.fineFrac !== undefined && next.fineFrac !== state.fineFrac) ||
       (next.fineScale !== undefined && next.fineScale !== state.fineScale) ||
-      (next.fineSpread !== undefined && next.fineSpread !== state.fineSpread);
+      (next.fineSpread !== undefined && next.fineSpread !== state.fineSpread) ||
+      (next.towerFrac !== undefined && next.towerFrac !== state.towerFrac) ||
+      (next.towerLevels !== undefined && next.towerLevels !== state.towerLevels) ||
+      (next.towerStep !== undefined && next.towerStep !== state.towerStep) ||
+      (next.towerWidth !== undefined && next.towerWidth !== state.towerWidth) ||
+      (next.towerLean !== undefined && next.towerLean !== state.towerLean);
     Object.assign(state, next);
     applyState();
     if (needsScatter) scatter();

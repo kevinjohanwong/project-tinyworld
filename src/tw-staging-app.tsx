@@ -2915,6 +2915,8 @@ export default function TinyWorld() {
     const _cloudTopParam = Number(__diagParams.get("cloudtop"));
     const _cloudMobile = isMobileRef.current;
     const _cloudCountParam = Number(__diagParams.get("cloudcount"));
+    const _cloudTowerFracParam = Number(__diagParams.get("towerfrac"));
+    const _cloudTowerLevelsParam = Number(__diagParams.get("towerlevels"));
     // Cloud mode: ?clouds=1 → VOXEL pack (default; cheap geometry lit by the
     // real sun, no raymarch, mobile-safe). ?clouds=vol → the volumetric
     // raymarch ring (heavier, desktop-oriented, kept for comparison).
@@ -2935,6 +2937,8 @@ export default function TinyWorld() {
           innerScale: Number.isFinite(_cloudInnerParam) && _cloudInnerParam > 0 ? _cloudInnerParam : undefined,
           outerScale: Number.isFinite(_cloudOuterParam) && _cloudOuterParam > 0 ? _cloudOuterParam : undefined,
           topScale: Number.isFinite(_cloudTopParam) && _cloudTopParam > 0 ? _cloudTopParam : undefined,
+          towerFrac: Number.isFinite(_cloudTowerFracParam) && _cloudTowerFracParam >= 0 ? _cloudTowerFracParam : undefined,
+          towerLevels: Number.isFinite(_cloudTowerLevelsParam) && _cloudTowerLevelsParam > 0 ? _cloudTowerLevelsParam : undefined,
         })
       : createVolumetricCloudRing({
           THREE,

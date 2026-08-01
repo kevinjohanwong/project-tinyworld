@@ -63,10 +63,13 @@ const pick = (k, d) => (q.has(k) ? +q.get(k) : d);
 const camH = pick("ch", SPAN * 0.12);
 const camPitch = pick("cpitch", SPAN * 0.35); // look-at height (slightly up)
 const cam = new THREE.PerspectiveCamera(pick("fov", 68), W / H, 0.5, SPAN * 80);
+const camR = pick("camr", 0.05); // camera radius (× span). >outer(1.7) = outside looking in.
 function aimCam(angleDeg) {
   const a = (angleDeg || 0) * Math.PI / 180;
-  cam.position.set(Math.cos(a) * SPAN * 0.05, camH, Math.sin(a) * SPAN * 0.05);
-  cam.lookAt(Math.cos(a) * SPAN * 5, camPitch, Math.sin(a) * SPAN * 5);
+  cam.position.set(Math.cos(a) * SPAN * camR, camH, Math.sin(a) * SPAN * camR);
+  // camr>1 (outside): look back toward center; else look outward at the horizon wall
+  const lookR = camR > 1 ? -SPAN * 1 : SPAN * 5;
+  cam.lookAt(Math.cos(a) * lookR, camPitch, Math.sin(a) * lookR);
 }
 
 let ring = null;
@@ -83,11 +86,18 @@ async function boot() {
     topScale: q.has("top") ? +q.get("top") : undefined,
   });
   // voxel-granularity variation overrides
-  if (ring && (q.has("finefrac") || q.has("finescale") || q.has("finespread"))) {
+  if (ring && (q.has("finefrac") || q.has("finescale") || q.has("finespread") ||
+      q.has("towerfrac") || q.has("towerlevels") || q.has("towerstep") ||
+      q.has("towerwidth") || q.has("towerlean"))) {
     ring.configure({
       ...(q.has("finefrac") ? { fineFrac: +q.get("finefrac") } : {}),
       ...(q.has("finescale") ? { fineScale: +q.get("finescale") } : {}),
       ...(q.has("finespread") ? { fineSpread: +q.get("finespread") } : {}),
+      ...(q.has("towerfrac") ? { towerFrac: +q.get("towerfrac") } : {}),
+      ...(q.has("towerlevels") ? { towerLevels: +q.get("towerlevels") } : {}),
+      ...(q.has("towerstep") ? { towerStep: +q.get("towerstep") } : {}),
+      ...(q.has("towerwidth") ? { towerWidth: +q.get("towerwidth") } : {}),
+      ...(q.has("towerlean") ? { towerLean: +q.get("towerlean") } : {}),
     });
   }
   // wait for GLB load + scatter
