@@ -2908,6 +2908,10 @@ export default function TinyWorld() {
     // Desktop keeps the full 132/8. Override live with ?cloudsteps=N&cloudlight=M.
     const _cloudStepsParam = Number(__diagParams.get("cloudsteps"));
     const _cloudLightParam = Number(__diagParams.get("cloudlight"));
+    const _cloudSizeParam = Number(__diagParams.get("cloudsize"));
+    const _cloudInnerParam = Number(__diagParams.get("cloudinner"));
+    const _cloudOuterParam = Number(__diagParams.get("cloudouter"));
+    const _cloudTopParam = Number(__diagParams.get("cloudtop"));
     const _cloudMobile = isMobileRef.current;
     const volumetricClouds = createVolumetricCloudRing({
       THREE,
@@ -2921,6 +2925,14 @@ export default function TinyWorld() {
       lightSteps: Number.isFinite(_cloudLightParam) && _cloudLightParam > 0
         ? _cloudLightParam
         : (_cloudMobile ? 4 : 8),
+      sizeScale: Number.isFinite(_cloudSizeParam) && _cloudSizeParam > 0
+        ? _cloudSizeParam
+        : 1,
+      // Layout: close, low ring hugging the island perimeter (KJ reference).
+      // Live-tunable on device via ?cloudinner / ?cloudouter / ?cloudtop.
+      innerScale: Number.isFinite(_cloudInnerParam) && _cloudInnerParam > 0 ? _cloudInnerParam : undefined,
+      outerScale: Number.isFinite(_cloudOuterParam) && _cloudOuterParam > 0 ? _cloudOuterParam : undefined,
+      topScale: Number.isFinite(_cloudTopParam) && _cloudTopParam > 0 ? _cloudTopParam : undefined,
     });
     const _cloudKeyDir = new THREE.Vector3();
     const _cloudSkyColor = new THREE.Color(tp.bg);

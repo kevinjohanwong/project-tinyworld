@@ -9,6 +9,19 @@ type CloudRingOptions = {
   // Defaults match the desktop look (132 / 8).
   primarySteps?: number;
   lightSteps?: number;
+  // Overall cloud size. 1 = current (big) look; <1 = smaller/more-discrete
+  // heads (scales BASE_FREQ inversely), >1 = bigger. Reload to apply.
+  sizeScale?: number;
+  // LAYOUT knobs (multiples of span). Control how the ring is arranged around
+  // the island rather than what each cloud looks like. Defaults give a CLOSE,
+  // LOW band that hugs the island perimeter and frames the clearing from the
+  // edges (KJ reference), instead of a wide sky-high ring reaching the horizon.
+  //   innerScale — clear-zone radius over the island (band starts here).
+  //   outerScale — how far out the band reaches (smaller = tighter/closer).
+  //   topScale   — band ceiling height (smaller = lower wall, not tall towers).
+  innerScale?: number;
+  outerScale?: number;
+  topScale?: number;
 };
 
 type CloudUpdate = {
@@ -351,14 +364,19 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
   const { THREE, scene, camera } = options;
   const span = Math.max(12, options.span);
   const center = options.center?.clone?.() ?? new THREE.Vector3();
-  const innerRadius = span * 0.72;
-  // Wide annulus so ~4x more distinct clouds surround the island and extend out
-  // (masses are world-space placed → area ~4x ⇒ ~4x cloud count), clear over the isle.
-  const outerRadius = span * 2.85;
-  // Cloud BAND (where density lives). Flat base near island level, very tall
-  // ceiling so cumulus can build dramatic vertical towers (not a flat layer).
+  const innerScale = Math.max(0.2, Math.min(2, options.innerScale ?? 0.72));
+  const outerScale = Math.max(innerScale + 0.2, Math.min(6, options.outerScale ?? 1.55));
+  const topScale = Math.max(0.35, Math.min(3, options.topScale ?? 0.9));
+  const innerRadius = span * innerScale;
+  // CLOSE annulus that hugs the island perimeter (default outerScale 1.55 vs
+  // the old wide 2.85) so the ring FRAMES the island from the edges instead of
+  // stretching to the horizon. Clear over the isle inside innerRadius.
+  const outerRadius = span * outerScale;
+  // Cloud BAND (where density lives). Flat base near island level; ceiling kept
+  // LOW (default topScale 0.9 vs the old 2.05) so the band reads as a wall/bowl
+  // wrapping the island at roughly its own level, not sky-high towers.
   const baseHeight = -span * 0.12;
-  const topHeight = Math.max(span * 2.05, baseHeight + 18);
+  const topHeight = Math.max(span * topScale, baseHeight + 18);
   const bandHalf = (topHeight - baseHeight) * 0.5;
   // The marching BOX is wider AND taller than the band (×1.18 margin on every
   // axis) so wobbled edges and tall towers round off in free space instead of
@@ -395,9 +413,13 @@ export function createVolumetricCloudRing(options: CloudRingOptions) {
 
   const primarySteps = Math.max(24, Math.round(options.primarySteps ?? 132));
   const lightSteps = Math.max(2, Math.round(options.lightSteps ?? 8));
+  // Cloud size: bigger heads = LOWER frequency, so a size >1 divides BASE_FREQ.
+  const sizeScale = Math.max(0.15, Math.min(6, options.sizeScale ?? 1));
+  const baseFreq = (0.072 / sizeScale).toFixed(6);
   const frag = fragmentShader
     .replace("const int PRIMARY_STEPS = 132;", `const int PRIMARY_STEPS = ${primarySteps};`)
-    .replace("const int LIGHT_STEPS = 8;", `const int LIGHT_STEPS = ${lightSteps};`);
+    .replace("const int LIGHT_STEPS = 8;", `const int LIGHT_STEPS = ${lightSteps};`)
+    .replace("#define BASE_FREQ 0.072", `#define BASE_FREQ ${baseFreq}`);
 
   const material = new THREE.ShaderMaterial({
     name: "TinyWorldVolumetricCloudRing",
