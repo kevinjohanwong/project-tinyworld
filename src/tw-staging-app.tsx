@@ -32,6 +32,7 @@ import { createParticleWater } from "@/pwater/tinyworld-pwater";
 import { installWaterSurface } from "@/water-surface-shader";
 import { createRayGI, RAYGI_COMPOSITE_SHADER, RAYGI_BOUNCE_STRENGTH } from "@/tw-raygi";
 import { createVolumetricCloudRing } from "@/tw-volumetric-clouds";
+import { createVoxelCloudRing } from "@/tw-voxel-cloud";
 import type { GreedyWall } from "@/wall-greedy";
 import { WARSHIP_DIMS, warshipBlocks } from "@/tw-warship-vox";
 import {
@@ -2913,27 +2914,47 @@ export default function TinyWorld() {
     const _cloudOuterParam = Number(__diagParams.get("cloudouter"));
     const _cloudTopParam = Number(__diagParams.get("cloudtop"));
     const _cloudMobile = isMobileRef.current;
-    const volumetricClouds = createVolumetricCloudRing({
-      THREE,
-      scene,
-      camera,
-      span,
-      enabled: __diagParams.get("clouds") === "1",
-      primarySteps: Number.isFinite(_cloudStepsParam) && _cloudStepsParam > 0
-        ? _cloudStepsParam
-        : (_cloudMobile ? 56 : 132),
-      lightSteps: Number.isFinite(_cloudLightParam) && _cloudLightParam > 0
-        ? _cloudLightParam
-        : (_cloudMobile ? 4 : 8),
-      sizeScale: Number.isFinite(_cloudSizeParam) && _cloudSizeParam > 0
-        ? _cloudSizeParam
-        : 1,
-      // Layout: close, low ring hugging the island perimeter (KJ reference).
-      // Live-tunable on device via ?cloudinner / ?cloudouter / ?cloudtop.
-      innerScale: Number.isFinite(_cloudInnerParam) && _cloudInnerParam > 0 ? _cloudInnerParam : undefined,
-      outerScale: Number.isFinite(_cloudOuterParam) && _cloudOuterParam > 0 ? _cloudOuterParam : undefined,
-      topScale: Number.isFinite(_cloudTopParam) && _cloudTopParam > 0 ? _cloudTopParam : undefined,
-    });
+    const _cloudCountParam = Number(__diagParams.get("cloudcount"));
+    // Cloud mode: ?clouds=1 → VOXEL pack (default; cheap geometry lit by the
+    // real sun, no raymarch, mobile-safe). ?clouds=vol → the volumetric
+    // raymarch ring (heavier, desktop-oriented, kept for comparison).
+    const _cloudMode = __diagParams.get("clouds");
+    const _cloudsEnabled = _cloudMode === "1" || _cloudMode === "vol";
+    const _useVoxelClouds = _cloudMode !== "vol";
+    const volumetricClouds = _useVoxelClouds
+      ? createVoxelCloudRing({
+          THREE,
+          scene,
+          camera,
+          span,
+          gltfLoader: new GLTFLoader(),
+          enabled: _cloudsEnabled,
+          count: Number.isFinite(_cloudCountParam) && _cloudCountParam > 0 ? _cloudCountParam : undefined,
+          sizeScale: Number.isFinite(_cloudSizeParam) && _cloudSizeParam > 0 ? _cloudSizeParam : undefined,
+          // Close, low ring hugging the island perimeter (KJ reference layout).
+          innerScale: Number.isFinite(_cloudInnerParam) && _cloudInnerParam > 0 ? _cloudInnerParam : undefined,
+          outerScale: Number.isFinite(_cloudOuterParam) && _cloudOuterParam > 0 ? _cloudOuterParam : undefined,
+          topScale: Number.isFinite(_cloudTopParam) && _cloudTopParam > 0 ? _cloudTopParam : undefined,
+        })
+      : createVolumetricCloudRing({
+          THREE,
+          scene,
+          camera,
+          span,
+          enabled: _cloudsEnabled,
+          primarySteps: Number.isFinite(_cloudStepsParam) && _cloudStepsParam > 0
+            ? _cloudStepsParam
+            : (_cloudMobile ? 56 : 132),
+          lightSteps: Number.isFinite(_cloudLightParam) && _cloudLightParam > 0
+            ? _cloudLightParam
+            : (_cloudMobile ? 4 : 8),
+          sizeScale: Number.isFinite(_cloudSizeParam) && _cloudSizeParam > 0
+            ? _cloudSizeParam
+            : 1,
+          innerScale: Number.isFinite(_cloudInnerParam) && _cloudInnerParam > 0 ? _cloudInnerParam : undefined,
+          outerScale: Number.isFinite(_cloudOuterParam) && _cloudOuterParam > 0 ? _cloudOuterParam : undefined,
+          topScale: Number.isFinite(_cloudTopParam) && _cloudTopParam > 0 ? _cloudTopParam : undefined,
+        });
     const _cloudKeyDir = new THREE.Vector3();
     const _cloudSkyColor = new THREE.Color(tp.bg);
     (window as any).__twClouds = {
