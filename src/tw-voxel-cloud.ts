@@ -51,14 +51,14 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
 
   const state = {
     enabled: opts.enabled ?? false,
-    count: opts.count ?? 18,
+    count: opts.count ?? 55,
     sizeScale: opts.sizeScale ?? 1,
-    inner: opts.innerScale ?? 0.85,
-    outer: opts.outerScale ?? 1.7,
-    top: opts.topScale ?? 0.55,
-    opacity: 0.92,
-    edgeFade: 0.35,
-    driftSpeed: 0.018, // radians/sec of ring orbit
+    inner: opts.innerScale ?? 0.9,
+    outer: opts.outerScale ?? 1.6,
+    top: opts.topScale ?? 0.6,
+    opacity: 0.94,
+    edgeFade: 0.26,
+    driftSpeed: 0.012, // radians/sec of ring orbit
     bob: 0.6, // vertical bob amplitude (world units)
   };
 
@@ -125,11 +125,14 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     for (let i = 0; i < state.count; i++) {
       const template = pieces[i % pieces.length];
       const obj = template.clone(true);
-      const angle = (i / state.count) * Math.PI * 2 + (rnd() - 0.5) * 0.5;
+      // Densely wrap the ring: small angular jitter so pieces overlap into a
+      // continuous bank rather than reading as evenly-spaced dots.
+      const angle = (i / state.count) * Math.PI * 2 + (rnd() - 0.5) * 0.7;
       const radius = innerR + rnd() * Math.max(0.001, outerR - innerR);
-      // Varied heights: mostly low band around the island, some higher.
-      const baseY = topY * (0.25 + rnd() * 0.9);
-      const s = state.sizeScale * (0.7 + rnd() * 0.9) * (span * 0.11);
+      // Big chunky cumulus sitting LOW — centers near/just above island level so
+      // they billow up into a horizon wall (some dip below for the base).
+      const baseY = topY * (rnd() * 0.75 - 0.08);
+      const s = state.sizeScale * (0.75 + rnd() * 1.1) * (span * 0.18);
       obj.scale.setScalar(s);
       obj.rotation.y = rnd() * Math.PI * 2;
       obj.position.set(Math.cos(angle) * radius, baseY, Math.sin(angle) * radius);
