@@ -74,7 +74,7 @@ async function boot() {
   const mod = await import("/voxel-module.js?t=" + Date.now());
   ring = mod.createVoxelCloudRing({
     THREE, scene, camera: cam, span: SPAN, gltfLoader: new GLTFLoader(),
-    glbUrl: "/cloud-pieces-lo.glb", enabled: true,
+    glbUrl: q.get("glb") || undefined, enabled: true,
     // URL overrides so I can iterate placement live without editing the module
     count: q.has("count") ? +q.get("count") : undefined,
     sizeScale: q.has("size") ? +q.get("size") : undefined,
@@ -87,12 +87,14 @@ async function boot() {
     if (ring.mesh.children.length > 0) break;
     await new Promise((r) => setTimeout(r, 100));
   }
+  window.__ring = ring;
   log("clouds loaded: " + ring.mesh.children.length + " pieces; capturing…");
   await capture();
 }
 
+const sunDir = sun.position.clone().normalize();
 function shot(camera, uTime) {
-  ring.update({ elapsedSeconds: uTime });
+  ring.update({ elapsedSeconds: uTime, keyDirection: sunDir, keyColor: new THREE.Color(1.0, 0.99, 0.95), keyIntensity: 1.35 });
   renderer.render(scene, camera);
   renderer.render(scene, camera);
   return renderer.domElement.toDataURL("image/png");

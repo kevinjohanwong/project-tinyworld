@@ -46,7 +46,7 @@ function mulberry32(seed: number) {
 export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   const {
     THREE, scene, camera, span, gltfLoader,
-    glbUrl = "/cloud-pieces-lo.glb",
+    glbUrl = "/cloud-pieces.glb", // full-res: crisp voxels + baked vertex-AO the shading needs
   } = opts;
 
   const state = {
@@ -67,35 +67,61 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   group.visible = state.enabled;
   scene.add(group);
 
-  // Shared cloud material: white, softly translucent, lit by the scene's real
-  // lights. Fresnel edge-fade (from the water shader) softens the chunky voxel
-  // silhouette into wispy edges.
+  // Cloud material reproducing the CloudPack "Cloud Shading" model (Style 01):
+  //   colour = heightGradient(secColor bottom → baseColor top) × FuzzyShading
+  //            (lavender rim shine + core darkening) × bakedVertexAO
+  //   shading = toonRamp(NdotL): dark blue-purple shadow → lavender → white-blue
+  //   × the REAL sun colour/intensity (doctrine: light from the world's sun).
+  // Fully custom fragment colour so it's toon-banded, not smooth PBR. Opaque
+  // (reference clouds are solid) → crisp voxel silhouette + cheap (no overdraw).
+  const uSunDir = { value: new THREE.Vector3(0.35, 0.9, 0.2).normalize() };
+  const uLight = { value: new THREE.Color(1, 1, 1) };
+  const uBaseColor = { value: new THREE.Color(0.808, 0.867, 0.906) }; // top
+  const uSecColor = { value: new THREE.Color(0.459, 0.471, 0.6) }; // bottom
+  const uRimColor = { value: new THREE.Color(0.711, 0.494, 0.764) }; // lavender edge
+  const uParams = { value: new THREE.Vector4(0.85, 0.25, 0.25, 1.6) }; // edgeBright, coreDark, aoStrength, rimPow
+  const uGrad = { value: new THREE.Vector2(1.0, -0.05) }; // heightFalloff, heightOffset
   const material = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    roughness: 1.0,
-    metalness: 0.0,
-    transparent: true,
-    opacity: state.opacity,
-    depthWrite: false,
+    color: 0xffffff, roughness: 1, metalness: 0, vertexColors: true,
   });
-  material.customProgramCacheKey = () => "tinyworldVoxelCloudV1";
-  const uEdgeFade = { value: state.edgeFade };
-  const uCloudOpacity = { value: state.opacity };
+  material.customProgramCacheKey = () => "tinyworldVoxelCloudV2toon";
   material.onBeforeCompile = (shader: any) => {
-    shader.uniforms.uEdgeFade = uEdgeFade;
-    shader.uniforms.uCloudOpacity = uCloudOpacity;
+    Object.assign(shader.uniforms, {
+      uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad,
+    });
     shader.vertexShader =
-      "varying vec3 vCloudViewNormal;\nvarying vec3 vCloudViewPos;\n" +
+      "attribute float aY01;\nvarying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\n" +
       shader.vertexShader.replace(
-        "#include <fog_vertex>",
-        "#include <fog_vertex>\n  vCloudViewNormal = normalize(transformedNormal);\n  vCloudViewPos = -mvPosition.xyz;",
+        "#include <project_vertex>",
+        "#include <project_vertex>\n" +
+          "  vWN = normalize(mat3(modelMatrix) * objectNormal);\n" +
+          "  vVDir = normalize(cameraPosition - (modelMatrix * vec4(transformed, 1.0)).xyz);\n" +
+          "  vY01 = aY01;",
       );
     shader.fragmentShader =
-      "uniform float uEdgeFade;\nuniform float uCloudOpacity;\nvarying vec3 vCloudViewNormal;\nvarying vec3 vCloudViewPos;\n" +
+      "uniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec3 uRimColor;\nuniform vec4 uParams;\nuniform vec2 uGrad;\n" +
+      "varying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\n" +
+      "vec3 cloudRamp(float t){\n" +
+      "  vec3 c0 = vec3(0.24,0.23,0.36); vec3 c1 = vec3(0.60,0.58,0.80); vec3 c2 = vec3(0.90,0.93,0.97);\n" +
+      "  t = clamp(t,0.0,1.0);\n" +
+      "  return t < 0.5 ? mix(c0, c1, smoothstep(0.12,0.5,t)) : mix(c1, c2, smoothstep(0.5,0.82,t));\n" +
+      "}\n" +
       shader.fragmentShader.replace(
         "#include <dithering_fragment>",
-        "  float _fres = 1.0 - abs(dot(normalize(vCloudViewNormal), normalize(vCloudViewPos)));\n" +
-          "  gl_FragColor.a *= uCloudOpacity * (1.0 - uEdgeFade * _fres * _fres);\n" +
+        "  vec3 N = normalize(vWN);\n" +
+          "  float ao = mix(1.0, clamp(vColor.r,0.0,1.0), uParams.z);\n" +
+          "  float g = clamp((vY01 + uGrad.y) * uGrad.x, 0.0, 1.0);\n" +
+          "  vec3 col = mix(uSecColor, uBaseColor, g);\n" +
+          "  float ndl = dot(N, normalize(uSunDir)) * 0.5 + 0.5;\n" +
+          "  col *= cloudRamp(ndl);\n" +
+          "  float ndv = clamp(dot(N, normalize(vVDir)), 0.0, 1.0);\n" +
+          "  float rim = pow(1.0 - ndv, uParams.w) * uParams.x;\n" +
+          "  col = mix(col, uRimColor, rim);\n" +
+          "  col *= (1.0 - uParams.y * ndv);\n" +
+          "  col *= ao;\n" +
+          "  col *= uLight;\n" +
+          "  gl_FragColor.rgb = col;\n" +
+          "  gl_FragColor.a = 1.0;\n" +
           "  #include <dithering_fragment>",
       );
   };
@@ -159,8 +185,19 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           m.position.set(0, 0, 0);
           m.rotation.set(0, 0, 0);
           m.scale.setScalar(1);
-          // Center each piece on its own bbox so placement is predictable.
           m.geometry = n.geometry;
+          // Bake per-piece object-space height (0 bottom → 1 top) for the
+          // colour gradient (secColor → baseColor).
+          const geo = m.geometry;
+          if (!geo.getAttribute("aY01")) {
+            geo.computeBoundingBox();
+            const y0 = geo.boundingBox.min.y;
+            const h = Math.max(1e-4, geo.boundingBox.max.y - y0);
+            const pos = geo.getAttribute("position");
+            const arr = new Float32Array(pos.count);
+            for (let k = 0; k < pos.count; k++) arr[k] = (pos.getY(k) - y0) / h;
+            geo.setAttribute("aY01", new THREE.BufferAttribute(arr, 1));
+          }
           pieces.push(m);
         }
       });
@@ -173,6 +210,14 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
 
   const update = (input: VoxelCloudUpdate) => {
     if (!state.enabled || !ready) return;
+    // Drive the toon shading from the world's REAL sun/moon (doctrine).
+    if (input.keyDirection) uSunDir.value.copy(input.keyDirection).normalize();
+    if (input.keyColor) {
+      uLight.value.copy(input.keyColor);
+      // clamp so a bright app sun can't blow the clouds out; night dims them
+      if (input.keyIntensity != null)
+        uLight.value.multiplyScalar(Math.min(1.5, Math.max(0.25, input.keyIntensity)));
+    }
     const t = input.elapsedSeconds;
     group.rotation.y = t * state.driftSpeed;
     for (const inst of instances) {
@@ -182,8 +227,6 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
 
   const applyState = () => {
     group.visible = state.enabled;
-    uEdgeFade.value = Math.max(0, Math.min(1, state.edgeFade));
-    uCloudOpacity.value = Math.max(0, Math.min(1, state.opacity));
   };
 
   const configure = (next: Partial<typeof state>) => {

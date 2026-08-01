@@ -39,8 +39,9 @@ Bun.serve({
         headers: { "content-type": "text/javascript", "cache-control": "no-store" },
       });
     }
-    if (url.pathname === "/cloud-pieces-lo.glb") {
-      return new Response(readFileSync(ROOT + "/../assets/cloud-pieces-lo.glb"), {
+    if (url.pathname === "/cloud-pieces-lo.glb" || url.pathname === "/cloud-pieces.glb") {
+      const fn = url.pathname === "/cloud-pieces.glb" ? "/../assets/cloud-pieces.glb" : "/../assets/cloud-pieces-lo.glb";
+      return new Response(readFileSync(ROOT + fn), {
         headers: { "content-type": "model/gltf-binary", "cache-control": "no-store" },
       });
     }
