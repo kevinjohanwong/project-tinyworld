@@ -1,0 +1,119 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>clouds-lab voxel</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}#hud{position:fixed;top:6px;left:8px;color:#fff;font:12px monospace;text-shadow:0 0 3px #000;z-index:9}</style>
+</head>
+<body>
+<div id="hud">booting…</div>
+<script type="importmap">
+{ "imports": { "three": "https://esm.sh/three@0.165.0", "three/addons/": "https://esm.sh/three@0.165.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+const hud = document.getElementById("hud");
+const log = (m) => { hud.textContent = m; console.log(m); };
+
+// Match the reference aspect (1200x630).
+const SPAN = 30;
+const W = 1200, H = 630;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H);
+renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+// gradient sky dome
+const skyU = { top: { value: new THREE.Color(0x2a54c0) }, horizon: { value: new THREE.Color(0xbcd6f0) } };
+scene.add(new THREE.Mesh(
+  new THREE.SphereGeometry(SPAN * 12, 32, 16),
+  new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, uniforms: skyU,
+    vertexShader: `varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0);} `,
+    fragmentShader: `varying vec3 vP; uniform vec3 top; uniform vec3 horizon;
+      void main(){ float h = clamp(normalize(vP).y*1.4+0.15, 0.0, 1.0); gl_FragColor = vec4(mix(horizon, top, smoothstep(0.0,1.0,h)), 1.0);} `,
+  })
+));
+
+// small island silhouette at center for scale (viewer stands here)
+const island = new THREE.Mesh(new THREE.IcosahedronGeometry(SPAN * 0.34, 2),
+  new THREE.MeshStandardMaterial({ color: 0x5c8a3a, roughness: 0.95 }));
+island.scale.set(1, 0.3, 1); island.position.y = -SPAN * 0.02; scene.add(island);
+
+// real day lighting: directional key + hemisphere fill
+const sun = new THREE.DirectionalLight(0xfffdf2, 2.1);
+sun.position.set(SPAN * 3 * 0.4, SPAN * 3 * 0.9, SPAN * 3 * 0.25);
+scene.add(sun);
+const hemi = new THREE.HemisphereLight(0xbcd6f0, 0x54402f, 0.75);
+scene.add(hemi);
+
+const q = new URLSearchParams(location.search);
+const pick = (k, d) => (q.has(k) ? +q.get(k) : d);
+
+// Camera: eye-level on the island looking OUT at the horizon cloud wall
+// (the reference framing). Overridable via ?ch (height) & ?cpitch.
+const camH = pick("ch", SPAN * 0.12);
+const camPitch = pick("cpitch", SPAN * 0.35); // look-at height (slightly up)
+const cam = new THREE.PerspectiveCamera(pick("fov", 68), W / H, 0.5, SPAN * 80);
+function aimCam(angleDeg) {
+  const a = (angleDeg || 0) * Math.PI / 180;
+  cam.position.set(Math.cos(a) * SPAN * 0.05, camH, Math.sin(a) * SPAN * 0.05);
+  cam.lookAt(Math.cos(a) * SPAN * 5, camPitch, Math.sin(a) * SPAN * 5);
+}
+
+let ring = null;
+async function boot() {
+  const mod = await import("/voxel-module.js?t=" + Date.now());
+  ring = mod.createVoxelCloudRing({
+    THREE, scene, camera: cam, span: SPAN, gltfLoader: new GLTFLoader(),
+    glbUrl: "/cloud-pieces-lo.glb", enabled: true,
+    // URL overrides so I can iterate placement live without editing the module
+    count: q.has("count") ? +q.get("count") : undefined,
+    sizeScale: q.has("size") ? +q.get("size") : undefined,
+    innerScale: q.has("inner") ? +q.get("inner") : undefined,
+    outerScale: q.has("outer") ? +q.get("outer") : undefined,
+    topScale: q.has("top") ? +q.get("top") : undefined,
+  });
+  // wait for GLB load + scatter
+  for (let i = 0; i < 120; i++) {
+    if (ring.mesh.children.length > 0) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  log("clouds loaded: " + ring.mesh.children.length + " pieces; capturing…");
+  await capture();
+}
+
+function shot(camera, uTime) {
+  ring.update({ elapsedSeconds: uTime });
+  renderer.render(scene, camera);
+  renderer.render(scene, camera);
+  return renderer.domElement.toDataURL("image/png");
+}
+async function post(name, data) {
+  await fetch("/shot", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, data }) });
+}
+
+async function capture() {
+  // three yaw angles around the ring (density must read from ANY direction) + a drift frame
+  const angles = q.has("angle") ? [+q.get("angle")] : [0, 120, 240];
+  for (const ang of angles) {
+    aimCam(ang);
+    const data = shot(cam, 0);
+    await post(`voxel-a${ang}.png`, data);
+    log(`captured a${ang}`);
+  }
+  await fetch("/done", { method: "POST" });
+  log("DONE");
+}
+boot().catch((e) => { log("ERR " + e.message); console.error(e); document.title = "ERR"; });
+</script>
+</body>
+</html>

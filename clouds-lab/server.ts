@@ -33,6 +33,19 @@ Bun.serve({
         headers: { "content-type": "text/javascript", "cache-control": "no-store" },
       });
     }
+    if (url.pathname === "/voxel-module.js") {
+      const js = transpiler.transformSync(readFileSync(ROOT + "/../src/tw-voxel-cloud.ts", "utf8"));
+      return new Response(js, {
+        headers: { "content-type": "text/javascript", "cache-control": "no-store" },
+      });
+    }
+    if (url.pathname === "/cloud-pieces-lo.glb") {
+      return new Response(readFileSync(ROOT + "/../assets/cloud-pieces-lo.glb"), {
+        headers: { "content-type": "model/gltf-binary", "cache-control": "no-store" },
+      });
+    }
+    if (url.pathname === "/voxel" || url.pathname === "/voxel.html")
+      return new Response(readFileSync(ROOT + "/voxel.html"), { headers: { "content-type": "text/html" } });
     if (url.pathname === "/defaults") return Response.json(scalarUniformDefaults());
     if (url.pathname === "/shot" && req.method === "POST") {
       const { name, data } = (await req.json()) as { name: string; data: string };

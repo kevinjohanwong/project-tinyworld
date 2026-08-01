@@ -51,11 +51,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
 
   const state = {
     enabled: opts.enabled ?? false,
-    count: opts.count ?? 68,
+    count: opts.count ?? 120,
     sizeScale: opts.sizeScale ?? 1,
-    inner: opts.innerScale ?? 0.9,
-    outer: opts.outerScale ?? 1.6,
-    top: opts.topScale ?? 0.6,
+    inner: opts.innerScale ?? 0.7,
+    outer: opts.outerScale ?? 1.7,
+    top: opts.topScale ?? 2.0,
     opacity: 0.94,
     edgeFade: 0.26,
     driftSpeed: 0.012, // radians/sec of ring orbit
@@ -129,11 +129,12 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       // continuous bank rather than reading as evenly-spaced dots.
       const angle = (i / state.count) * Math.PI * 2 + (rnd() - 0.5) * 0.7;
       const radius = innerR + rnd() * Math.max(0.001, outerR - innerR);
-      // Big chunky cumulus sitting LOW — centers near/just above island level so
-      // they billow up into a coherent horizon wall (tight band, some dip below
-      // for the base) rather than a few puffs floating high.
+      // Tall, dense, overlapping cumulus WALLS (matching KJ's reference): pieces
+      // span a large vertical range (from just below island level up high) so
+      // they stack into a curtain of cloud filling the frame, not a thin low
+      // band of separated blobs. topY = span*top(=2) is the tall envelope.
       const baseY = topY * (rnd() * 0.5 - 0.06);
-      const s = state.sizeScale * (0.8 + rnd() * 1.1) * (span * 0.24);
+      const s = state.sizeScale * (0.8 + rnd() * 1.1) * (span * 0.34);
       obj.scale.setScalar(s);
       obj.rotation.y = rnd() * Math.PI * 2;
       obj.position.set(Math.cos(angle) * radius, baseY, Math.sin(angle) * radius);
