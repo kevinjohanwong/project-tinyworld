@@ -80,18 +80,19 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   // (reference clouds are solid) → crisp voxel silhouette + cheap (no overdraw).
   const uSunDir = { value: new THREE.Vector3(0.35, 0.9, 0.2).normalize() };
   const uLight = { value: new THREE.Color(1, 1, 1) };
-  const uBaseColor = { value: new THREE.Color(0.808, 0.867, 0.906) }; // top
-  const uSecColor = { value: new THREE.Color(0.459, 0.471, 0.6) }; // bottom
-  const uRimColor = { value: new THREE.Color(0.711, 0.494, 0.764) }; // lavender edge
-  const uParams = { value: new THREE.Vector4(0.85, 0.25, 0.25, 1.6) }; // edgeBright, coreDark, aoStrength, rimPow
-  const uGrad = { value: new THREE.Vector2(1.0, -0.05) }; // heightFalloff, heightOffset
-  const uNoise = { value: new THREE.Vector2(0.55, 0.35) }; // fuzz: tiling(×span), power
+  const uBaseColor = { value: new THREE.Color(0.98, 0.965, 0.925) }; // top — warm near-white (cream), not cool blue
+  const uSecColor = { value: new THREE.Color(0.60, 0.66, 0.76) }; // bottom — bright cool blue-GREY shadow (not purple)
+  const uRimColor = { value: new THREE.Color(0.82, 0.62, 0.72) }; // lavender edge (only shows at low sun via rimGate)
+  const uParams = { value: new THREE.Vector4(0.7, 0.1, 0.14, 1.6) }; // edgeBright, coreDark, aoStrength, rimPow
+  const uGrad = { value: new THREE.Vector2(1.25, -0.12) }; // heightFalloff, heightOffset
+  const uNoise = { value: new THREE.Vector2(0.55, 0.5) }; // fuzz: tiling(×span), power
   const uBack = { value: new THREE.Vector2(0.6, 3.5) }; // backlight: strength, sharpness
   const uSpanRef = { value: Math.max(1e-3, span) };
   const material = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 1, metalness: 0, vertexColors: true,
+    transparent: true, depthWrite: true, // depthWrite keeps the opaque core sorted; only silhouette edges blend
   });
-  material.customProgramCacheKey = () => "tinyworldVoxelCloudV3fuzzback";
+  material.customProgramCacheKey = () => "tinyworldVoxelCloudVBfineface";
   material.onBeforeCompile = (shader: any) => {
     Object.assign(shader.uniforms, {
       uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uBack, uSpanRef,
@@ -111,9 +112,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       "uniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec3 uRimColor;\nuniform vec4 uParams;\nuniform vec2 uGrad;\nuniform vec2 uNoise;\nuniform vec2 uBack;\nuniform float uSpanRef;\n" +
       "varying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\nvarying vec3 vWPos;\n" +
       "vec3 cloudRamp(float t){\n" +
-      "  vec3 c0 = vec3(0.24,0.23,0.36); vec3 c1 = vec3(0.60,0.58,0.80); vec3 c2 = vec3(0.90,0.93,0.97);\n" +
+      "  vec3 c0 = vec3(0.56,0.61,0.69); vec3 c1 = vec3(0.82,0.84,0.88); vec3 c2 = vec3(1.0,1.0,0.99);\n" +
       "  t = clamp(t,0.0,1.0);\n" +
-      "  return t < 0.5 ? mix(c0, c1, smoothstep(0.12,0.5,t)) : mix(c1, c2, smoothstep(0.5,0.82,t));\n" +
+      "  return t < 0.5 ? mix(c0, c1, smoothstep(0.05,0.5,t)) : mix(c1, c2, smoothstep(0.5,0.9,t));\n" +
       "}\n" +
       "float _h(vec3 p){ p = fract(p*0.3183099+0.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }\n" +
       "float _vn(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);\n" +
@@ -123,16 +124,33 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       shader.fragmentShader.replace(
         "#include <dithering_fragment>",
         "  vec3 N = normalize(vWN);\n" +
+          // DE-BLOCK: perturb the flat cube-face normal with 3D noise so lighting
+          // varies smoothly ACROSS voxel faces/edges instead of a hard per-face
+          // plane — the single biggest 'reads soft not Minecraft' lever.
+          "  float nf = uNoise.x / uSpanRef * 6.0;\n" +
+          "  vec3 nz = vec3(_fbm(vWPos*nf+3.1), _fbm(vWPos*nf+9.7), _fbm(vWPos*nf+21.3)) - 0.5;\n" +
+          // finer octave: break the FLAT cube faces themselves into micro-variation
+          "  vec3 nz2 = vec3(_fbm(vWPos*nf*3.3+51.0), _fbm(vWPos*nf*3.3+63.0), _fbm(vWPos*nf*3.3+77.0)) - 0.5;\n" +
+          "  N = normalize(N + nz * 1.1 + nz2 * 0.55);\n" +
           "  float ao = mix(1.0, clamp(vColor.r,0.0,1.0), uParams.z);\n" +
           "  float g = clamp((vY01 + uGrad.y) * uGrad.x, 0.0, 1.0);\n" +
-          "  vec3 col = mix(uSecColor, uBaseColor, g);\n" +
+          // large-scale billow: soft light/dark lobes so the mass has volume, not flat tone
+          "  float billow = _fbm(vWPos * (nf * 0.35) + 41.0);\n" +
+          "  vec3 col = mix(uSecColor, uBaseColor, clamp(g + (billow-0.5)*0.6, 0.0, 1.0));\n" +
           // FUZZY: 3D value-noise (fbm) over world pos perturbs the shading value so
           // the flat voxel faces get soft cloud-like variation instead of a hard tone.
           "  float fuzz = (_fbm(vWPos * (uNoise.x / uSpanRef * 8.0)) - 0.5) * uNoise.y;\n" +
           "  float ndl = clamp(dot(N, normalize(uSunDir)) * 0.5 + 0.5 + fuzz, 0.0, 1.0);\n" +
           "  col *= cloudRamp(ndl);\n" +
+          // DAWN/DUSK two-tone: at a low sun, the shaded side is filled by cool sky
+          // light → lavender-cool shadows against warm-lit tops (reference look).
+          "  float lowSun = smoothstep(0.55, 0.1, normalize(uSunDir).y);\n" +
+          "  col *= mix(vec3(1.0), vec3(0.82,0.84,1.02), (1.0 - ndl) * lowSun * 0.7);\n" +
           "  float ndv = clamp(dot(N, normalize(vVDir)), 0.0, 1.0);\n" +
-          "  float rim = pow(1.0 - ndv, uParams.w) * uParams.x;\n" +
+          // Lavender rim is a DAWN/DUSK phenomenon — gate it by sun elevation so a
+          // high noon sun gives ~no lavender (day cumulus read white, not sunset).
+          "  float rimGate = smoothstep(0.55, 0.08, normalize(uSunDir).y);\n" +
+          "  float rim = pow(1.0 - ndv, uParams.w) * uParams.x * rimGate;\n" +
           "  col = mix(col, uRimColor, rim);\n" +
           "  col *= (1.0 - uParams.y * ndv);\n" +
           "  col *= ao;\n" +
@@ -143,7 +161,14 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  back *= uBack.x * (0.35 + 0.65 * (1.0 - ndv));\n" +
           "  col += uLight * back;\n" +
           "  gl_FragColor.rgb = col;\n" +
-          "  gl_FragColor.a = 1.0;\n" +
+          // SOFT SILHOUETTE: fade alpha at grazing angles (the outline) so the hard
+          // voxel edge feathers into the sky instead of a crisp Minecraft cube edge.
+          // uGrad.x reused? no — use a fixed feather; 'ndvRaw' is the un-perturbed view dot.
+          "  float ndvRaw = clamp(dot(normalize(vWN), normalize(vVDir)), 0.0, 1.0);\n" +
+          // NOISE-ERODED edge: subtract fbm near the silhouette so the outline breaks
+          // into irregular fluff (real cloud wisps), not a clean geometric fade.
+          "  float edgeN = _fbm(vWPos * (nf * 1.6) + 61.0);\n" +
+          "  gl_FragColor.a = smoothstep(0.0, 0.6, ndvRaw - (1.0 - ndvRaw) * (0.5 - edgeN) * 1.35);\n" +
           "  #include <dithering_fragment>",
       );
   };
