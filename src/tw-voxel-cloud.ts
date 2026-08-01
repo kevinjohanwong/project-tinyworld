@@ -76,9 +76,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     // → tapering crown). This is the only formation with real VERTICAL
     // development — cumulonimbus grandeur, not a low puff.
     towerFrac: opts.towerFrac ?? 0.4, // fraction of clouds built as tall stacked towers
-    towerLevels: opts.towerLevels ?? 5, // vertical stack count (more = taller)
-    towerStep: 0.4, // vertical rise per level (× level width; <1 = overlapping/continuous)
-    towerWidth: 1.6, // base footprint multiplier for towers (broad billowing mass)
+    towerLevels: opts.towerLevels ?? 6, // vertical stack count (more = taller)
+    towerStep: 0.42, // vertical rise per level (× level width; <1 = overlapping/continuous)
+    towerWidth: 1.62, // base footprint multiplier for towers (broad billowing mass)
     towerLean: 0.35, // horizontal wander/lean of the stack (billow, not a straight column)
     fuzz: 0.35, // fuzzy shading power (0 = flat faces)
     fuzzTiling: 0.55, // fuzzy noise scale
@@ -249,26 +249,29 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
         let y = 0;
         for (let j = 0; j < levels; j++) {
           const f = j / (levels - 1); // 0 base → 1 crown
-          // cauliflower profile (piecewise): wide spreading foot, narrow waist,
-          // bulge into the big round head, then dome the crown (not a point).
+          // cumulus profile (the Ghibli day reference): moderate flared foot →
+          // widening to a bulging rounded HEAD in the upper body (widest ~0.6) →
+          // domed crown. Lightbulb silhouette: wide body, not a uniform column.
           let prof: number;
-          if (f < 0.16) prof = 0.9 + f * 0.3; // wide spreading base
-          else if (f < 0.48) prof = 0.9 - (f - 0.16) * 0.12; // gentle waist (not pinched)
-          else if (f < 0.82) prof = 0.86 + (f - 0.48) * 0.82; // bulge to head (~1.14)
-          else prof = 1.14 - (f - 0.82) * 2.7; // dome the crown down to ~0.65
+          if (f < 0.15) prof = 0.84 + f * 0.53; // moderate flared foot (~0.84→0.92)
+          else if (f < 0.6) prof = 0.92 + (f - 0.15) * 0.8; // widen to the bulging head (~0.92→1.28)
+          else if (f < 0.85) prof = 1.28 - (f - 0.6) * 0.6; // round the wide shoulders (~1.28→1.13)
+          else prof = 1.13 - (f - 0.85) * 3.4; // dome the crown down to ~0.6
           prof = Math.max(0.5, prof);
           const lw = footprint * state.towerWidth * prof;
-          // fill the level's WIDTH with a cluster (more pieces where it's wider)
-          const nSub = Math.max(3, Math.round(3 + prof * 2.2));
+          // fill the level's WIDTH with a DENSE cluster of big rounded lobes —
+          // more pieces where it's wider, bigger scale + tighter packing so the
+          // body reads as one solid rounded mass (not scattered cubes).
+          const nSub = Math.max(4, Math.round(4 + prof * 3.2));
           for (let p = 0; p < nSub; p++) {
             const sub = pieces[Math.floor(rnd() * pieces.length)].clone(true);
-            sub.scale.setScalar(lw * (0.52 + rnd() * 0.34)); // each = a chunk of the band
+            sub.scale.setScalar(lw * (0.6 + rnd() * 0.4)); // bigger rounder lobes
             sub.rotation.y = rnd() * Math.PI * 2;
             const pa = rnd() * Math.PI * 2;
-            const pr = lw * 0.46 * Math.sqrt(rnd()); // spread across the band width
+            const pr = lw * 0.4 * Math.sqrt(rnd()); // tighter → denser core, less scatter
             sub.position.set(
               Math.cos(pa) * pr + leanX * f,
-              y + (rnd() - 0.5) * lw * 0.16,
+              y + (rnd() - 0.5) * lw * 0.14,
               Math.sin(pa) * pr + leanZ * f,
             );
             obj.add(sub);
