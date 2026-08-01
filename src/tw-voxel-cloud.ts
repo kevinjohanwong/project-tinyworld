@@ -53,15 +53,16 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
 
   const state = {
     enabled: opts.enabled ?? false,
-    // count reduced 120→76 and the ring pushed out (outer 1.7→2.4, top 2.0→2.4)
-    // so the tall TOWERS read as horizon nimbus with sky around them instead of
-    // drowning in a maxed-out overhead wall. Push back up via ?cloudcount= if a
-    // denser bank is wanted.
-    count: opts.count ?? 76,
+    // count reduced (120→76→50) and the ring pushed out (outer 1.7→2.4, top
+    // 2.0→2.6) so the big billowing cauliflower TOWERS read as hero formations
+    // against open sky (the Ghibli day reference), not a maxed-out overhead wall.
+    // The towers are now broad continuous masses, so fewer clouds is fuller.
+    // Push back up via ?cloudcount= if a denser bank is wanted.
+    count: opts.count ?? 50,
     sizeScale: opts.sizeScale ?? 1,
     inner: opts.innerScale ?? 0.7,
-    outer: opts.outerScale ?? 2.4,
-    top: opts.topScale ?? 2.4,
+    outer: opts.outerScale ?? 2.6,
+    top: opts.topScale ?? 2.6,
     opacity: 0.94,
     edgeFade: 0.26,
     // VOXEL-SIZE VARIATION: a fraction of clouds are built as CLUSTERS of small
@@ -74,11 +75,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     // vertically into one large billowing mass (wide fluffy base → bulging mid
     // → tapering crown). This is the only formation with real VERTICAL
     // development — cumulonimbus grandeur, not a low puff.
-    towerFrac: opts.towerFrac ?? 0.34, // fraction of clouds built as tall stacked towers
-    towerLevels: opts.towerLevels ?? 6, // vertical stack count (more = taller)
-    towerStep: 0.5, // vertical rise per level (× level width; <1 = overlapping/continuous)
-    towerWidth: 1.15, // base footprint multiplier for towers (larger formations)
-    towerLean: 0.5, // horizontal wander/lean of the stack (billow, not a straight column)
+    towerFrac: opts.towerFrac ?? 0.4, // fraction of clouds built as tall stacked towers
+    towerLevels: opts.towerLevels ?? 5, // vertical stack count (more = taller)
+    towerStep: 0.4, // vertical rise per level (× level width; <1 = overlapping/continuous)
+    towerWidth: 1.6, // base footprint multiplier for towers (broad billowing mass)
+    towerLean: 0.35, // horizontal wander/lean of the stack (billow, not a straight column)
     fuzz: 0.35, // fuzzy shading power (0 = flat faces)
     fuzzTiling: 0.55, // fuzzy noise scale
     backlight: 0.6, // "play to light": sun-through glow strength
@@ -234,35 +235,47 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
 
       let obj: any;
       if (roll < state.towerFrac) {
-        // TOWER (nimbus): stack pieces vertically into one tall billowing mass.
-        // Pieces overlap (step<1) so the column reads continuous, not beaded;
-        // the width profile bulges at mid and tapers to a rounded crown.
+        // TOWER (cumulus congestus, the Ghibli day reference): a BROAD billowing
+        // cauliflower MASS — roughly as wide as it is tall — not a thin totem.
+        // Each level is a CLUSTER of overlapping pieces filling the level's width
+        // (a wide billowing band), stacked with heavy vertical overlap so the body
+        // reads as one continuous dense mass. Profile: spreading base → slight
+        // waist → bulging round head → domed crown.
         obj = new THREE.Group();
-        const levels = Math.max(2, Math.round(state.towerLevels));
+        const levels = Math.max(3, Math.round(state.towerLevels));
         const leanA = rnd() * Math.PI * 2;
         const leanX = Math.cos(leanA) * footprint * state.towerLean;
         const leanZ = Math.sin(leanA) * footprint * state.towerLean;
         let y = 0;
         for (let j = 0; j < levels; j++) {
           const f = j / (levels - 1); // 0 base → 1 crown
-          // billow profile: ~0.7 at base, ~1.0 mid, taper to ~0.15 crown
-          const prof = Math.sin((0.24 + f * 0.72) * Math.PI);
-          const lw = footprint * state.towerWidth * (0.42 + 0.62 * prof);
-          const nSub = f < 0.62 ? 2 : 1; // fuller lower body, single tapering crown
+          // cauliflower profile (piecewise): wide spreading foot, narrow waist,
+          // bulge into the big round head, then dome the crown (not a point).
+          let prof: number;
+          if (f < 0.16) prof = 0.9 + f * 0.3; // wide spreading base
+          else if (f < 0.48) prof = 0.9 - (f - 0.16) * 0.12; // gentle waist (not pinched)
+          else if (f < 0.82) prof = 0.86 + (f - 0.48) * 0.82; // bulge to head (~1.14)
+          else prof = 1.14 - (f - 0.82) * 2.7; // dome the crown down to ~0.65
+          prof = Math.max(0.5, prof);
+          const lw = footprint * state.towerWidth * prof;
+          // fill the level's WIDTH with a cluster (more pieces where it's wider)
+          const nSub = Math.max(3, Math.round(3 + prof * 2.2));
           for (let p = 0; p < nSub; p++) {
             const sub = pieces[Math.floor(rnd() * pieces.length)].clone(true);
-            sub.scale.setScalar(lw * (0.82 + rnd() * 0.4));
+            sub.scale.setScalar(lw * (0.52 + rnd() * 0.34)); // each = a chunk of the band
             sub.rotation.y = rnd() * Math.PI * 2;
             const pa = rnd() * Math.PI * 2;
-            const pr = lw * 0.32 * Math.sqrt(rnd());
+            const pr = lw * 0.46 * Math.sqrt(rnd()); // spread across the band width
             sub.position.set(
               Math.cos(pa) * pr + leanX * f,
-              y + (rnd() - 0.5) * lw * 0.2,
+              y + (rnd() - 0.5) * lw * 0.16,
               Math.sin(pa) * pr + leanZ * f,
             );
             obj.add(sub);
           }
-          y += lw * state.towerStep; // rise proportional to this level's width
+          // step is mostly FIXED (not proportional to the wide head) so no vertical
+          // gap opens beneath the bulge — keeps the body one continuous mass.
+          y += footprint * state.towerWidth * state.towerStep * (0.34 + 0.42 * prof);
         }
         // anchor the tower LOW so it rises up through the frame
         baseY = topY * (rnd() * 0.12 - 0.14);
