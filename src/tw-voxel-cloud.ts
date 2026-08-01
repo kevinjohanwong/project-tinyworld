@@ -51,7 +51,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
 
   const state = {
     enabled: opts.enabled ?? false,
-    count: opts.count ?? 55,
+    count: opts.count ?? 68,
     sizeScale: opts.sizeScale ?? 1,
     inner: opts.innerScale ?? 0.9,
     outer: opts.outerScale ?? 1.6,
@@ -130,9 +130,10 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       const angle = (i / state.count) * Math.PI * 2 + (rnd() - 0.5) * 0.7;
       const radius = innerR + rnd() * Math.max(0.001, outerR - innerR);
       // Big chunky cumulus sitting LOW — centers near/just above island level so
-      // they billow up into a horizon wall (some dip below for the base).
-      const baseY = topY * (rnd() * 0.75 - 0.08);
-      const s = state.sizeScale * (0.75 + rnd() * 1.1) * (span * 0.18);
+      // they billow up into a coherent horizon wall (tight band, some dip below
+      // for the base) rather than a few puffs floating high.
+      const baseY = topY * (rnd() * 0.5 - 0.06);
+      const s = state.sizeScale * (0.8 + rnd() * 1.1) * (span * 0.24);
       obj.scale.setScalar(s);
       obj.rotation.y = rnd() * Math.PI * 2;
       obj.position.set(Math.cos(angle) * radius, baseY, Math.sin(angle) * radius);
