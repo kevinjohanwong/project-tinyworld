@@ -92,9 +92,18 @@ async function boot() {
   await capture();
 }
 
-const sunDir = sun.position.clone().normalize();
-function shot(camera, uTime) {
-  ring.update({ elapsedSeconds: uTime, keyDirection: sunDir, keyColor: new THREE.Color(1.0, 0.99, 0.95), keyIntensity: 1.35 });
+// TOD: day = high neutral sun; dusk = low WARM sun placed to backlight the ring
+// so "play to light" (sun-through glow) is visible.
+const TODS = {
+  day: { dir: new THREE.Vector3(0.4, 0.9, 0.25).normalize(), col: new THREE.Color(1.0, 0.99, 0.95), i: 1.35, top: 0x2a54c0, hor: 0xbcd6f0 },
+  dusk: { dir: new THREE.Vector3(0.95, 0.14, 0.1).normalize(), col: new THREE.Color(1.0, 0.72, 0.5), i: 1.15, top: 0x203a6e, hor: 0xf0a878 },
+};
+function shot(camera, uTime, tod) {
+  const T = TODS[tod] || TODS.day;
+  sun.position.copy(T.dir).multiplyScalar(SPAN * 3);
+  sun.color.copy(T.col);
+  skyU.top.value.setHex(T.top); skyU.horizon.value.setHex(T.hor);
+  ring.update({ elapsedSeconds: uTime, keyDirection: T.dir, keyColor: T.col, keyIntensity: T.i });
   renderer.render(scene, camera);
   renderer.render(scene, camera);
   return renderer.domElement.toDataURL("image/png");
@@ -106,11 +115,14 @@ async function post(name, data) {
 async function capture() {
   // three yaw angles around the ring (density must read from ANY direction) + a drift frame
   const angles = q.has("angle") ? [+q.get("angle")] : [0, 120, 240];
-  for (const ang of angles) {
-    aimCam(ang);
-    const data = shot(cam, 0);
-    await post(`voxel-a${ang}.png`, data);
-    log(`captured a${ang}`);
+  const tods = q.has("tod") ? [q.get("tod")] : ["day", "dusk"];
+  for (const tod of tods) {
+    for (const ang of angles) {
+      aimCam(tod === "dusk" ? 0 : ang); // dusk: face the low sun to show backlight
+      const data = shot(cam, 0, tod);
+      await post(`voxel-${tod}-a${ang}.png`, data);
+      log(`captured ${tod}-a${ang}`);
+    }
   }
   await fetch("/done", { method: "POST" });
   log("DONE");

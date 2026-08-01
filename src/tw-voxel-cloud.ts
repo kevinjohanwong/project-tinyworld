@@ -58,6 +58,10 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     top: opts.topScale ?? 2.0,
     opacity: 0.94,
     edgeFade: 0.26,
+    fuzz: 0.35, // fuzzy shading power (0 = flat faces)
+    fuzzTiling: 0.55, // fuzzy noise scale
+    backlight: 0.6, // "play to light": sun-through glow strength
+    backSharp: 3.5, // backlight falloff sharpness
     driftSpeed: 0.012, // radians/sec of ring orbit
     bob: 0.6, // vertical bob amplitude (world units)
   };
@@ -81,38 +85,51 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   const uRimColor = { value: new THREE.Color(0.711, 0.494, 0.764) }; // lavender edge
   const uParams = { value: new THREE.Vector4(0.85, 0.25, 0.25, 1.6) }; // edgeBright, coreDark, aoStrength, rimPow
   const uGrad = { value: new THREE.Vector2(1.0, -0.05) }; // heightFalloff, heightOffset
+  const uNoise = { value: new THREE.Vector2(0.55, 0.35) }; // fuzz: tiling(×span), power
+  const uBack = { value: new THREE.Vector2(0.6, 3.5) }; // backlight: strength, sharpness
+  const uSpanRef = { value: Math.max(1e-3, span) };
   const material = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 1, metalness: 0, vertexColors: true,
   });
-  material.customProgramCacheKey = () => "tinyworldVoxelCloudV2toon";
+  material.customProgramCacheKey = () => "tinyworldVoxelCloudV3fuzzback";
   material.onBeforeCompile = (shader: any) => {
     Object.assign(shader.uniforms, {
-      uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad,
+      uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uBack, uSpanRef,
     });
     shader.vertexShader =
-      "attribute float aY01;\nvarying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\n" +
+      "attribute float aY01;\nvarying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\nvarying vec3 vWPos;\n" +
       shader.vertexShader.replace(
         "#include <project_vertex>",
         "#include <project_vertex>\n" +
+          "  vec3 _wp = (modelMatrix * vec4(transformed, 1.0)).xyz;\n" +
           "  vWN = normalize(mat3(modelMatrix) * objectNormal);\n" +
-          "  vVDir = normalize(cameraPosition - (modelMatrix * vec4(transformed, 1.0)).xyz);\n" +
+          "  vVDir = normalize(cameraPosition - _wp);\n" +
+          "  vWPos = _wp;\n" +
           "  vY01 = aY01;",
       );
     shader.fragmentShader =
-      "uniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec3 uRimColor;\nuniform vec4 uParams;\nuniform vec2 uGrad;\n" +
-      "varying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\n" +
+      "uniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec3 uRimColor;\nuniform vec4 uParams;\nuniform vec2 uGrad;\nuniform vec2 uNoise;\nuniform vec2 uBack;\nuniform float uSpanRef;\n" +
+      "varying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\nvarying vec3 vWPos;\n" +
       "vec3 cloudRamp(float t){\n" +
       "  vec3 c0 = vec3(0.24,0.23,0.36); vec3 c1 = vec3(0.60,0.58,0.80); vec3 c2 = vec3(0.90,0.93,0.97);\n" +
       "  t = clamp(t,0.0,1.0);\n" +
       "  return t < 0.5 ? mix(c0, c1, smoothstep(0.12,0.5,t)) : mix(c1, c2, smoothstep(0.5,0.82,t));\n" +
       "}\n" +
+      "float _h(vec3 p){ p = fract(p*0.3183099+0.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }\n" +
+      "float _vn(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);\n" +
+      "  return mix(mix(mix(_h(i+vec3(0,0,0)),_h(i+vec3(1,0,0)),f.x),mix(_h(i+vec3(0,1,0)),_h(i+vec3(1,1,0)),f.x),f.y),\n" +
+      "             mix(mix(_h(i+vec3(0,0,1)),_h(i+vec3(1,0,1)),f.x),mix(_h(i+vec3(0,1,1)),_h(i+vec3(1,1,1)),f.x),f.y),f.z); }\n" +
+      "float _fbm(vec3 x){ return 0.6*_vn(x)+0.3*_vn(x*2.03+11.1)+0.15*_vn(x*4.01+23.7); }\n" +
       shader.fragmentShader.replace(
         "#include <dithering_fragment>",
         "  vec3 N = normalize(vWN);\n" +
           "  float ao = mix(1.0, clamp(vColor.r,0.0,1.0), uParams.z);\n" +
           "  float g = clamp((vY01 + uGrad.y) * uGrad.x, 0.0, 1.0);\n" +
           "  vec3 col = mix(uSecColor, uBaseColor, g);\n" +
-          "  float ndl = dot(N, normalize(uSunDir)) * 0.5 + 0.5;\n" +
+          // FUZZY: 3D value-noise (fbm) over world pos perturbs the shading value so
+          // the flat voxel faces get soft cloud-like variation instead of a hard tone.
+          "  float fuzz = (_fbm(vWPos * (uNoise.x / uSpanRef * 8.0)) - 0.5) * uNoise.y;\n" +
+          "  float ndl = clamp(dot(N, normalize(uSunDir)) * 0.5 + 0.5 + fuzz, 0.0, 1.0);\n" +
           "  col *= cloudRamp(ndl);\n" +
           "  float ndv = clamp(dot(N, normalize(vVDir)), 0.0, 1.0);\n" +
           "  float rim = pow(1.0 - ndv, uParams.w) * uParams.x;\n" +
@@ -120,6 +137,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  col *= (1.0 - uParams.y * ndv);\n" +
           "  col *= ao;\n" +
           "  col *= uLight;\n" +
+          // PLAY TO LIGHT: sun BEHIND the cloud (toward viewer) → transmitted glow on
+          // the edges, using the real sun colour. Thin/edge parts (low ndv) glow most.
+          "  float back = pow(clamp(dot(normalize(uSunDir), -normalize(vVDir)), 0.0, 1.0), uBack.y);\n" +
+          "  back *= uBack.x * (0.35 + 0.65 * (1.0 - ndv));\n" +
+          "  col += uLight * back;\n" +
           "  gl_FragColor.rgb = col;\n" +
           "  gl_FragColor.a = 1.0;\n" +
           "  #include <dithering_fragment>",
@@ -227,6 +249,8 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
 
   const applyState = () => {
     group.visible = state.enabled;
+    uNoise.value.set(state.fuzzTiling, Math.max(0, state.fuzz));
+    uBack.value.set(Math.max(0, state.backlight), Math.max(0.5, state.backSharp));
   };
 
   const configure = (next: Partial<typeof state>) => {
