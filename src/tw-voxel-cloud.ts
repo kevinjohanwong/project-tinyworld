@@ -58,6 +58,12 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     top: opts.topScale ?? 2.0,
     opacity: 0.94,
     edgeFade: 0.26,
+    // VOXEL-SIZE VARIATION: a fraction of clouds are built as CLUSTERS of small
+    // pieces (same footprint, finer voxels) instead of one big piece (coarse
+    // voxels). Mixing coarse + fine in one bank is the "variation is key" look.
+    fineFrac: 0.5, // fraction of clouds rendered fine (cluster of small pieces)
+    fineScale: 0.46, // per-sub-piece scale (× the cloud's footprint) → voxel fineness
+    fineSpread: 0.3, // how tightly the sub-pieces pack within the footprint
     fuzz: 0.35, // fuzzy shading power (0 = flat faces)
     fuzzTiling: 0.55, // fuzzy noise scale
     backlight: 0.6, // "play to light": sun-through glow strength
@@ -196,8 +202,6 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     const topY = span * state.top;
 
     for (let i = 0; i < state.count; i++) {
-      const template = pieces[i % pieces.length];
-      const obj = template.clone(true);
       // Densely wrap the ring: small angular jitter so pieces overlap into a
       // continuous bank rather than reading as evenly-spaced dots.
       const angle = (i / state.count) * Math.PI * 2 + (rnd() - 0.5) * 0.7;
@@ -207,9 +211,37 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       // they stack into a curtain of cloud filling the frame, not a thin low
       // band of separated blobs. topY = span*top(=2) is the tall envelope.
       const baseY = topY * (rnd() * 0.5 - 0.06);
-      const s = state.sizeScale * (0.8 + rnd() * 1.1) * (span * 0.34);
-      obj.scale.setScalar(s);
-      obj.rotation.y = rnd() * Math.PI * 2;
+      // The cloud's overall footprint (screen size). Voxel granularity is what
+      // we VARY per cloud below — coarse clouds use one piece at this footprint,
+      // fine clouds pack several smaller pieces into it.
+      const footprint = state.sizeScale * (0.8 + rnd() * 1.1) * (span * 0.34);
+      const fine = rnd() < state.fineFrac;
+
+      let obj: any;
+      if (fine) {
+        // FINE: cluster of small pieces → same footprint, finer voxels. Each
+        // sub-piece is fineScale× the footprint, so its voxels read ~2× smaller;
+        // packing 3–5 of them overlapping rebuilds a cloud of similar size out
+        // of finer cubes. Slight per-sub-piece scale jitter keeps it organic.
+        obj = new THREE.Group();
+        const k = 3 + Math.floor(rnd() * 3); // 3..5 sub-pieces
+        const spread = footprint * state.fineSpread;
+        for (let j = 0; j < k; j++) {
+          const sub = pieces[Math.floor(rnd() * pieces.length)].clone(true);
+          const ss = footprint * state.fineScale * (0.72 + rnd() * 0.62);
+          sub.scale.setScalar(ss);
+          sub.rotation.y = rnd() * Math.PI * 2;
+          const oa = rnd() * Math.PI * 2;
+          const orr = spread * Math.sqrt(rnd()); // area-uniform → packed, not ring
+          sub.position.set(Math.cos(oa) * orr, (rnd() - 0.5) * spread * 0.9, Math.sin(oa) * orr);
+          obj.add(sub);
+        }
+      } else {
+        // COARSE: one piece at full footprint (the current chunky look).
+        obj = pieces[i % pieces.length].clone(true);
+        obj.scale.setScalar(footprint);
+        obj.rotation.y = rnd() * Math.PI * 2;
+      }
       obj.position.set(Math.cos(angle) * radius, baseY, Math.sin(angle) * radius);
       obj.traverse((n: any) => { if (n.isMesh) { n.castShadow = false; n.receiveShadow = false; } });
       group.add(obj);
@@ -284,7 +316,10 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       (next.sizeScale !== undefined && next.sizeScale !== state.sizeScale) ||
       (next.inner !== undefined && next.inner !== state.inner) ||
       (next.outer !== undefined && next.outer !== state.outer) ||
-      (next.top !== undefined && next.top !== state.top);
+      (next.top !== undefined && next.top !== state.top) ||
+      (next.fineFrac !== undefined && next.fineFrac !== state.fineFrac) ||
+      (next.fineScale !== undefined && next.fineScale !== state.fineScale) ||
+      (next.fineSpread !== undefined && next.fineSpread !== state.fineSpread);
     Object.assign(state, next);
     applyState();
     if (needsScatter) scatter();

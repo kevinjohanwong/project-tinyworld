@@ -82,6 +82,14 @@ async function boot() {
     outerScale: q.has("outer") ? +q.get("outer") : undefined,
     topScale: q.has("top") ? +q.get("top") : undefined,
   });
+  // voxel-granularity variation overrides
+  if (ring && (q.has("finefrac") || q.has("finescale") || q.has("finespread"))) {
+    ring.configure({
+      ...(q.has("finefrac") ? { fineFrac: +q.get("finefrac") } : {}),
+      ...(q.has("finescale") ? { fineScale: +q.get("finescale") } : {}),
+      ...(q.has("finespread") ? { fineSpread: +q.get("finespread") } : {}),
+    });
+  }
   // wait for GLB load + scatter
   for (let i = 0; i < 120; i++) {
     if (ring.mesh.children.length > 0) break;
