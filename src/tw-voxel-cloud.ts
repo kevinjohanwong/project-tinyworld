@@ -78,7 +78,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     towerFrac: opts.towerFrac ?? 0.4, // fraction of clouds built as tall stacked towers
     towerLevels: opts.towerLevels ?? 6, // vertical stack count (more = taller)
     towerStep: 0.42, // vertical rise per level (× level width; <1 = overlapping/continuous)
-    towerWidth: 1.62, // base footprint multiplier for towers (broad billowing mass)
+    towerWidth: 1.95, // base footprint multiplier for towers (broad billowing mass)
     towerLean: 0.35, // horizontal wander/lean of the stack (billow, not a straight column)
     fuzz: 0.35, // fuzzy shading power (0 = flat faces)
     fuzzTiling: 0.55, // fuzzy noise scale
@@ -249,14 +249,16 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
         let y = 0;
         for (let j = 0; j < levels; j++) {
           const f = j / (levels - 1); // 0 base → 1 crown
-          // cumulus profile (the Ghibli day reference): moderate flared foot →
-          // widening to a bulging rounded HEAD in the upper body (widest ~0.6) →
-          // domed crown. Lightbulb silhouette: wide body, not a uniform column.
+          // cumulus profile (the Ghibli day reference): BROAD grounded base and
+          // wide lower body (the widest bulk sits LOW, ~0.3), gentle waist, then
+          // the rounded cauliflower head domes off. Heavy pile on the ground —
+          // NOT a narrow pinched foot.
           let prof: number;
-          if (f < 0.15) prof = 0.84 + f * 0.53; // moderate flared foot (~0.84→0.92)
-          else if (f < 0.6) prof = 0.92 + (f - 0.15) * 0.8; // widen to the bulging head (~0.92→1.28)
-          else if (f < 0.85) prof = 1.28 - (f - 0.6) * 0.6; // round the wide shoulders (~1.28→1.13)
-          else prof = 1.13 - (f - 0.85) * 3.4; // dome the crown down to ~0.6
+          if (f < 0.12) prof = 1.16 + f * 1.0; // broad flat foot (~1.16→1.28)
+          else if (f < 0.4) prof = 1.28 + (f - 0.12) * 0.25; // widest lower body (~1.28→1.35)
+          else if (f < 0.72) prof = 1.35 - (f - 0.4) * 0.9; // gentle waist up (~1.35→1.06)
+          else if (f < 0.9) prof = 1.06 - (f - 0.72) * 0.5; // round the head shoulders (~0.97)
+          else prof = 0.97 - (f - 0.9) * 3.5; // dome the crown down to ~0.6
           prof = Math.max(0.5, prof);
           const lw = footprint * state.towerWidth * prof;
           // fill the level's WIDTH with a DENSE cluster of big rounded lobes —
