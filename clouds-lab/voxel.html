@@ -98,6 +98,8 @@ async function boot() {
       ...(q.has("towerstep") ? { towerStep: +q.get("towerstep") } : {}),
       ...(q.has("towerwidth") ? { towerWidth: +q.get("towerwidth") } : {}),
       ...(q.has("towerlean") ? { towerLean: +q.get("towerlean") } : {}),
+      ...(q.has("herocount") ? { heroCount: +q.get("herocount") } : {}),
+      ...(q.has("herosize") ? { heroSize: +q.get("herosize") } : {}),
     });
   }
   // wait for GLB load + scatter
@@ -130,6 +132,7 @@ function shot(camera, uTime, tod) {
   // hemi fill tracks the sky so night doesn't get a bright day wash
   hemi.color.setHex(T.hor); hemi.intensity = tod === "night" ? 0.18 : 0.6;
   skyU.top.value.setHex(T.top); skyU.horizon.value.setHex(T.hor);
+  if (q.has("key")) { skyU.top.value.setHex(0xff00ff); skyU.horizon.value.setHex(0xff00ff); renderer.setClearColor(0xff00ff, 1); }
   ring.update({ elapsedSeconds: uTime, keyDirection: T.dir, keyColor: T.col, keyIntensity: T.i });
   renderer.render(scene, camera);
   renderer.render(scene, camera);

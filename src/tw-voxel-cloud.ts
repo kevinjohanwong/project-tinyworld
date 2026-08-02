@@ -60,9 +60,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     // Push back up via ?cloudcount= if a denser bank is wanted.
     count: opts.count ?? 50,
     sizeScale: opts.sizeScale ?? 1,
-    inner: opts.innerScale ?? 0.7,
-    outer: opts.outerScale ?? 2.6,
-    top: opts.topScale ?? 2.6,
+    // Distant scattered sky: clouds sit FAR from the player (inner 2.2 span) so
+    // they read as cumulus on the horizon, not a wall looming overhead. Not a ring.
+    inner: opts.innerScale ?? 2.2,
+    outer: opts.outerScale ?? 6.0,
+    top: opts.topScale ?? 3.0,
     opacity: 0.94,
     edgeFade: 0.26,
     // VOXEL-SIZE VARIATION: a fraction of clouds are built as CLUSTERS of small
@@ -80,6 +82,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     towerStep: 0.30, // vertical rise per level (× level width; <1 = overlapping/continuous)
     towerWidth: 1.95, // base footprint multiplier for towers (broad billowing mass)
     towerLean: 0.35, // horizontal wander/lean of the stack (billow, not a straight column)
+    // FREE SKY SCATTER (no longer a ring wall): a few BIG hero clouds dominate the
+    // view like the reference, the rest scatter across a disc of sky at varied
+    // distance/height. heroCount big towers, heroSize× the normal footprint.
+    heroCount: 3, // number of big dominant hero clouds
+    heroSize: 2.2, // hero footprint multiplier (× the normal cloud footprint)
     fuzz: 0.35, // fuzzy shading power (0 = flat faces)
     fuzzTiling: 0.55, // fuzzy noise scale
     backlight: 0.6, // "play to light": sun-through glow strength
@@ -218,20 +225,24 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     const topY = span * state.top;
 
     for (let i = 0; i < state.count; i++) {
-      // Densely wrap the ring: small angular jitter so pieces overlap into a
-      // continuous bank rather than reading as evenly-spaced dots.
-      const angle = (i / state.count) * Math.PI * 2 + (rnd() - 0.5) * 0.7;
-      const radius = innerR + rnd() * Math.max(0.001, outerR - innerR);
-      // Tall, dense, overlapping cumulus WALLS (matching KJ's reference): pieces
-      // span a large vertical range (from just below island level up high) so
-      // they stack into a curtain of cloud filling the frame, not a thin low
-      // band of separated blobs. topY = span*top(=2) is the tall envelope.
-      let baseY = topY * (rnd() * 0.5 - 0.06);
-      // The cloud's overall footprint (screen size). Voxel granularity is what
-      // we VARY per cloud below — coarse clouds use one piece at this footprint,
-      // fine clouds pack several smaller pieces into it.
-      const footprint = state.sizeScale * (0.8 + rnd() * 1.1) * (span * 0.34);
-      const roll = rnd();
+      // FREE SKY SCATTER (not a ring): the first heroCount clouds are BIG dominant
+      // towers spread to different bearings (so one always faces the player); the
+      // rest scatter over a disc of sky (area-uniform radius, random bearing) at
+      // varied heights — a natural scattered sky, not a uniform ring wall.
+      const isHero = i < state.heroCount;
+      const span34 = span * 0.34;
+      const angle = isHero
+        ? (i / Math.max(1, state.heroCount)) * Math.PI * 2 + (rnd() - 0.5) * 0.5
+        : rnd() * Math.PI * 2;
+      const radius = isHero
+        ? innerR + (0.45 + rnd() * 0.4) * Math.max(0.001, outerR - innerR) // mid-distance, prominent
+        : innerR + Math.sqrt(rnd()) * Math.max(0.001, outerR - innerR); // disc, not a ring
+      // height band above the horizon; heroes sit low so the broad tower rises up
+      let baseY = isHero ? topY * (0.02 + rnd() * 0.08) : topY * (rnd() * 0.55 - 0.05);
+      // Hero clouds are much bigger so they dominate; others vary in footprint.
+      const footprint = (isHero ? state.heroSize : 0.8 + rnd() * 1.1) * state.sizeScale * span34;
+      // Heroes are always big billowing TOWERS; others mix tower/fine/coarse.
+      const roll = isHero ? -1 : rnd();
 
       let obj: any;
       if (roll < state.towerFrac) {
@@ -295,8 +306,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           // gap opens beneath the bulge — keeps the body one continuous mass.
           y += footprint * state.towerWidth * state.towerStep * (0.34 + 0.42 * prof);
         }
-        // anchor the tower LOW so it rises up through the frame
-        baseY = topY * (rnd() * 0.12 - 0.14);
+        // non-hero towers anchor LOW (a distant bank); heroes keep their
+        // horizon-level base (set above) so the whole broad tower rises into view.
+        if (!isHero) baseY = topY * (rnd() * 0.12 - 0.14);
       } else if (rnd() < state.fineFrac) {
         // FINE: cluster of small pieces → same footprint, finer voxels. Each
         // sub-piece is fineScale× the footprint, so its voxels read ~2× smaller;
@@ -403,7 +415,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       (next.towerLevels !== undefined && next.towerLevels !== state.towerLevels) ||
       (next.towerStep !== undefined && next.towerStep !== state.towerStep) ||
       (next.towerWidth !== undefined && next.towerWidth !== state.towerWidth) ||
-      (next.towerLean !== undefined && next.towerLean !== state.towerLean);
+      (next.towerLean !== undefined && next.towerLean !== state.towerLean) ||
+      (next.heroCount !== undefined && next.heroCount !== state.heroCount) ||
+      (next.heroSize !== undefined && next.heroSize !== state.heroSize);
     Object.assign(state, next);
     applyState();
     if (needsScatter) scatter();
