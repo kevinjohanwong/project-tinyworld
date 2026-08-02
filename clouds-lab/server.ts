@@ -47,6 +47,8 @@ Bun.serve({
     }
     if (url.pathname === "/voxel" || url.pathname === "/voxel.html")
       return new Response(readFileSync(ROOT + "/voxel.html"), { headers: { "content-type": "text/html" } });
+    if (url.pathname === "/hero" || url.pathname === "/hero.html")
+      return new Response(readFileSync(ROOT + "/hero.html"), { headers: { "content-type": "text/html" } });
     if (url.pathname === "/defaults") return Response.json(scalarUniformDefaults());
     if (url.pathname === "/shot" && req.method === "POST") {
       const { name, data } = (await req.json()) as { name: string; data: string };

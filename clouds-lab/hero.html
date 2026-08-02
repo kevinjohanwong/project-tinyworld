@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>clouds-lab hero</title>
+<style>html,body{margin:0;background:#f0f;overflow:hidden}#hud{position:fixed;top:6px;left:8px;color:#fff;font:12px monospace;text-shadow:0 0 3px #000;z-index:9}</style>
+</head>
+<body>
+<div id="hud">booting…</div>
+<script type="importmap">
+{ "imports": { "three": "https://esm.sh/three@0.165.0", "three/addons/": "https://esm.sh/three@0.165.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+const hud = document.getElementById("hud");
+const log = (m) => { hud.textContent = m; console.log(m); };
+const q = new URLSearchParams(location.search);
+
+const SPAN = 30;
+const W = 700, H = 900; // tall frame for a rising tower
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H); renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+// Flat MAGENTA background — clean chroma key for silhouette extraction.
+renderer.setClearColor(0xff00ff, 1);
+
+// Neutral bright day light so the cloud reads solid (we only need the silhouette).
+const dir = new THREE.Vector3(0.4, 0.9, 0.25).normalize();
+const sun = new THREE.DirectionalLight(0xffffff, 2.0); sun.position.copy(dir).multiplyScalar(SPAN * 3); scene.add(sun);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x888888, 0.7));
+
+const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, SPAN * 80);
+
+let ring = null;
+async function boot() {
+  const mod = await import("/voxel-module.js?t=" + Date.now());
+  // One isolated tower at origin. inner/outer→0 so radius≈0 (centered).
+  ring = mod.createVoxelCloudRing({
+    THREE, scene, camera: cam, span: SPAN, gltfLoader: new GLTFLoader(),
+    glbUrl: q.get("glb") || undefined, enabled: true,
+    count: 1, innerScale: 0.0, outerScale: 0.0006, topScale: 0.01,
+    sizeScale: q.has("size") ? +q.get("size") : 1.0,
+  });
+  ring.configure({
+    towerFrac: 1.0,
+    ...(q.has("towerlevels") ? { towerLevels: +q.get("towerlevels") } : {}),
+    ...(q.has("towerstep") ? { towerStep: +q.get("towerstep") } : {}),
+    ...(q.has("towerwidth") ? { towerWidth: +q.get("towerwidth") } : {}),
+    ...(q.has("towerlean") ? { towerLean: +q.get("towerlean") } : {}),
+  });
+  for (let i = 0; i < 120; i++) { if (ring.mesh.children.length > 0) break; await new Promise((r) => setTimeout(r, 100)); }
+  ring.update({ elapsedSeconds: 0, keyDirection: dir, keyColor: new THREE.Color(1,1,1), keyIntensity: 1.3 });
+
+  // Frame the tower's bounding box with the ortho cam (front view, looking -Z).
+  const box = new THREE.Box3().setFromObject(ring.mesh);
+  const c = box.getCenter(new THREE.Vector3());
+  const sz = box.getSize(new THREE.Vector3());
+  const margin = 1.06;
+  // Fit box to the W:H aspect of the canvas without distorting the cloud.
+  const aspect = W / H;
+  let halfW = (sz.x / 2) * margin, halfH = (sz.y / 2) * margin;
+  if (halfW / halfH > aspect) halfH = halfW / aspect; else halfW = halfH * aspect;
+  cam.left = -halfW; cam.right = halfW; cam.top = halfH; cam.bottom = -halfH;
+  cam.near = 0.1; cam.far = sz.z * 4 + SPAN * 20;
+  cam.position.set(c.x, c.y, c.z + sz.z * 2 + SPAN * 4);
+  cam.lookAt(c.x, c.y, c.z);
+  cam.updateProjectionMatrix();
+
+  log("hero built: " + ring.mesh.children[0].children.length + " lobes; box " + sz.x.toFixed(1) + "x" + sz.y.toFixed(1));
+  renderer.render(scene, cam); renderer.render(scene, cam);
+  const data = renderer.domElement.toDataURL("image/png");
+  await fetch("/shot", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "hero.png", data }) });
+  await fetch("/done", { method: "POST" });
+  log("DONE");
+}
+boot().catch((e) => { log("ERR " + e.message); console.error(e); document.title = "ERR"; });
+</script>
+</body>
+</html>

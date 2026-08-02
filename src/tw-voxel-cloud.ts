@@ -77,7 +77,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     // development — cumulonimbus grandeur, not a low puff.
     towerFrac: opts.towerFrac ?? 0.4, // fraction of clouds built as tall stacked towers
     towerLevels: opts.towerLevels ?? 6, // vertical stack count (more = taller)
-    towerStep: 0.42, // vertical rise per level (× level width; <1 = overlapping/continuous)
+    towerStep: 0.30, // vertical rise per level (× level width; <1 = overlapping/continuous)
     towerWidth: 1.95, // base footprint multiplier for towers (broad billowing mass)
     towerLean: 0.35, // horizontal wander/lean of the stack (billow, not a straight column)
     fuzz: 0.35, // fuzzy shading power (0 = flat faces)
@@ -254,26 +254,39 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           // the rounded cauliflower head domes off. Heavy pile on the ground —
           // NOT a narrow pinched foot.
           let prof: number;
-          if (f < 0.12) prof = 1.16 + f * 1.0; // broad flat foot (~1.16→1.28)
-          else if (f < 0.4) prof = 1.28 + (f - 0.12) * 0.25; // widest lower body (~1.28→1.35)
-          else if (f < 0.72) prof = 1.35 - (f - 0.4) * 0.9; // gentle waist up (~1.35→1.06)
-          else if (f < 0.9) prof = 1.06 - (f - 0.72) * 0.5; // round the head shoulders (~0.97)
-          else prof = 0.97 - (f - 0.9) * 3.5; // dome the crown down to ~0.6
+          // Fitted to the CORRECTED reference silhouette (incl. its shadowed left
+          // lobe): a BROAD cumulus, wider than tall — widest at the base, a full
+          // body, a slight waist, then a broad rounded head that barely tapers
+          // until the very crown. NOT a narrow spire.
+          if (f < 0.18) prof = 1.45; // broad flat base — the widest part
+          else if (f < 0.42) prof = 1.45 - (f - 0.18) * 0.6; // full wide body (~1.45→1.31)
+          else if (f < 0.6) prof = 1.31 - (f - 0.42) * 0.9; // gentle waist (~1.31→1.15)
+          else if (f < 0.85) prof = 1.15 + (f - 0.6) * 0.35; // head RE-WIDENS — broad bulging cauliflower (~1.15→1.24)
+          else prof = 1.24 - (f - 0.85) * 4.2; // crown domes down (~1.24→0.61)
           prof = Math.max(0.5, prof);
           const lw = footprint * state.towerWidth * prof;
           // fill the level's WIDTH with a DENSE cluster of big rounded lobes —
           // more pieces where it's wider, bigger scale + tighter packing so the
           // body reads as one solid rounded mass (not scattered cubes).
-          const nSub = Math.max(4, Math.round(4 + prof * 3.2));
+          const isBase = j === 0;
+          const isCrown = j === levels - 1;
+          // base + crown get extra lobes spread WIDER (no vertical bias) so the
+          // foot is a broad grounded mass and the head reads as a broad round
+          // dome — both matching the reference (widest at ground, broad head).
+          const nSub = Math.max(4, Math.round(4 + prof * 3.2)) + (isBase || isCrown ? 3 : 0);
+          const prMul = isBase ? 0.66 : isCrown ? 0.6 : 0.4;
           for (let p = 0; p < nSub; p++) {
             const sub = pieces[Math.floor(rnd() * pieces.length)].clone(true);
             sub.scale.setScalar(lw * (0.6 + rnd() * 0.4)); // bigger rounder lobes
+            // flatten crown lobes so tall GLB pieces dome over instead of spiking
+            if (isCrown) sub.scale.y *= 0.62;
             sub.rotation.y = rnd() * Math.PI * 2;
             const pa = rnd() * Math.PI * 2;
-            const pr = lw * 0.4 * Math.sqrt(rnd()); // tighter → denser core, less scatter
+            const pr = lw * prMul * Math.sqrt(rnd());
+            const yJit = (rnd() - 0.5) * lw * 0.14;
             sub.position.set(
               Math.cos(pa) * pr + leanX * f,
-              y + (rnd() - 0.5) * lw * 0.14,
+              y + yJit,
               Math.sin(pa) * pr + leanZ * f,
             );
             obj.add(sub);
