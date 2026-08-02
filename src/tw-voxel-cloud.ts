@@ -85,13 +85,13 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     // FREE SKY SCATTER (no longer a ring wall): a few BIG hero clouds dominate the
     // view like the reference, the rest scatter across a disc of sky at varied
     // distance/height. heroCount big towers, heroSize× the normal footprint.
-    heroCount: 3, // number of big dominant hero clouds
-    heroSize: 2.2, // hero footprint multiplier (× the normal cloud footprint)
+    heroCount: 5, // number of big dominant hero clouds (varied sizes)
+    heroSize: 2.6, // hero footprint multiplier (× the normal cloud footprint)
     fuzz: 0.35, // fuzzy shading power (0 = flat faces)
     fuzzTiling: 0.55, // fuzzy noise scale
     backlight: 0.6, // "play to light": sun-through glow strength
     backSharp: 3.5, // backlight falloff sharpness
-    driftSpeed: 0.012, // radians/sec of ring orbit
+    driftSpeed: 0.0035, // radians/sec of ring orbit (much slower drift)
     bob: 0.6, // vertical bob amplitude (world units)
   };
 
@@ -239,8 +239,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
         : innerR + Math.sqrt(rnd()) * Math.max(0.001, outerR - innerR); // disc, not a ring
       // height band above the horizon; heroes sit low so the broad tower rises up
       let baseY = isHero ? topY * (0.02 + rnd() * 0.08) : topY * (rnd() * 0.55 - 0.05);
-      // Hero clouds are much bigger so they dominate; others vary in footprint.
-      const footprint = (isHero ? state.heroSize : 0.8 + rnd() * 1.1) * state.sizeScale * span34;
+      // Hero clouds are much bigger so they dominate; heroes VARY in size (some
+      // very big, some big — not all identical), others slightly larger so some
+      // neighbours overlap.
+      const heroVar = 0.82 + rnd() * 0.7; // 0.82–1.52× → mix of big & very-big heroes
+      const footprint = (isHero ? state.heroSize * heroVar : 0.95 + rnd() * 1.15) * state.sizeScale * span34;
       // Heroes are always big billowing TOWERS; others mix tower/fine/coarse.
       const roll = isHero ? -1 : rnd();
 
@@ -339,7 +342,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       instances.push({
         obj, baseY, angle, radius,
         bobPhase: rnd() * Math.PI * 2,
-        bobRate: 0.12 + rnd() * 0.18,
+        bobRate: 0.04 + rnd() * 0.07, // much slower vertical bob
       });
     }
     ready = true;
