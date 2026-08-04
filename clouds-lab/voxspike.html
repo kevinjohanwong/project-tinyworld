@@ -1,0 +1,245 @@
+<!doctype html>
+<!-- voxspike — Conquest-style partial-cell shape spike.
+     Question: does HALF voxel density + a small shape vocabulary (slab/quarter/corner)
+     hold fidelity vs the full-density cube baseline?
+     Renders 4 modes from the same cameras: mesh (truth), fine cubes (baseline density),
+     coarse cubes (half density, control), coarse+shapes (half density, fitted). -->
+<html>
+<head><meta charset="utf-8"><style>body{margin:0;background:#0b0e14}</style></head>
+<body>
+<script type="importmap">
+{ "imports": { "three": "https://esm.sh/three@0.165.0", "three/addons/": "https://esm.sh/three@0.165.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+const P = new URLSearchParams(location.search);
+const FINE_MAX = parseInt(P.get("fine") || "200", 10); // fine grid max dimension (baseline density)
+const W = 1280, H = 860;
+
+const status = (s) => { document.title = "voxspike: " + s; };
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+async function shot(name) {
+  const data = renderer.domElement.toDataURL("image/png");
+  await fetch("/shot", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, data }) });
+}
+
+status("loading glb");
+const gltf = await new GLTFLoader().loadAsync("/debug-scan.glb");
+const srcScene = gltf.scene;
+srcScene.updateMatrixWorld(true);
+
+// ---- gather world-space triangles + bbox ----
+status("gathering tris");
+const tris = [];
+const bbox = new THREE.Box3();
+const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+srcScene.traverse((o) => {
+  if (!o.isMesh) return;
+  const g = o.geometry, pos = g.attributes.position, idx = g.index, m = o.matrixWorld;
+  const n = idx ? idx.count : pos.count;
+  for (let i = 0; i < n; i += 3) {
+    va.fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(m);
+    vb.fromBufferAttribute(pos, idx ? idx.getX(i + 1) : i + 1).applyMatrix4(m);
+    vc.fromBufferAttribute(pos, idx ? idx.getX(i + 2) : i + 2).applyMatrix4(m);
+    tris.push(va.x, va.y, va.z, vb.x, vb.y, vb.z, vc.x, vc.y, vc.z);
+    bbox.expandByPoint(va); bbox.expandByPoint(vb); bbox.expandByPoint(vc);
+  }
+});
+const size = bbox.getSize(new THREE.Vector3());
+const maxDim = Math.max(size.x, size.y, size.z);
+const fineVox = maxDim / FINE_MAX;
+const org = bbox.min;
+const nx = Math.ceil(size.x / fineVox) + 2, ny = Math.ceil(size.y / fineVox) + 2, nz = Math.ceil(size.z / fineVox) + 2;
+
+// ---- fine occupancy via surface sampling ----
+status("voxelizing " + nx + "x" + ny + "x" + nz);
+const fine = new Set();
+const key = (ix, iy, iz) => ix + iy * nx + iz * nx * ny;
+const step = fineVox * 0.4;
+const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+function bin(x, y, z) {
+  const ix = ((x - org.x) / fineVox) | 0, iy = ((y - org.y) / fineVox) | 0, iz = ((z - org.z) / fineVox) | 0;
+  if (ix >= 0 && iy >= 0 && iz >= 0 && ix < nx && iy < ny && iz < nz) fine.add(key(ix, iy, iz));
+}
+for (let t = 0; t < tris.length; t += 9) {
+  A.set(tris[t], tris[t + 1], tris[t + 2]); B.set(tris[t + 3], tris[t + 4], tris[t + 5]); C.set(tris[t + 6], tris[t + 7], tris[t + 8]);
+  bin(A.x, A.y, A.z); bin(B.x, B.y, B.z); bin(C.x, C.y, C.z);
+  const ab = B.clone().sub(A), ac = C.clone().sub(A);
+  const area = ab.clone().cross(ac).length() * 0.5;
+  const nS = Math.min(4000, Math.ceil(area / (step * step)));
+  for (let s = 0; s < nS; s++) {
+    let u = Math.random(), v = Math.random();
+    if (u + v > 1) { u = 1 - u; v = 1 - v; }
+    bin(A.x + ab.x * u + ac.x * v, A.y + ab.y * u + ac.y * v, A.z + ab.z * u + ac.z * v);
+  }
+}
+
+// ---- coarse cells (2x2x2 fine) with sub-occupancy masks ----
+status("coarsening");
+const cnx = Math.ceil(nx / 2), cny = Math.ceil(ny / 2), cnz = Math.ceil(nz / 2);
+const ckey = (ix, iy, iz) => ix + iy * cnx + iz * cnx * cny;
+const coarse = new Map(); // ckey -> 8-bit submask, bit = sx + sy*2 + sz*4
+for (const k of fine) {
+  const ix = k % nx, iy = ((k / nx) | 0) % ny, iz = (k / (nx * ny)) | 0;
+  const ck = ckey(ix >> 1, iy >> 1, iz >> 1);
+  const bit = (ix & 1) + (iy & 1) * 2 + (iz & 1) * 4;
+  coarse.set(ck, (coarse.get(ck) || 0) | (1 << bit));
+}
+
+// ---- shape vocabulary: axis-aligned boxes within the unit cell ----
+// each: {size:[3], off:[3]} in cell-fraction units; mask = covered subcells
+function boxMask(size, off) {
+  let m = 0;
+  for (let sz = 0; sz < 2; sz++) for (let sy = 0; sy < 2; sy++) for (let sx = 0; sx < 2; sx++) {
+    const cxx = 0.25 + sx * 0.5, cyy = 0.25 + sy * 0.5, czz = 0.25 + sz * 0.5;
+    if (cxx > off[0] && cxx < off[0] + size[0] && cyy > off[1] && cyy < off[1] + size[1] && czz > off[2] && czz < off[2] + size[2])
+      m |= 1 << (sx + sy * 2 + sz * 4);
+  }
+  return m;
+}
+const vocab = [];
+function addShape(size, off) { vocab.push({ size, off, mask: boxMask(size, off) }); }
+addShape([1, 1, 1], [0, 0, 0]); // full
+for (const ax of [0, 1, 2]) for (const p of [0, 0.5]) { // 6 slabs
+  const size = [1, 1, 1]; size[ax] = 0.5; const off = [0, 0, 0]; off[ax] = p; addShape(size, off);
+}
+for (const [a1, a2] of [[0, 1], [0, 2], [1, 2]]) for (const p1 of [0, 0.5]) for (const p2 of [0, 0.5]) { // 12 quarters
+  const size = [1, 1, 1]; size[a1] = 0.5; size[a2] = 0.5;
+  const off = [0, 0, 0]; off[a1] = p1; off[a2] = p2; addShape(size, off);
+}
+for (const px of [0, 0.5]) for (const py of [0, 0.5]) for (const pz of [0, 0.5]) // 8 corners
+  addShape([0.5, 0.5, 0.5], [px, py, pz]);
+const pop = (m) => { let c = 0; while (m) { c += m & 1; m >>= 1; } return c; };
+function fitShape(occ) {
+  if (pop(occ) >= 7) return vocab[0];
+  let best = vocab[0], bestScore = 1e9;
+  for (const s of vocab) {
+    const missing = pop(occ & ~s.mask), excess = pop(s.mask & ~occ);
+    const score = missing * 1.2 + excess * 0.8;
+    if (score < bestScore) { bestScore = score; best = s; }
+  }
+  return best;
+}
+
+// ---- scene scaffolding ----
+const sunDir = new THREE.Vector3(0.55, 0.85, 0.35).normalize();
+function makeScene() {
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x87b5e0);
+  const sun = new THREE.DirectionalLight(0xfff2dd, 2.6);
+  sun.position.copy(sunDir).multiplyScalar(maxDim * 2).add(bbox.getCenter(new THREE.Vector3()));
+  sun.target.position.copy(bbox.getCenter(new THREE.Vector3()));
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  const r = maxDim * 0.8;
+  Object.assign(sun.shadow.camera, { left: -r, right: r, top: r, bottom: -r, near: 0.1, far: maxDim * 5 });
+  scene.add(sun, sun.target);
+  scene.add(new THREE.HemisphereLight(0xbcd6f0, 0x8a7f66, 0.75));
+  return scene;
+}
+const center = bbox.getCenter(new THREE.Vector3());
+const cams = {
+  far: (() => { const c = new THREE.PerspectiveCamera(50, W / H, 0.01, maxDim * 10);
+    c.position.copy(center).add(new THREE.Vector3(1, 0.62, 1).normalize().multiplyScalar(maxDim * 1.05));
+    c.lookAt(center); return c; })(),
+  close: (() => { const c = new THREE.PerspectiveCamera(50, W / H, 0.01, maxDim * 10);
+    c.position.copy(center).add(new THREE.Vector3(1, 0.3, 0.55).normalize().multiplyScalar(maxDim * 0.42));
+    c.lookAt(center.clone().add(new THREE.Vector3(0, -maxDim * 0.06, 0))); return c; })(),
+};
+const mat = new THREE.MeshStandardMaterial({ color: 0xb9b2a6, roughness: 0.92 });
+const boxGeom = new THREE.BoxGeometry(1, 1, 1);
+boxGeom.translate(0.5, 0.5, 0.5); // origin at min corner — matches off/size math
+
+function buildInstanced(list) { // list of [x,y,z, sx,sy,sz] world units
+  const im = new THREE.InstancedMesh(boxGeom, mat, list.length);
+  const m4 = new THREE.Matrix4();
+  for (let i = 0; i < list.length; i++) {
+    const [x, y, z, sx, sy, sz] = list[i];
+    m4.makeScale(sx, sy, sz); m4.setPosition(x, y, z);
+    im.setMatrixAt(i, m4);
+  }
+  im.castShadow = true; im.receiveShadow = true;
+  return im;
+}
+
+async function renderMode(name, obj) {
+  const scene = makeScene();
+  scene.add(obj);
+  for (const [cn, cam] of Object.entries(cams)) {
+    renderer.render(scene, cam);
+    await shot(`spike-${name}-${cn}.png`);
+  }
+  scene.remove(obj);
+}
+
+// ---- mode: raw mesh (ground truth) ----
+status("render mesh");
+srcScene.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+await renderMode("mesh", srcScene);
+
+// ---- mode: fine cubes (baseline density) ----
+status("build fine (" + fine.size + " cells)");
+{
+  const list = [];
+  for (const k of fine) {
+    const ix = k % nx, iy = ((k / nx) | 0) % ny, iz = (k / (nx * ny)) | 0;
+    list.push([org.x + ix * fineVox, org.y + iy * fineVox, org.z + iz * fineVox, fineVox, fineVox, fineVox]);
+  }
+  const im = buildInstanced(list);
+  status("render fine " + list.length);
+  await renderMode("fine", im);
+  im.dispose();
+}
+
+// ---- mode: coarse cubes (half density, control) ----
+const cv = fineVox * 2;
+status("build coarse (" + coarse.size + " cells)");
+{
+  const list = [];
+  for (const [ck] of coarse) {
+    const ix = ck % cnx, iy = ((ck / cnx) | 0) % cny, iz = (ck / (cnx * cny)) | 0;
+    list.push([org.x + ix * cv, org.y + iy * cv, org.z + iz * cv, cv, cv, cv]);
+  }
+  const im = buildInstanced(list);
+  status("render coarse " + list.length);
+  await renderMode("coarse", im);
+  im.dispose();
+}
+
+// ---- mode: coarse + fitted shapes (half density, spike) ----
+status("fit shapes");
+{
+  const list = [];
+  const shapeCounts = {};
+  for (const [ck, occ] of coarse) {
+    const ix = ck % cnx, iy = ((ck / cnx) | 0) % cny, iz = (ck / (cnx * cny)) | 0;
+    const s = fitShape(occ);
+    const sig = s.size.join(",");
+    shapeCounts[sig] = (shapeCounts[sig] || 0) + 1;
+    list.push([
+      org.x + (ix + s.off[0]) * cv, org.y + (iy + s.off[1]) * cv, org.z + (iz + s.off[2]) * cv,
+      s.size[0] * cv, s.size[1] * cv, s.size[2] * cv,
+    ]);
+  }
+  window.__spikeStats = { fine: fine.size, coarse: coarse.size, shapeCounts };
+  const im = buildInstanced(list);
+  status("render shapes " + list.length);
+  await renderMode("shapes", im);
+  im.dispose();
+}
+
+await fetch("/shot", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ name: "spike-stats.json", data: "data:image/png;base64," + btoa(JSON.stringify(window.__spikeStats)) }) });
+await fetch("/done", { method: "POST" });
+status("DONE");
+</script>
+</body>
+</html>

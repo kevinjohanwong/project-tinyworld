@@ -47,6 +47,12 @@ Bun.serve({
     }
     if (url.pathname === "/voxel" || url.pathname === "/voxel.html")
       return new Response(readFileSync(ROOT + "/voxel.html"), { headers: { "content-type": "text/html" } });
+    if (url.pathname === "/voxspike" || url.pathname === "/voxspike.html")
+      return new Response(readFileSync(ROOT + "/voxspike.html"), { headers: { "content-type": "text/html" } });
+    if (url.pathname === "/debug-scan.glb")
+      return new Response(readFileSync("/root/.z/space/assets/debug-scan.glb"), {
+        headers: { "content-type": "model/gltf-binary", "cache-control": "no-store" },
+      });
     if (url.pathname === "/hero" || url.pathname === "/hero.html")
       return new Response(readFileSync(ROOT + "/hero.html"), { headers: { "content-type": "text/html" } });
     if (url.pathname === "/defaults") return Response.json(scalarUniformDefaults());
