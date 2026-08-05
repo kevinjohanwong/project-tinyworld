@@ -1326,6 +1326,8 @@ export default function TinyWorld() {
   const [hopperUi, setHopperUi] = useState<Record<string, number>>({});
   const [hopperSelected, setHopperSelected] = useState("dirt");
   const hopperSelectedRef = useRef("dirt");
+  const laserBuildModeRef = useRef(false);
+  const [laserBuildMode, setLaserBuildMode] = useState(false);
   useEffect(() => { hopperSelectedRef.current = hopperSelected; }, [hopperSelected]);
   // Physical stockpile: the counter above (stockpileByLayer) is mirrored by a
   // visible pile of real voxels at the town stockpile site. The pile is a pure
@@ -1445,6 +1447,14 @@ export default function TinyWorld() {
   const sentinelModeRef = useRef<"large" | "drone">("large");
   const [sentinelMode, setSentinelMode] = useState<"large" | "drone">("large");
   useEffect(() => { sentinelModeRef.current = sentinelMode; }, [sentinelMode]);
+  // Aim mode is a DISTINCT mode (staging laser port). OFF = normal walk: body
+  // faces travel heading, arm rests on the base animation, normal chase camera.
+  // ON = the procedural cannon arm aims at the look direction, the body faces
+  // the look yaw, and the chase camera pulls in close. Toggled with R (desktop)
+  // or the AIM button (mobile); auto-clears when leaving large-walk.
+  const aimModeRef = useRef(false);
+  const [aimMode, setAimMode] = useState(false);
+  useEffect(() => { aimModeRef.current = aimMode; }, [aimMode]);
   // Drone tether HUD: countdown chip fed by the render loop (~2/sec). null when
   // not flying; { remainingMs, rtb } while the drone is out on its leash.
   const [droneTetherUi, setDroneTetherUi] = useState<{ remainingMs: number; rtb: boolean } | null>(null);
@@ -2206,6 +2216,8 @@ export default function TinyWorld() {
   }, [loadSavedBlocks]);
 
   const buildWorld = useCallback(async (source: File | { layers: Record<string, Int32Array>; meta: Record<string, unknown>; blockCount: number; resolution: number }) => {
+    const sentinelLaserPortEnabled = window.location.pathname.includes("tinyworld-staging");
+    let aimSentinelCannon = (_deltaSeconds: number) => {};
     phaseRef.current = "loading";
     cancelAnimationFrame(rafRef.current);
     for (const _zid of zoneRaisesRef.current) cancelAnimationFrame(_zid);
@@ -2281,6 +2293,161 @@ export default function TinyWorld() {
     setPhase("building");
     await new Promise((r) => setTimeout(r, 25));
 
+    // ── Conquest-style shape path (?shapes=1, KJ Aug 4): coarsen the grid by
+    // SHAPE_CF (default 1.5) and fit each coarse cell to a 27-shape vocabulary
+    // (full / 6 half-slabs / 12 quarters / 8 corners — all axis-aligned boxes).
+    // WHOLE-CELL semantics per the Conquest ruling: the coarse cell is the
+    // edit/collision/data unit (dig empties it, place fills it); the fitted
+    // shape lives ONLY in shapeFitMap and is applied as a render-time
+    // non-uniform instance matrix in addLayer. Validated in clouds-lab spikes
+    // (voxspike/voxpal): 1.5×+shapes ≈ full-density fidelity at ~2.3× fewer
+    // cells. Grass/dryGrass/snow stay FULL cubes so grass blades never float
+    // (blade anchors assume a full top face). Leak guard: a shape may only
+    // shrink toward EMPTY neighbors. hidden_dirt coarsens but never shapes
+    // (invisible). latentCols per-column ranges are coarsened by union.
+    // Saved worlds built under shapes carry meta.shapesApplied so a reload
+    // never double-coarsens (their shape fits are NOT persisted yet — they
+    // reload as full cubes; v1 caveat).
+    const __shapeParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
+    const SHAPES_ON = __shapeParams.get("shapes") === "1"
+      && !((source as any)?.meta?.shapesApplied === true);
+    const SHAPE_CF = Math.max(1.05, Math.min(4, Number(__shapeParams.get("shapecf")) || 1.5));
+    const shapeFitMap = new Map<string, [number, number, number, number, number, number]>();
+    if (SHAPES_ON) {
+      const _t0 = performance.now();
+      const CF = SHAPE_CF;
+      const _i32 = (b: any): Int32Array => !b ? new Int32Array(0) : (b instanceof Int32Array ? b : new Int32Array(b));
+      const srcLayers = result.layers as Record<string, any>;
+      const fine = new Map<string, string>();
+      for (const [name, buf] of Object.entries(srcLayers)) {
+        const a = _i32(buf);
+        for (let i = 0; i < a.length; i += 3) fine.set(a[i] + "," + a[i + 1] + "," + a[i + 2], name);
+      }
+      const coarseOcc = new Map<string, { occ: number; layers: string[] }>();
+      for (const k of fine.keys()) {
+        const p = k.split(",");
+        const ck = Math.floor(+p[0] / CF) + "," + Math.floor(+p[1] / CF) + "," + Math.floor(+p[2] / CF);
+        if (!coarseOcc.has(ck)) coarseOcc.set(ck, { occ: 0, layers: [] });
+      }
+      for (const [ck, e] of coarseOcc) {
+        const p = ck.split(","), cx = +p[0], cy = +p[1], cz = +p[2];
+        for (let b = 0; b < 8; b++) {
+          const sx = b & 1, sy = (b >> 1) & 1, sz = (b >> 2) & 1;
+          const layer = fine.get(
+            Math.floor((cx + 0.25 + sx * 0.5) * CF) + ","
+            + Math.floor((cy + 0.25 + sy * 0.5) * CF) + ","
+            + Math.floor((cz + 0.25 + sz * 0.5) * CF));
+          if (layer) { e.occ |= 1 << b; e.layers.push(layer); }
+        }
+        if (!e.occ) { e.occ = 0b00001111; e.layers.push("dirt"); } // thin-diagonal: keep as bottom slab
+      }
+      // shape vocabulary — every shape is an axis-aligned box {size, off} in cell fractions
+      const _boxMask = (size: number[], off: number[]) => {
+        let m = 0;
+        for (let sz = 0; sz < 2; sz++) for (let sy = 0; sy < 2; sy++) for (let sx = 0; sx < 2; sx++) {
+          const cx = 0.25 + sx * 0.5, cy = 0.25 + sy * 0.5, cz = 0.25 + sz * 0.5;
+          if (cx > off[0] && cx < off[0] + size[0] && cy > off[1] && cy < off[1] + size[1] && cz > off[2] && cz < off[2] + size[2])
+            m |= 1 << (sx + sy * 2 + sz * 4);
+        }
+        return m;
+      };
+      const vocab: { size: number[]; off: number[]; mask: number }[] = [];
+      const _addShape = (size: number[], off: number[]) => vocab.push({ size, off, mask: _boxMask(size, off) });
+      _addShape([1, 1, 1], [0, 0, 0]);
+      for (const ax of [0, 1, 2]) for (const p of [0, 0.5]) {
+        const size = [1, 1, 1]; size[ax] = 0.5; const off = [0, 0, 0]; off[ax] = p; _addShape(size, off);
+      }
+      for (const [a1, a2] of [[0, 1], [0, 2], [1, 2]]) for (const p1 of [0, 0.5]) for (const p2 of [0, 0.5]) {
+        const size = [1, 1, 1]; size[a1] = 0.5; size[a2] = 0.5;
+        const off = [0, 0, 0]; off[a1] = p1; off[a2] = p2; _addShape(size, off);
+      }
+      for (const px of [0, 0.5]) for (const py of [0, 0.5]) for (const pz of [0, 0.5])
+        _addShape([0.5, 0.5, 0.5], [px, py, pz]);
+      const _pop = (m: number) => { let c = 0; while (m) { c += m & 1; m >>= 1; } return c; };
+      const _shapeAllowed = (s: { size: number[]; off: number[] }, nb: number) => {
+        for (let a = 0; a < 3; a++) {
+          if (s.off[a] > 0.001 && (nb & (1 << (a * 2)))) return false;
+          if (s.off[a] + s.size[a] < 0.999 && (nb & (1 << (a * 2 + 1)))) return false;
+        }
+        return true;
+      };
+      const _fitShape = (occ: number, nb: number) => {
+        if (_pop(occ) >= 7) return vocab[0];
+        let best = vocab[0], bestScore = 1e9;
+        for (const s of vocab) {
+          if (!_shapeAllowed(s, nb)) continue;
+          const missing = _pop(occ & ~s.mask), excess = _pop(s.mask & ~occ);
+          const score = missing * 1.2 + excess * 0.8;
+          if (score < bestScore) { bestScore = score; best = s; }
+        }
+        return best;
+      };
+      // layer vote: presence priority (surface/vegetation beats bulk, hidden last);
+      // within the grass family a count-weighted hash keeps the dryGrass speckle
+      const _PRIORITY = ["leaves", "sapling", "fruit", "seed", "grass", "dryGrass", "snow", "trunks", "wet", "wall", "ceiling", "water", "dirt", "hidden_dirt"];
+      const _hash3 = (x: number, y: number, z: number) =>
+        (((Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) >>> 0) % 1000) / 1000;
+      const _pickLayer = (arr: string[], cx: number, cy: number, cz: number) => {
+        const g = arr.filter((l) => l === "grass").length, dg = arr.filter((l) => l === "dryGrass").length;
+        if (g + dg > 0 && !arr.includes("leaves"))
+          return _hash3(cx, cy, cz) < dg / (g + dg) ? "dryGrass" : "grass";
+        for (const p of _PRIORITY) if (arr.includes(p)) return p;
+        // unknown layers (pal_*): most frequent
+        const counts = new Map<string, number>();
+        for (const l of arr) counts.set(l, (counts.get(l) || 0) + 1);
+        let best = arr[0] || "dirt", bc = 0;
+        for (const [l, c] of counts) if (c > bc) { bc = c; best = l; }
+        return best;
+      };
+      const _FULL_CUBE_LAYERS = new Set(["grass", "dryGrass", "snow", "sapling", "fruit", "seed", "hidden_dirt", "water"]);
+      const outLayers: Record<string, number[]> = {};
+      let _shaped = 0;
+      for (const [ck, e] of coarseOcc) {
+        const p = ck.split(","), cx = +p[0], cy = +p[1], cz = +p[2];
+        const layer = _pickLayer(e.layers, cx, cy, cz);
+        (outLayers[layer] ||= []).push(cx, cy, cz);
+        if (_FULL_CUBE_LAYERS.has(layer)) continue;
+        let nb = 0;
+        if (coarseOcc.has((cx - 1) + "," + cy + "," + cz)) nb |= 1;
+        if (coarseOcc.has((cx + 1) + "," + cy + "," + cz)) nb |= 2;
+        if (coarseOcc.has(cx + "," + (cy - 1) + "," + cz)) nb |= 4;
+        if (coarseOcc.has(cx + "," + (cy + 1) + "," + cz)) nb |= 8;
+        if (coarseOcc.has(cx + "," + cy + "," + (cz - 1))) nb |= 16;
+        if (coarseOcc.has(cx + "," + cy + "," + (cz + 1))) nb |= 32;
+        const s = _fitShape(e.occ, nb);
+        if (s !== vocab[0]) {
+          _shaped++;
+          shapeFitMap.set(ck, [s.off[0], s.off[1], s.off[2], s.size[0], s.size[1], s.size[2]]);
+        }
+      }
+      result.layers = Object.fromEntries(Object.entries(outLayers).map(([n, l]) => [n, new Int32Array(l)]));
+      let _visCount = 0;
+      for (const [n, l] of Object.entries(outLayers)) { if (n !== "hidden_dirt") _visCount += l.length / 3; }
+      result.visibleCount = _visCount;
+      result.voxel = (result.voxel as number) * CF;
+      // latent underside: coarsen the per-column [yMin,yMax] ranges by union
+      if (result.latentCols && (result.latentCols as ArrayBuffer).byteLength) {
+        const q = new Int32Array(result.latentCols as ArrayBuffer);
+        const merged = new Map<string, [number, number]>();
+        for (let i = 0; i + 3 < q.length; i += 4) {
+          const ck = Math.floor(q[i] / CF) + "," + Math.floor(q[i + 1] / CF);
+          const y0 = Math.floor(q[i + 2] / CF), y1 = Math.floor(q[i + 3] / CF);
+          const prev = merged.get(ck);
+          if (prev) { prev[0] = Math.min(prev[0], y0); prev[1] = Math.max(prev[1], y1); }
+          else merged.set(ck, [y0, y1]);
+        }
+        const out = new Int32Array(merged.size * 4);
+        let w = 0;
+        for (const [ck, r] of merged) {
+          const p = ck.split(",");
+          out[w++] = +p[0]; out[w++] = +p[1]; out[w++] = r[0]; out[w++] = r[1];
+        }
+        result.latentCols = out.buffer;
+      }
+      console.log("[tinyworld shapes] cf", CF, ":", fine.size, "fine ->", coarseOcc.size, "coarse cells,",
+        _shaped, "shaped,", Math.round(performance.now() - _t0), "ms");
+    }
+
     const voxel = result.voxel as number;
     const span = result.span as number;
     const centerX = result.centerX as number;
@@ -2318,6 +2485,9 @@ export default function TinyWorld() {
         }
       : source;
     const worldMeta = ((worldDataRef.current?.meta || {}) as any);
+    // shapes mode: stamp the world so a save/reload never re-coarsens, and keep
+    // meta.voxel consistent with the coarsened pitch for the saved-world path.
+    if (SHAPES_ON) { worldMeta.shapesApplied = true; worldMeta.shapeCf = SHAPE_CF; worldMeta.voxel = voxel; }
     structuralGrassRef.current = new Set(Array.isArray(worldMeta.structuralGrass) ? worldMeta.structuralGrass.map(String) : []);
     const inferredMeta = (worldMeta.inferredFrom || {}) as any;
     // NOTE: latentCols presence alone no longer flags a metric world — scan
@@ -2917,6 +3087,9 @@ export default function TinyWorld() {
     const _cloudCountParam = Number(__diagParams.get("cloudcount"));
     const _cloudTowerFracParam = Number(__diagParams.get("towerfrac"));
     const _cloudTowerLevelsParam = Number(__diagParams.get("towerlevels"));
+    const _cloudSeaCountParam = Number(__diagParams.get("seacount"));
+    const _cloudSeaLevelParam = Number(__diagParams.get("sealevel"));
+    const _cloudSeaOuterParam = Number(__diagParams.get("seaouter"));
     // Cloud mode: ?clouds=1 → VOXEL pack (default; cheap geometry lit by the
     // real sun, no raymarch, mobile-safe). ?clouds=vol → the volumetric
     // raymarch ring (heavier, desktop-oriented, kept for comparison).
@@ -2939,6 +3112,10 @@ export default function TinyWorld() {
           topScale: Number.isFinite(_cloudTopParam) && _cloudTopParam > 0 ? _cloudTopParam : undefined,
           towerFrac: Number.isFinite(_cloudTowerFracParam) && _cloudTowerFracParam >= 0 ? _cloudTowerFracParam : undefined,
           towerLevels: Number.isFinite(_cloudTowerLevelsParam) && _cloudTowerLevelsParam > 0 ? _cloudTowerLevelsParam : undefined,
+          // cloud SEA below the island (?seacount=0 disables; ?sealevel=-0.5 lower)
+          seaCount: Number.isFinite(_cloudSeaCountParam) && _cloudSeaCountParam >= 0 ? _cloudSeaCountParam : undefined,
+          seaLevel: Number.isFinite(_cloudSeaLevelParam) ? _cloudSeaLevelParam : undefined,
+          seaOuter: Number.isFinite(_cloudSeaOuterParam) && _cloudSeaOuterParam > 0 ? _cloudSeaOuterParam : undefined,
         })
       : createVolumetricCloudRing({
           THREE,
@@ -4326,9 +4503,22 @@ export default function TinyWorld() {
         const x = arr[i];
         const y = arr[i + 1];
         const z = arr[i + 2];
-        dummy.position.set((x - cxRound) * voxel, y * voxel, (z - czRound) * voxel);
-        dummy.rotation.set(0, 0, 0);
-        dummy.scale.set(1, 1, 1);
+        // Conquest shape path: a fitted cell renders as its sub-cell box via a
+        // non-uniform instance matrix (render-only — slotMap/collision/edits
+        // stay whole-cell; a dig removes the whole shaped cell).
+        const _sf = shapeFitMap.size ? shapeFitMap.get(x + "," + y + "," + z) : undefined;
+        if (_sf) {
+          dummy.position.set(
+            (x - cxRound + _sf[0] + _sf[3] * 0.5 - 0.5) * voxel,
+            (y + _sf[1] + _sf[4] * 0.5 - 0.5) * voxel,
+            (z - czRound + _sf[2] + _sf[5] * 0.5 - 0.5) * voxel);
+          dummy.rotation.set(0, 0, 0);
+          dummy.scale.set(_sf[3], _sf[4], _sf[5]);
+        } else {
+          dummy.position.set((x - cxRound) * voxel, y * voxel, (z - czRound) * voxel);
+          dummy.rotation.set(0, 0, 0);
+          dummy.scale.set(1, 1, 1);
+        }
         dummy.updateMatrix();
         mesh.setMatrixAt(j, dummy.matrix);
         (mesh.userData.slotMap as Map<string, number>).set(x + "," + y + "," + z, j);
@@ -5031,7 +5221,9 @@ export default function TinyWorld() {
     // wall shell — are never drawn. Facades keep the InstancedMesh protocol so
     // every edit/serialize path works unchanged. Disable per-load with
     // ?greedyground=0 to A/B against the instanced path.
-    const USE_GREEDY_GROUND = __diagParams.get("greedyground") !== "0";
+    // shapes mode forces the instanced path: greedy merge assumes full cubes,
+    // so fitted sub-cell boxes would render as full cells inside merged chunks.
+    const USE_GREEDY_GROUND = __diagParams.get("greedyground") !== "0" && !SHAPES_ON;
     let greedyGround: GreedyGround | null = null;
     const _gg32 = (b: any): Int32Array | null =>
       !b ? null : (b instanceof Int32Array ? b : new Int32Array(b));
@@ -5822,8 +6014,8 @@ export default function TinyWorld() {
     // so picking, void erosion, pickup/place and serialization keep working.
     // Disable for A/B with ?greedy=0. Chunked so view-dependent residency for
     // future world-stitching can layer on.
-    const USE_GREEDY_WALL = (typeof window !== "undefined")
-      ? new URLSearchParams(window.location.search).get("greedy") !== "0" : true;
+    const USE_GREEDY_WALL = ((typeof window !== "undefined")
+      ? new URLSearchParams(window.location.search).get("greedy") !== "0" : true) && !SHAPES_ON;
     let wallUpperMesh: any = null;
     if (USE_GREEDY_WALL && wallArr.length) {
       // AO-aware merge is DEFAULT ON — it removes the AO-interpolation crease lines
@@ -10947,24 +11139,33 @@ export default function TinyWorld() {
         hideMachineBeam();
         return;
       }
-      const forward = new THREE.Vector3();
-      camera.getWorldDirection(forward);
-      beamStart.copy(camera.position).addScaledVector(forward, voxel * 0.55);
-      beamStart.y -= voxel * 0.18;
-      beamEnd.set(
+      const targetEnd = new THREE.Vector3(
         (chargeState.vx - cxRound) * voxel,
         chargeState.vy * voxel,
         (chargeState.vz - czRound) * voxel,
       );
-      beamDirection.subVectors(beamEnd, beamStart);
-      const length = beamDirection.length();
+      const drone = sentinelModeRef.current === "drone";
+      // Muzzle beam only when the cannon arm is actually aiming (aim mode). Out
+      // of aim mode the solver doesn't run, so sentinelMuzzleWorld/CannonWorld
+      // are stale — fall back to the lens beam like the drone/non-staging path.
+      const useMuzzleBeam = !drone && sentinelLaserPortEnabled && aimModeRef.current;
+      if (!useMuzzleBeam) {
+        const lensForward = new THREE.Vector3(0, 0, -1).applyQuaternion(sentinelGroup.quaternion).normalize();
+        const lensUp = new THREE.Vector3(0, 1, 0).applyQuaternion(sentinelGroup.quaternion).normalize();
+        beamStart.copy(sentinelGroup.position).addScaledVector(lensForward, SENTINEL_TARGET_H * 0.34).addScaledVector(lensUp, SENTINEL_TARGET_H * 0.62);
+        beamDirection.subVectors(targetEnd, beamStart).normalize();
+      } else {
+        beamStart.copy(sentinelMuzzleWorld);
+        beamDirection.copy(sentinelCannonWorld).normalize();
+      }
+      const targetDistance = Math.max(voxel, targetEnd.distanceTo(beamStart));
+      beamEnd.copy(beamStart).addScaledVector(beamDirection, targetDistance);
+      const length = targetDistance;
       if (length <= voxel * 0.1) {
         hideMachineBeam();
         return;
       }
-      beamDirection.multiplyScalar(1 / length);
       beamMidpoint.addVectors(beamStart, beamEnd).multiplyScalar(0.5);
-      const drone = sentinelModeRef.current === "drone";
       const pulse = 0.88 + Math.sin(now * 0.028) * 0.12;
       const outerRadius = voxel * (drone ? 0.18 : 0.34) * pulse;
       const coreRadius = voxel * (drone ? 0.055 : 0.1);
@@ -11309,6 +11510,10 @@ export default function TinyWorld() {
     machineBeamInputRef.current = {
       start: () => {
         if (!walkingRef.current) return;
+        if (laserBuildModeRef.current) {
+          placeLaserBlock();
+          return;
+        }
         if (carryState) {
           tryPlace();
           return;
@@ -11322,7 +11527,7 @@ export default function TinyWorld() {
       },
     };
 
-    const HOPPER_CAPACITY = { drone: 64, sentinel: 128, titan: 384 } as const;
+    const HOPPER_CAPACITY = { drone: 256, sentinel: 1024, titan: 4096 } as const;
     const hopperCapacity = () => sentinelModeRef.current === "drone" ? HOPPER_CAPACITY.drone : HOPPER_CAPACITY.sentinel;
     const hopperTotal = () => Object.values(hopperByLayerRef.current).reduce((sum, n) => sum + n, 0);
     const hopperLayers = () => Object.keys(hopperByLayerRef.current).filter((layer) => (hopperByLayerRef.current[layer] || 0) > 0);
@@ -11537,6 +11742,7 @@ export default function TinyWorld() {
       }
       if (ev.button === 2) { returnCarry(); return; }
       if (ev.button !== 0) return;
+      if (laserBuildModeRef.current) { placeLaserBlock(); return; }
       if (carryState) tryPlace();
       else { beamHeld = true; tryPickup(); }
     });
@@ -11556,9 +11762,18 @@ export default function TinyWorld() {
       if (e.code === "KeyF" && !fp.isLocked) enterWalkRef.current();
       if (e.code === "KeyB") {
         if (buildModeRef.current) buildExitRef.current();
-        else if (walkingRef.current && (sentinelModeRef.current === "large" || sentinelModeRef.current === "drone")) buildEnterRef.current();
+        else if (walkingRef.current && (sentinelModeRef.current === "large" || sentinelModeRef.current === "drone")) {
+          if (aimModeRef.current) { aimModeRef.current = false; setAimMode(false); }
+          buildEnterRef.current();
+        }
       }
       if (e.code === "KeyC") (window as any).__tw?.findWorker?.();
+      if (e.code === "KeyR" && sentinelLaserPortEnabled && walkingRef.current
+        && sentinelModeRef.current === "large" && !laserBuildModeRef.current) {
+        const next = !aimModeRef.current;
+        aimModeRef.current = next;
+        setAimMode(next);
+      }
       if (e.code === "Escape" && fp.isLocked) {
         if (targetModeRef.current) {
           setTargetMode(null);
@@ -15235,6 +15450,15 @@ export default function TinyWorld() {
 
     let sentinelMixer: any = null;
     const sentinelActions: Record<string, any> = {};
+    let sentinelArmRoot: any = null;
+    let sentinelShoulderBone: any = null;
+    let sentinelUpperBone: any = null;
+    let sentinelForearmBone: any = null;
+    let sentinelMuzzleBone: any = null;
+    const sentinelCannonAxisLocal = new THREE.Vector3(0, 0, 1);
+    const sentinelMuzzleWorld = new THREE.Vector3();
+    const sentinelCannonWorld = new THREE.Vector3(0, 0, -1);
+    let sentinelElbowBend = THREE.MathUtils.degToRad(42);
     type SentState = "sitting" | "standingUp" | "standing" | "sittingDown";
     let sentinelAnimState: SentState = "sitting";
     let sentinelLoaded = false;
@@ -15731,6 +15955,13 @@ export default function TinyWorld() {
         }
       });
       sentinelGroup.add(root);
+      sentinelArmRoot = root;
+      const sentinelBones: Record<string, any> = {};
+      root.traverse((obj: any) => { if (obj.isBone) sentinelBones[obj.name] = obj; });
+      sentinelShoulderBone = sentinelBones.RightShoulder;
+      sentinelUpperBone = sentinelBones.RightArm;
+      sentinelForearmBone = sentinelBones.RightForeArm;
+      sentinelMuzzleBone = sentinelBones.RightHand;
 
       sentinelMixer = new THREE.AnimationMixer(root);
       for (const clip of gltf.animations) {
@@ -15827,6 +16058,14 @@ export default function TinyWorld() {
       // so multiply by the applied scale factor to get true world-space top height
       // above the planted foot. The chase camera aims at a fraction of THIS.
       sentinelTopY = (bindBox.max.y - footY) * (SENTINEL_TARGET_H / SENTINEL_NATIVE_H);
+
+      if (sentinelForearmBone && sentinelMuzzleBone) {
+        sentinelGroup.updateMatrixWorld(true);
+        const elbow = sentinelForearmBone.getWorldPosition(new THREE.Vector3());
+        const muzzle = sentinelMuzzleBone.getWorldPosition(new THREE.Vector3());
+        const cannonQ = sentinelForearmBone.getWorldQuaternion(new THREE.Quaternion());
+        sentinelCannonAxisLocal.copy(muzzle.sub(elbow).normalize()).applyQuaternion(cannonQ.invert()).normalize();
+      }
 
       sentinelLoaded = true;
       // Chain one-shot transitions into their idle loop on completion.
@@ -16038,7 +16277,8 @@ export default function TinyWorld() {
         // anchor too (body hidden). The mech faces its travel heading
         // (moveYawRef) — looking around orbits the camera, not the mech.
         const fwd = 0;
-        const headYaw = moveYawRef.current;
+        const laserAimActive = sentinelLaserPortEnabled && aimModeRef.current && !laserBuildModeRef.current;
+        const headYaw = laserAimActive ? targetLookRef.current.y : moveYawRef.current;
         const fx = -Math.sin(headYaw), fz = -Math.cos(headYaw);
         const bodyX = camera.position.x + fx * fwd;
         const bodyZ = camera.position.z + fz * fwd;
@@ -16135,6 +16375,74 @@ export default function TinyWorld() {
       const oy = sentinelState.vy * voxel;
       sentinelGroup.position.set(ox, oy, oz);
       sentinelGroup.rotation.y = Math.PI;
+    };
+
+    const rotateSentinelBoneWorld = (bone: any, deltaQ: any) => {
+      const worldQ = bone.getWorldQuaternion(new THREE.Quaternion()).premultiply(deltaQ);
+      if (!bone.parent) { bone.quaternion.copy(worldQ); return; }
+      const parentQ = bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+      bone.quaternion.copy(parentQ.multiply(worldQ));
+    };
+
+    aimSentinelCannon = (deltaSeconds: number) => {
+      const active = sentinelLaserPortEnabled && aimModeRef.current && walkingRef.current && sentinelModeRef.current === "large" && !laserBuildModeRef.current;
+      if (!active || !sentinelArmRoot || !sentinelUpperBone || !sentinelForearmBone || !sentinelMuzzleBone) return;
+      sentinelGroup.updateMatrixWorld(true);
+
+      // Body frame from the model's yaw (matches the verified /sentinel-laser-test
+      // testbed convention): chest = +forward, so the cone/outward math lands on
+      // the same side as the isolated test. The prior (0,0,-1)·quat forward was
+      // the model's BACK, which mirrored the whole arm.
+      const yaw = sentinelGroup.rotation.y;
+      const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw)).normalize();
+      const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw)).normalize();
+      const up = new THREE.Vector3(0, 1, 0);
+      const shoulder = sentinelUpperBone.getWorldPosition(new THREE.Vector3());
+      const elbowRest = sentinelForearmBone.getWorldPosition(new THREE.Vector3());
+      const muzzleRest = sentinelMuzzleBone.getWorldPosition(new THREE.Vector3());
+
+      // Which lateral side the cannon arm actually sits on (this rig's RightArm
+      // is on model −X). Derive it from the real shoulder position vs the body
+      // center so the cone/outward never mirror the arm through the torso.
+      const bodyCenter = sentinelGroup.getWorldPosition(new THREE.Vector3());
+      const shoulderLateral = shoulder.clone().sub(bodyCenter); shoulderLateral.y = 0;
+      const cannonSide = right.clone();
+      if (shoulderLateral.lengthSq() > 1e-6 && shoulderLateral.dot(cannonSide) < 0) cannonSide.negate();
+
+      const coneCenter = up.clone().multiplyScalar(-0.88).addScaledVector(forward, 0.34).addScaledVector(cannonSide, 0.22).normalize();
+      const coneRight = cannonSide.clone().addScaledVector(coneCenter, -cannonSide.dot(coneCenter)).normalize();
+      const pitchInput = THREE.MathUtils.clamp(-targetLookRef.current.x / sentinelPitchLimit, -1, 1);
+      const shoulderDirection = coneCenter.clone().applyAxisAngle(coneRight, pitchInput * THREE.MathUtils.degToRad(10)).normalize();
+      const upperRestAxis = elbowRest.clone().sub(shoulder).normalize();
+      rotateSentinelBoneWorld(sentinelUpperBone, new THREE.Quaternion().setFromUnitVectors(upperRestAxis, shoulderDirection));
+      sentinelGroup.updateMatrixWorld(true);
+
+      const elbow = sentinelForearmBone.getWorldPosition(new THREE.Vector3());
+      const muzzleBefore = sentinelMuzzleBone.getWorldPosition(new THREE.Vector3());
+      const currentForearm = muzzleBefore.clone().sub(elbow).normalize();
+      const outward = cannonSide.clone().addScaledVector(shoulderDirection, -cannonSide.dot(shoulderDirection)).normalize();
+      const inwardForward = forward.clone().multiplyScalar(0.84).addScaledVector(outward, -0.55);
+      inwardForward.addScaledVector(shoulderDirection, -inwardForward.dot(shoulderDirection)).normalize();
+      const minBend = THREE.MathUtils.degToRad(25);
+      const maxBend = THREE.MathUtils.degToRad(110);
+      const bendTarget = THREE.MathUtils.lerp(minBend, maxBend, THREE.MathUtils.clamp((pitchInput + 1) * 0.5, 0, 1));
+      const response = 1 - Math.exp(-12 * Math.min(deltaSeconds, 0.05));
+      sentinelElbowBend = THREE.MathUtils.lerp(sentinelElbowBend, bendTarget, response);
+      const forearmDirection = shoulderDirection.clone().multiplyScalar(Math.cos(sentinelElbowBend)).addScaledVector(inwardForward, Math.sin(sentinelElbowBend)).normalize();
+      rotateSentinelBoneWorld(sentinelForearmBone, new THREE.Quaternion().setFromUnitVectors(currentForearm, forearmDirection));
+      sentinelGroup.updateMatrixWorld(true);
+
+      sentinelMuzzleBone.getWorldPosition(sentinelMuzzleWorld);
+      sentinelCannonWorld.copy(sentinelCannonAxisLocal).applyQuaternion(sentinelForearmBone.getWorldQuaternion(new THREE.Quaternion())).normalize();
+      (window as any).__twSentinelArm = {
+        active: true,
+        shoulder: shoulder.toArray(),
+        elbow: sentinelForearmBone.getWorldPosition(new THREE.Vector3()).toArray(),
+        muzzle: sentinelMuzzleWorld.toArray(),
+        cannon: sentinelCannonWorld.toArray(),
+        elbowDeg: THREE.MathUtils.radToDeg(sentinelElbowBend),
+        wristCorrection: 0,
+      };
     };
 
     // ─── Build Mode: director camera + ghost plan + machine builder ────────
@@ -16558,6 +16866,22 @@ export default function TinyWorld() {
       spawnDebrisChips(wx, wy, wz, col, 1);
       settleWaterNear(vx, vy, vz);
       return true;
+    };
+
+    const placeLaserBlock = (): boolean => {
+      const layer = hopperSelectedRef.current;
+      if ((hopperByLayerRef.current[layer] || 0) <= 0) return false;
+      const target = getPlacementTarget();
+      if (!target) return false;
+      const supported = solidAt(target.vx + 1, target.vy, target.vz)
+        || solidAt(target.vx - 1, target.vy, target.vz)
+        || solidAt(target.vx, target.vy + 1, target.vz)
+        || solidAt(target.vx, target.vy - 1, target.vz)
+        || solidAt(target.vx, target.vy, target.vz + 1)
+        || solidAt(target.vx, target.vy, target.vz - 1)
+        || groundRef.current?.map.get(target.vx + "," + target.vz) === target.vy - 1;
+      if (!supported) return false;
+      return placeFromHopper(target.vx, target.vy, target.vz, layer);
     };
 
     // ── The Sentinel as builder/harvester: idle → walking → working → idle ──
@@ -19153,6 +19477,7 @@ export default function TinyWorld() {
         // occlusion march, same knobs — so switching machines keeps the camera.
         const _chaseDrone = walkingRef.current && sentinelModeRef.current === "drone";
         const _chaseActive = (walkingRef.current && viewModeRef.current === "third" && sentinelModeRef.current === "large") || _chaseDrone;
+        if (!_chaseActive && (camera as any).view?.enabled) camera.clearViewOffset();
         if (_chaseActive) {
           // Desktop: pointer-lock mouse-look writes camera.rotation between
           // frames; the override clobbers rotation via lookAt, so the yaw here
@@ -19251,6 +19576,7 @@ export default function TinyWorld() {
         renderShips(now);
         const dt = Math.min((now - prev) / 1000, 0.05);
         prev = now;
+        aimSentinelCannon(dt);
         __twFrame(now);
         // Billboard grass: advance wind time on the shared LOD materials and
         // pick each chunk's visible LOD by camera distance.
@@ -19750,9 +20076,19 @@ export default function TinyWorld() {
           const framingReferenceAspect = 1.6;
           const portraitDistanceScale = Math.max(1, framingReferenceAspect / framingAspect);
           const mobileLandscapeScale = isMobileRef.current && framingAspect > 1 ? 0.65 : 1;
-          const followDist = (SENTINEL_TARGET_H * 3.2 * camRig.dist * portraitDistanceScale * mobileLandscapeScale)
+          const laserCameraActive = sentinelLaserPortEnabled && aimModeRef.current && !_chaseDrone && !laserBuildModeRef.current;
+          const laserDistanceScale = laserCameraActive ? 0.52 : 1;
+          const laserHeightScale = laserCameraActive ? 0.72 : 1;
+          const followDist = (SENTINEL_TARGET_H * 3.2 * camRig.dist * portraitDistanceScale * mobileLandscapeScale * laserDistanceScale)
             + (_chaseDrone ? droneFwdPull : 0); // drone speed-zoom: thrust eases the lens back
-          const followHeight = SENTINEL_TARGET_H * 1.5 * camRig.height;
+          const followHeight = SENTINEL_TARGET_H * 1.5 * camRig.height * laserHeightScale;
+          if (laserCameraActive) {
+            const vw = Math.max(1, renderer.domElement.clientWidth || innerWidth);
+            const vh = Math.max(1, renderer.domElement.clientHeight || innerHeight);
+            camera.setViewOffset(vw, vh, vw * 0.18, -vh * 0.14, vw, vh);
+          } else if ((camera as any).view?.enabled) {
+            camera.clearViewOffset();
+          }
           // Keep the physical lens orbit out of the ground, canopy, and mech.
           // Input can continue through the wider range below; beyond these safe
           // orbit angles it becomes a free-look aim offset instead of collapsing
@@ -21533,16 +21869,29 @@ export default function TinyWorld() {
                  <span className="text-[9px] text-white/40 uppercase tracking-widest">{sentinelMode === "drone" ? "Precision Beam" : "Wide Beam"}</span>
                </button>
 
+               {sentinelMode === "large" && !laserBuildMode && window.location.pathname.includes("tinyworld-staging") && (
+                 <button
+                   className="pointer-events-auto flex flex-col items-center gap-1 active:scale-90 transition-transform"
+                   onClick={() => { const next = !aimModeRef.current; aimModeRef.current = next; setAimMode(next); }}
+                   onTouchStart={(e) => { e.stopPropagation(); const next = !aimModeRef.current; aimModeRef.current = next; setAimMode(next); }}
+                 >
+                   <div className={`${isMobileRef.current ? "w-12 h-12" : "w-10 h-10"} rounded-full border-2 ${aimMode ? "border-red-400/90 bg-red-500/20" : "border-white/30 bg-white/10"} flex items-center justify-center backdrop-blur-md`}>
+                     <span className={`${isMobileRef.current ? "text-[10px]" : "text-[9px]"} font-bold ${aimMode ? "text-red-300" : "text-white/80"}`}>AIM</span>
+                   </div>
+                   <span className="text-[9px] text-white/40 uppercase tracking-widest">{aimMode ? "Aiming" : "Aim (R)"}</span>
+                 </button>
+               )}
+
                {sentinelMode === "large" && (
                  <button
                    className="pointer-events-auto flex flex-col items-center gap-1 active:scale-90 transition-transform"
-                   onClick={() => buildEnterRef.current()}
-                   onTouchStart={(e) => { e.stopPropagation(); buildEnterRef.current(); }}
+                   onClick={() => { const next = !laserBuildModeRef.current; laserBuildModeRef.current = next; setLaserBuildMode(next); }}
+                   onTouchStart={(e) => { e.stopPropagation(); const next = !laserBuildModeRef.current; laserBuildModeRef.current = next; setLaserBuildMode(next); }}
                  >
-                   <div className={`${isMobileRef.current ? "w-12 h-12" : "w-10 h-10"} rounded-full border-2 border-emerald-300/70 bg-emerald-400/10 flex items-center justify-center backdrop-blur-md`}>
-                     <span className={`${isMobileRef.current ? "text-[10px]" : "text-[9px]"} font-bold text-emerald-300`}>BLD</span>
+                   <div className={`${isMobileRef.current ? "w-12 h-12" : "w-10 h-10"} rounded-full border-2 ${laserBuildMode ? "border-amber-300/90 bg-amber-400/20" : "border-emerald-300/70 bg-emerald-400/10"} flex items-center justify-center backdrop-blur-md`}>
+                     <span className={`${isMobileRef.current ? "text-[10px]" : "text-[9px]"} font-bold ${laserBuildMode ? "text-amber-200" : "text-emerald-300"}`}>{laserBuildMode ? "LAS" : "BLD"}</span>
                    </div>
-                   <span className="text-[9px] text-white/40 uppercase tracking-widest">Build</span>
+                   <span className="text-[9px] text-white/40 uppercase tracking-widest">{laserBuildMode ? "Place" : "Build"}</span>
                  </button>
                )}
 
@@ -21578,7 +21927,7 @@ export default function TinyWorld() {
              </div>
              <div className="pointer-events-auto flex max-w-[92vw] items-center justify-center gap-2 text-[9px] uppercase tracking-[0.15em] text-cyan-100/65 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
                <span>Hopper {sentinelMode === "drone" ? "Drone" : "Sentinel"}</span>
-               <span>{Object.values(hopperUi).reduce((sum, n) => sum + n, 0)}/{sentinelMode === "drone" ? 64 : 128}</span>
+               <span>{Object.values(hopperUi).reduce((sum, n) => sum + n, 0)}/{sentinelMode === "drone" ? 256 : 1024}</span>
                <span className="text-white/30">·</span>
                <div className="flex flex-wrap justify-center gap-1.5">
                  {Object.entries(hopperUi).filter(([, n]) => n > 0).map(([layer, n]) => (
