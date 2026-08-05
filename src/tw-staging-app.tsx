@@ -3087,9 +3087,12 @@ export default function TinyWorld() {
     const _cloudCountParam = Number(__diagParams.get("cloudcount"));
     const _cloudTowerFracParam = Number(__diagParams.get("towerfrac"));
     const _cloudTowerLevelsParam = Number(__diagParams.get("towerlevels"));
-    const _cloudSeaCountParam = Number(__diagParams.get("seacount"));
-    const _cloudSeaLevelParam = Number(__diagParams.get("sealevel"));
-    const _cloudSeaOuterParam = Number(__diagParams.get("seaouter"));
+    // NB: Number(null) === 0, so an ABSENT param must become NaN — otherwise the
+    // finite-guards below accept the accidental 0 and force seaCount:0 (sea off)
+    // and seaLevel:0, which is why the cloud sea silently never rendered.
+    const _cloudSeaCountParam = __diagParams.has("seacount") ? Number(__diagParams.get("seacount")) : NaN;
+    const _cloudSeaLevelParam = __diagParams.has("sealevel") ? Number(__diagParams.get("sealevel")) : NaN;
+    const _cloudSeaOuterParam = __diagParams.has("seaouter") ? Number(__diagParams.get("seaouter")) : NaN;
     // Cloud mode: ?clouds=1 → VOXEL pack (default; cheap geometry lit by the
     // real sun, no raymarch, mobile-safe). ?clouds=vol → the volumetric
     // raymarch ring (heavier, desktop-oriented, kept for comparison).
