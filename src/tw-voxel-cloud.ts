@@ -23,6 +23,10 @@ export interface VoxelCloudOptions {
   topScale?: number; // band height (× span)
   towerFrac?: number; // fraction of clouds built as tall stacked nimbus towers
   towerLevels?: number; // vertical stack count per tower
+  seaCount?: number; // cloud-sea pieces below the island (0 disables the sea)
+  seaLevel?: number; // sea band center (× span; negative = below the island)
+  seaInner?: number; // sea start radius (× span)
+  seaOuter?: number; // sea reach toward the horizon (× span)
 }
 
 export interface VoxelCloudUpdate {
@@ -58,12 +62,12 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     // against open sky (the Ghibli day reference), not a maxed-out overhead wall.
     // The towers are now broad continuous masses, so fewer clouds is fuller.
     // Push back up via ?cloudcount= if a denser bank is wanted.
-    count: opts.count ?? 50,
+    count: opts.count ?? 26,
     sizeScale: opts.sizeScale ?? 1,
     // Distant scattered sky: clouds sit FAR from the player (inner 2.2 span) so
     // they read as cumulus on the horizon, not a wall looming overhead. Not a ring.
-    inner: opts.innerScale ?? 2.2,
-    outer: opts.outerScale ?? 6.0,
+    inner: opts.innerScale ?? 3.4,
+    outer: opts.outerScale ?? 8.0,
     top: opts.topScale ?? 3.0,
     opacity: 0.94,
     edgeFade: 0.26,
@@ -87,6 +91,17 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     // distance/height. heroCount big towers, heroSize× the normal footprint.
     heroCount: 5, // number of big dominant hero clouds (varied sizes)
     heroSize: 2.6, // hero footprint multiplier (× the normal cloud footprint)
+    // CLOUD SEA (KJ Aug 4, the floating-palace references): a dense FLATTENED
+    // cloud layer BELOW the island rim spreading far toward the horizon, so the
+    // island reads as land standing above a cloud ocean. Sea pieces are single
+    // coarse clones (cheap), y-flattened into rolling swells, heavily
+    // overlapped, and GROW with distance so the far sea stays dense without
+    // more meshes. 0 disables.
+    seaCount: opts.seaCount ?? 300,
+    seaLevel: opts.seaLevel ?? -0.42, // sea band center (× span; negative = below the island)
+    seaInner: opts.seaInner ?? 0.3, // sea tucks in under the island edge (× span)
+    seaOuter: opts.seaOuter ?? 7.0, // sea reach toward the horizon (× span)
+    seaFlat: 0.45, // y-scale of sea pieces (rounded rolling swells)
     fuzz: 0.35, // fuzzy shading power (0 = flat faces)
     fuzzTiling: 0.55, // fuzzy noise scale
     backlight: 0.6, // "play to light": sun-through glow strength
@@ -117,14 +132,17 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   const uNoise = { value: new THREE.Vector2(0.55, 0.5) }; // fuzz: tiling(×span), power
   const uBack = { value: new THREE.Vector2(0.6, 3.5) }; // backlight: strength, sharpness
   const uSpanRef = { value: Math.max(1e-3, span) };
+  // aerial haze band (world units): far clouds dissolve toward the sun-tinted
+  // horizon instead of ending at a hard edge. Set from the sea reach at scatter.
+  const uHaze = { value: new THREE.Vector2(span * 4.5, span * 9.0) };
   const material = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 1, metalness: 0, vertexColors: true,
     transparent: true, depthWrite: true, // depthWrite keeps the opaque core sorted; only silhouette edges blend
   });
-  material.customProgramCacheKey = () => "tinyworldVoxelCloudVBfineface";
+  material.customProgramCacheKey = () => "tinyworldVoxelCloudVCsea";
   material.onBeforeCompile = (shader: any) => {
     Object.assign(shader.uniforms, {
-      uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uBack, uSpanRef,
+      uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uBack, uSpanRef, uHaze,
     });
     shader.vertexShader =
       "attribute float aY01;\nvarying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\nvarying vec3 vWPos;\n" +
@@ -138,7 +156,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  vY01 = aY01;",
       );
     shader.fragmentShader =
-      "uniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec3 uRimColor;\nuniform vec4 uParams;\nuniform vec2 uGrad;\nuniform vec2 uNoise;\nuniform vec2 uBack;\nuniform float uSpanRef;\n" +
+      "uniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec3 uRimColor;\nuniform vec4 uParams;\nuniform vec2 uGrad;\nuniform vec2 uNoise;\nuniform vec2 uBack;\nuniform float uSpanRef;\nuniform vec2 uHaze;\n" +
       "varying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\nvarying vec3 vWPos;\n" +
       "vec3 cloudRamp(float t){\n" +
       "  vec3 c0 = vec3(0.56,0.61,0.69); vec3 c1 = vec3(0.82,0.84,0.88); vec3 c2 = vec3(1.0,1.0,0.99);\n" +
@@ -189,6 +207,12 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  float back = pow(clamp(dot(normalize(uSunDir), -normalize(vVDir)), 0.0, 1.0), uBack.y);\n" +
           "  back *= uBack.x * (0.35 + 0.65 * (1.0 - ndv));\n" +
           "  col += uLight * back;\n" +
+          // AERIAL HAZE: with the sea reaching far out, distant clouds dissolve
+          // toward a sun-tinted horizon (real atmospherics — reads as scale, and
+          // kills the hard far edge). Colour-only; alpha keeps the solid horizon.
+          "  float hd = smoothstep(uHaze.x, uHaze.y, length(vWPos.xz));\n" +
+          "  vec3 hazeCol = mix(vec3(0.80, 0.87, 0.96), uLight, 0.4);\n" +
+          "  col = mix(col, hazeCol, hd * 0.85);\n" +
           "  gl_FragColor.rgb = col;\n" +
           // SOFT SILHOUETTE: fade alpha at grazing angles (the outline) so the hard
           // voxel edge feathers into the sky instead of a crisp Minecraft cube edge.
@@ -212,6 +236,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     bobRate: number;
   }[] = [];
   let ready = false;
+  const seaDiscs: any[] = [];
 
   const scatter = () => {
     if (!pieces.length) return;
@@ -235,10 +260,13 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
         ? (i / Math.max(1, state.heroCount)) * Math.PI * 2 + (rnd() - 0.5) * 0.5
         : rnd() * Math.PI * 2;
       const radius = isHero
-        ? innerR + (0.45 + rnd() * 0.4) * Math.max(0.001, outerR - innerR) // mid-distance, prominent
+        ? innerR + (0.72 + rnd() * 0.33) * Math.max(0.001, outerR - innerR) // FAR — huge masses on the horizon, gaps of open sky between
         : innerR + Math.sqrt(rnd()) * Math.max(0.001, outerR - innerR); // disc, not a ring
       // height band above the horizon; heroes sit low so the broad tower rises up
-      let baseY = isHero ? topY * (0.02 + rnd() * 0.08) : topY * (rnd() * 0.55 - 0.05);
+      // With the cloud SEA below, the sky band sits ABOVE it: non-heroes float
+      // high (open air between sea and sky, like the reference), heroes keep a
+      // low base so they rise OUT of the cloud ocean like the floating palaces.
+      let baseY = isHero ? topY * (0.02 + rnd() * 0.08) : topY * (0.16 + rnd() * 0.45);
       // Hero clouds are much bigger so they dominate; heroes VARY in size (some
       // very big, some big — not all identical), others slightly larger so some
       // neighbours overlap.
@@ -309,9 +337,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           // gap opens beneath the bulge — keeps the body one continuous mass.
           y += footprint * state.towerWidth * state.towerStep * (0.34 + 0.42 * prof);
         }
-        // non-hero towers anchor LOW (a distant bank); heroes keep their
-        // horizon-level base (set above) so the whole broad tower rises into view.
-        if (!isHero) baseY = topY * (rnd() * 0.12 - 0.14);
+        // non-hero towers float above the sea band; heroes keep their
+        // sea-level base (set above) so the whole broad tower rises out of it.
+        if (!isHero) baseY = topY * (0.08 + rnd() * 0.12);
       } else if (rnd() < state.fineFrac) {
         // FINE: cluster of small pieces → same footprint, finer voxels. Each
         // sub-piece is fineScale× the footprint, so its voxels read ~2× smaller;
@@ -345,6 +373,67 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
         bobRate: 0.04 + rnd() * 0.07, // much slower vertical bob
       });
     }
+
+    // ---- CLOUD SEA: flattened rolling cloud ocean below the island ----
+    const seaInnerR = span * state.seaInner;
+    const seaOuterR = span * state.seaOuter;
+    const seaY = span * state.seaLevel;
+    // Base disc: a continuous soft cloud floor under the voxel swells so the
+    // sea reads as an UNBROKEN ocean (the swells alone can't cover the disc
+    // without thousands of meshes). Inner disc solid; outer ring fades its
+    // vertex colour toward the horizon haze so the far edge dissolves. Lit by
+    // the scene's real sun/hemi (plain Lambert — doctrine-clean).
+    for (const d of seaDiscs) group.remove(d);
+    seaDiscs.length = 0;
+    if (state.seaCount > 0) {
+      const discMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+      const midR = seaOuterR * 0.55;
+      const inner = new THREE.Mesh(new THREE.CircleGeometry(midR, 72), discMat);
+      const innerCols: number[] = [];
+      const nIn = inner.geometry.getAttribute("position").count;
+      for (let i = 0; i < nIn; i++) innerCols.push(0.92, 0.94, 0.98);
+      inner.geometry.setAttribute("color", new THREE.Float32BufferAttribute(innerCols, 3));
+      const ringGeo = new THREE.RingGeometry(midR, seaOuterR, 72, 8);
+      const rPos = ringGeo.getAttribute("position");
+      const ringCols: number[] = [];
+      for (let i = 0; i < rPos.count; i++) {
+        const rr = Math.hypot(rPos.getX(i), rPos.getY(i));
+        const f = Math.min(1, Math.max(0, (rr - midR) / Math.max(1e-3, seaOuterR - midR)));
+        const e = f * f;
+        ringCols.push(0.92 + (0.70 - 0.92) * e, 0.94 + (0.81 - 0.94) * e, 0.98 + (0.93 - 0.98) * e);
+      }
+      ringGeo.setAttribute("color", new THREE.Float32BufferAttribute(ringCols, 3));
+      const ring = new THREE.Mesh(ringGeo, discMat);
+      for (const m of [inner, ring]) {
+        m.rotation.x = -Math.PI / 2;
+        m.position.y = seaY - span * 0.05;
+        m.castShadow = false;
+        m.receiveShadow = false;
+        group.add(m);
+        seaDiscs.push(m);
+      }
+    }
+    for (let i = 0; i < state.seaCount; i++) {
+      const angle = rnd() * Math.PI * 2;
+      const radius = seaInnerR + Math.sqrt(rnd()) * Math.max(0.001, seaOuterR - seaInnerR);
+      const rFrac = (radius - seaInnerR) / Math.max(0.001, seaOuterR - seaInnerR);
+      const footprint = span * 0.34 * (1.3 + rnd() * 0.8) * (1 + rFrac * 1.3) * state.sizeScale;
+      const obj = pieces[Math.floor(rnd() * pieces.length)].clone(true);
+      obj.scale.setScalar(footprint);
+      obj.scale.y *= state.seaFlat * (0.8 + rnd() * 0.5);
+      obj.rotation.y = rnd() * Math.PI * 2;
+      const baseY = seaY + (rnd() - 0.5) * span * 0.06;
+      obj.position.set(Math.cos(angle) * radius, baseY, Math.sin(angle) * radius);
+      obj.traverse((n: any) => { if (n.isMesh) { n.castShadow = false; n.receiveShadow = false; } });
+      group.add(obj);
+      instances.push({
+        obj, baseY, angle, radius,
+        bobPhase: rnd() * Math.PI * 2,
+        bobRate: 0.02 + rnd() * 0.04, // the sea heaves even slower than the sky
+      });
+    }
+    // aerial-haze band tracks the sea's reach (far clouds dissolve to horizon)
+    uHaze.value.set(seaOuterR * 0.5, seaOuterR * 0.95);
     ready = true;
   };
 
@@ -420,7 +509,12 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       (next.towerWidth !== undefined && next.towerWidth !== state.towerWidth) ||
       (next.towerLean !== undefined && next.towerLean !== state.towerLean) ||
       (next.heroCount !== undefined && next.heroCount !== state.heroCount) ||
-      (next.heroSize !== undefined && next.heroSize !== state.heroSize);
+      (next.heroSize !== undefined && next.heroSize !== state.heroSize) ||
+      (next.seaCount !== undefined && next.seaCount !== state.seaCount) ||
+      (next.seaLevel !== undefined && next.seaLevel !== state.seaLevel) ||
+      (next.seaInner !== undefined && next.seaInner !== state.seaInner) ||
+      (next.seaOuter !== undefined && next.seaOuter !== state.seaOuter) ||
+      (next.seaFlat !== undefined && next.seaFlat !== state.seaFlat);
     Object.assign(state, next);
     applyState();
     if (needsScatter) scatter();

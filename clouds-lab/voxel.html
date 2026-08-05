@@ -88,7 +88,8 @@ async function boot() {
   // voxel-granularity variation overrides
   if (ring && (q.has("finefrac") || q.has("finescale") || q.has("finespread") ||
       q.has("towerfrac") || q.has("towerlevels") || q.has("towerstep") ||
-      q.has("towerwidth") || q.has("towerlean"))) {
+      q.has("towerwidth") || q.has("towerlean") ||
+      q.has("seacount") || q.has("sealevel") || q.has("seainner") || q.has("seaouter") || q.has("seaflat"))) {
     ring.configure({
       ...(q.has("finefrac") ? { fineFrac: +q.get("finefrac") } : {}),
       ...(q.has("finescale") ? { fineScale: +q.get("finescale") } : {}),
@@ -100,6 +101,11 @@ async function boot() {
       ...(q.has("towerlean") ? { towerLean: +q.get("towerlean") } : {}),
       ...(q.has("herocount") ? { heroCount: +q.get("herocount") } : {}),
       ...(q.has("herosize") ? { heroSize: +q.get("herosize") } : {}),
+      ...(q.has("seacount") ? { seaCount: +q.get("seacount") } : {}),
+      ...(q.has("sealevel") ? { seaLevel: +q.get("sealevel") } : {}),
+      ...(q.has("seainner") ? { seaInner: +q.get("seainner") } : {}),
+      ...(q.has("seaouter") ? { seaOuter: +q.get("seaouter") } : {}),
+      ...(q.has("seaflat") ? { seaFlat: +q.get("seaflat") } : {}),
     });
   }
   // wait for GLB load + scatter
