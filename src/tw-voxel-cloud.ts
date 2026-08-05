@@ -139,7 +139,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     color: 0xffffff, roughness: 1, metalness: 0, vertexColors: true,
     transparent: true, depthWrite: true, // depthWrite keeps the opaque core sorted; only silhouette edges blend
   });
-  material.customProgramCacheKey = () => "tinyworldVoxelCloudVCsea";
+  material.customProgramCacheKey = () => "tinyworldVoxelCloudVDtone";
   material.onBeforeCompile = (shader: any) => {
     Object.assign(shader.uniforms, {
       uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uBack, uSpanRef, uHaze,
@@ -207,6 +207,12 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  float back = pow(clamp(dot(normalize(uSunDir), -normalize(vVDir)), 0.0, 1.0), uBack.y);\n" +
           "  back *= uBack.x * (0.35 + 0.65 * (1.0 - ndv));\n" +
           "  col += uLight * back;\n" +
+          // TONAL VARIATION (not flat white): a very low-frequency field shifts
+          // tone mass-to-mass — some clouds brighter, some cooler blue-grey —
+          // like a real sky's varied cloud depths. Texture, not invented light.
+          "  float tone = smoothstep(0.42, 0.60, _fbm(vWPos * (0.4 / uSpanRef) + 7.7));\n" +
+          "  col *= mix(0.70, 1.10, tone);\n" +
+          "  col = mix(col, col * vec3(0.80, 0.88, 1.08), (1.0 - smoothstep(0.3, 0.7, tone)) * 0.6);\n" +
           // AERIAL HAZE: with the sea reaching far out, distant clouds dissolve
           // toward a sun-tinted horizon (real atmospherics — reads as scale, and
           // kills the hard far edge). Colour-only; alpha keeps the solid horizon.
@@ -237,6 +243,45 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   }[] = [];
   let ready = false;
   const seaDiscs: any[] = [];
+  // Sea-disc material — NOT flat white (KJ Aug 4): procedural cloud-ocean
+  // shading modulates the diffuse under the scene's real lights — bright
+  // rounded lobe tops against blue-grey crevices, two fbm scales, drifting
+  // slowly via uSeaTime. Texture only (no invented light — the sun/hemi still
+  // do all the lighting through the Lambert path).
+  const uSeaTime = { value: 0 };
+  const uSeaSpan = { value: Math.max(1e-3, span) };
+  const seaDiscMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  seaDiscMat.customProgramCacheKey = () => "tinyworldSeaDiscV1";
+  seaDiscMat.onBeforeCompile = (shader: any) => {
+    Object.assign(shader.uniforms, { uSeaTime, uSeaSpan });
+    shader.vertexShader =
+      "varying vec3 vSeaW;\n" +
+      shader.vertexShader.replace(
+        "#include <begin_vertex>",
+        "#include <begin_vertex>\n  vSeaW = (modelMatrix * vec4(transformed, 1.0)).xyz;",
+      );
+    shader.fragmentShader =
+      "uniform float uSeaTime;\nuniform float uSeaSpan;\nvarying vec3 vSeaW;\n" +
+      "float _sh(vec3 p){ p = fract(p*0.3183099+0.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }\n" +
+      "float _svn(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);\n" +
+      "  return mix(mix(mix(_sh(i+vec3(0,0,0)),_sh(i+vec3(1,0,0)),f.x),mix(_sh(i+vec3(0,1,0)),_sh(i+vec3(1,1,0)),f.x),f.y),\n" +
+      "             mix(mix(_sh(i+vec3(0,0,1)),_sh(i+vec3(1,0,1)),f.x),mix(_sh(i+vec3(0,1,1)),_sh(i+vec3(1,1,1)),f.x),f.y),f.z); }\n" +
+      "float _sfbm(vec3 x){ return 0.6*_svn(x)+0.3*_svn(x*2.03+11.1)+0.15*_svn(x*4.01+23.7); }\n" +
+      shader.fragmentShader.replace(
+        "#include <color_fragment>",
+        "#include <color_fragment>\n" +
+          // large rolling masses (lit lobes vs shadowed troughs)
+          "  float _k1 = 1.1 / uSeaSpan;\n" +
+          "  float _lump = _sfbm(vec3(vSeaW.x * _k1, uSeaTime * 0.014, vSeaW.z * _k1));\n" +
+          "  float _lit = smoothstep(0.44, 0.57, _lump);\n" +
+          // fine mottle so the surface reads puffy, not airbrushed
+          "  float _k2 = 4.6 / uSeaSpan;\n" +
+          "  float _mot = _sfbm(vec3(vSeaW.x * _k2 + 31.0, uSeaTime * 0.03, vSeaW.z * _k2));\n" +
+          "  vec3 _crev = vec3(0.36, 0.45, 0.68);\n" +
+          "  diffuseColor.rgb *= mix(_crev, vec3(1.02, 1.01, 1.0), _lit);\n" +
+          "  diffuseColor.rgb *= mix(0.82, 1.12, smoothstep(0.40, 0.62, _mot));\n",
+      );
+  };
 
   const scatter = () => {
     if (!pieces.length) return;
@@ -386,7 +431,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     for (const d of seaDiscs) group.remove(d);
     seaDiscs.length = 0;
     if (state.seaCount > 0) {
-      const discMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+      const discMat = seaDiscMat;
       const midR = seaOuterR * 0.55;
       const inner = new THREE.Mesh(new THREE.CircleGeometry(midR, 72), discMat);
       const innerCols: number[] = [];
@@ -481,6 +526,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
         uLight.value.multiplyScalar(Math.min(1.5, Math.max(0.25, input.keyIntensity)));
     }
     const t = input.elapsedSeconds;
+    uSeaTime.value = t;
     group.rotation.y = t * state.driftSpeed;
     for (const inst of instances) {
       inst.obj.position.y = inst.baseY + Math.sin(t * inst.bobRate + inst.bobPhase) * state.bob;
