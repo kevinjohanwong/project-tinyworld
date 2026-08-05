@@ -97,11 +97,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     // coarse clones (cheap), y-flattened into rolling swells, heavily
     // overlapped, and GROW with distance so the far sea stays dense without
     // more meshes. 0 disables.
-    seaCount: opts.seaCount ?? 300,
+    seaCount: opts.seaCount ?? 360,
     seaLevel: opts.seaLevel ?? -0.42, // sea band center (× span; negative = below the island)
     seaInner: opts.seaInner ?? 0.3, // sea tucks in under the island edge (× span)
     seaOuter: opts.seaOuter ?? 7.0, // sea reach toward the horizon (× span)
-    seaFlat: 0.45, // y-scale of sea pieces (rounded rolling swells)
+    seaFlat: 0.62, // y-scale of sea pieces (rounded rolling swells — billowing, not squashed)
     fuzz: 0.35, // fuzzy shading power (0 = flat faces)
     fuzzTiling: 0.55, // fuzzy noise scale
     backlight: 0.6, // "play to light": sun-through glow strength
@@ -251,7 +251,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   const uSeaTime = { value: 0 };
   const uSeaSpan = { value: Math.max(1e-3, span) };
   const seaDiscMat = new THREE.MeshLambertMaterial({ vertexColors: true });
-  seaDiscMat.customProgramCacheKey = () => "tinyworldSeaDiscV1";
+  seaDiscMat.customProgramCacheKey = () => "tinyworldSeaDiscV2";
   seaDiscMat.onBeforeCompile = (shader: any) => {
     Object.assign(shader.uniforms, { uSeaTime, uSeaSpan });
     shader.vertexShader =
@@ -277,9 +277,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           // fine mottle so the surface reads puffy, not airbrushed
           "  float _k2 = 4.6 / uSeaSpan;\n" +
           "  float _mot = _sfbm(vec3(vSeaW.x * _k2 + 31.0, uSeaTime * 0.03, vSeaW.z * _k2));\n" +
-          "  vec3 _crev = vec3(0.36, 0.45, 0.68);\n" +
-          "  diffuseColor.rgb *= mix(_crev, vec3(1.02, 1.01, 1.0), _lit);\n" +
-          "  diffuseColor.rgb *= mix(0.82, 1.12, smoothstep(0.40, 0.62, _mot));\n",
+          "  vec3 _crev = vec3(0.80, 0.85, 0.93);\n" +
+          "  diffuseColor.rgb *= mix(_crev, vec3(1.03, 1.02, 1.0), _lit);\n" +
+          "  diffuseColor.rgb *= mix(0.92, 1.10, smoothstep(0.40, 0.62, _mot));\n",
       );
   };
 
@@ -462,7 +462,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       const angle = rnd() * Math.PI * 2;
       const radius = seaInnerR + Math.sqrt(rnd()) * Math.max(0.001, seaOuterR - seaInnerR);
       const rFrac = (radius - seaInnerR) / Math.max(0.001, seaOuterR - seaInnerR);
-      const footprint = span * 0.34 * (1.3 + rnd() * 0.8) * (1 + rFrac * 1.3) * state.sizeScale;
+      const footprint = span * 0.34 * (1.75 + rnd() * 0.95) * (1 + rFrac * 1.3) * state.sizeScale;
       const obj = pieces[Math.floor(rnd() * pieces.length)].clone(true);
       obj.scale.setScalar(footprint);
       obj.scale.y *= state.seaFlat * (0.8 + rnd() * 0.5);
