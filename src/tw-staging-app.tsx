@@ -19467,6 +19467,19 @@ export default function TinyWorld() {
       if (nowMs - _lastEaseMs >= EASE_MS) { const dt = _lastEaseMs === 0 ? EASE_MS : (nowMs - _lastEaseMs); _lastEaseMs = nowMs; easeMoisture(nowMs, dt); }
     };
 
+    // __twPerf.buckets — MEASUREMENT-ONLY per-system CPU timers (fidelity-
+    // neutral, zero behavior change): mark-style contiguous segments through
+    // the loop accumulate an EMA of main-thread ms/frame per system, so "are
+    // the sim ticks expensive?" is answerable with data instead of guesses.
+    const _pbEma: Record<string, number> = {};
+    let _pbT = 0;
+    let _pbCur = "";
+    const _pbM = (name: string) => {
+      const t = performance.now();
+      if (_pbCur) _pbEma[_pbCur] = _pbEma[_pbCur] === undefined ? (t - _pbT) : _pbEma[_pbCur] * 0.95 + (t - _pbT) * 0.05;
+      _pbCur = name;
+      _pbT = t;
+    };
     let prev = performance.now();
     let frameCount = 0;
     let _lastTodApplyMs = 0;   // wall-clock cadence for the TOD palette apply
@@ -19498,15 +19511,22 @@ export default function TinyWorld() {
             geometries: renderer.info.memory.geometries,
             textures: renderer.info.memory.textures,
             programs: renderer.info.programs?.length,
+            buckets: Object.fromEntries(Object.entries(_pbEma).map(([k, v]) => [k, +v.toFixed(3)])),
           });
         }
+        _pbM("greedy");
         if (greedyWall) greedyWall.flushDirty(6);
         if (greedyGround) greedyGround.flushDirty(4);
+        _pbM("blockphys");
         processSupportQueue(performance.now());
         animateFallingBlocks(performance.now());
+        _pbM("clouds");
         if (cloudTick) cloudTick(performance.now());
+        _pbM("spring");
         if (springCtrl && !pwCtrl) springCtrl.tick(performance.now(), { precip: weatherData?.current?.precipitation, isRaining: weatherData?.modifiers?.isRaining });
+        _pbM("irrig");
         if (irrigationOn) runIrrigation(performance.now());
+        _pbM("env");
         // Physical stockpile: coalesce a frame's worth of ledger moves into a
         // single heap rebuild (deposits are glacial, so this fires rarely).
         if (pileDirty) { pileDirty = false; rebuildPile(); }
@@ -19686,6 +19706,7 @@ export default function TinyWorld() {
           }
         }
         chaseWasActiveRef.current = _chaseActive;
+        _pbM("workers");
         tickOrganic(now);
         if (now - lastWorkerTickMs > 100) {
           tickWorkers(now);
@@ -19727,10 +19748,13 @@ export default function TinyWorld() {
           }
         }
         renderWorkers(now);
+        _pbM("sentinel");
         tickBuildMode(now);
         tickSentinel(now);
         renderSentinel(now);
+        _pbM("shadow");
         updateSunShadow();
+        _pbM("fx");
         if (now - lastVoidTickMs > VOID_TICK_MS) {
           tickVoidNight(now);
           lastVoidTickMs = now;
@@ -19754,6 +19778,7 @@ export default function TinyWorld() {
           lastShipTickMs = now;
         }
         renderShips(now);
+        _pbM("anim");
         const dt = Math.min((now - prev) / 1000, 0.05);
         prev = now;
         aimSentinelCannon(dt);
@@ -20528,6 +20553,7 @@ export default function TinyWorld() {
           renderer.setScissorTest(false);
           renderer.autoClear = true;
         };
+        _pbM("render");
         if (walkingRef.current && viewModeRef.current === "cockpit" && sentinelModeRef.current === "large" && !_panelsOff) {
           // ── Multi-panel skewed windshield (cockpit) ──
           // Center pane is perpendicular to the player (unskewed); side
@@ -20636,6 +20662,7 @@ export default function TinyWorld() {
           _resetRenderState();
           renderer.render(scene, camera);
         }
+        _pbM("");
       } catch (err: any) {
         if (!(window as any).__twLoopError) {
           (window as any).__twLoopError = true;
