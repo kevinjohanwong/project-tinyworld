@@ -2878,7 +2878,16 @@ export default function TinyWorld() {
     // full-scene geometry pass whenever GI is on. setGBuffer() is wired below,
     // once normalTarget exists; the prepass guard in the render loop is widened
     // so the buffer is always fresh when GTAO reads it. Escape hatch ?gtaogbuf=0.
-    const _gtaoReuse = __diagParams.get("gtaogbuf") !== "0";
+    const _gtaoReuse = __diagParams.get("gtaogbuf") !== "0";    // PERF round 3 (fidelity-neutral, "one geometry pass"): instead of a second
+    // full-scene MeshNormalMaterial prepass, the beauty render itself becomes the
+    // G-buffer — the scene renders ONCE into gTarget (color + 32-bit depth), then
+    // ONE fullscreen quad reconstructs view-space normals from that depth into
+    // normalTarget (exact for flat voxel faces — the whole world is axis-aligned
+    // cubes), and GTAO/RayGI/outline read gTarget.depthTexture +
+    // normalTarget.texture. The composer chain starts from a texture copy of
+    // gTarget (one quad) instead of re-rendering the scene. Escape hatch
+    // ?prepass=1 restores the old two-pass path.
+    const _onePass = __diagParams.get("prepass") !== "1";
 
     // ─── RayGI (hybrid ray-traced lighting prototype, Jul 25) ─────────────
     // Secondary DDA ray pass over a 3D-texture voxel volume: per-pixel
@@ -2954,7 +2963,15 @@ export default function TinyWorld() {
       type: THREE.HalfFloatType,
     });
     normalTarget.depthTexture = new THREE.DepthTexture(dbSize.x, dbSize.y);
-    normalTarget.depthTexture.type = THREE.UnsignedIntType;
+    normalTarget.depthTexture.type = THREE.UnsignedIntType;    // Round-3 beauty+depth G-buffer target (same HalfFloat type as the
+    // composer's internal targets, same 32-bit depth as the old prepass).
+    const gTarget = new THREE.WebGLRenderTarget(dbSize.x, dbSize.y, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      type: THREE.HalfFloatType,
+    });
+    gTarget.depthTexture = new THREE.DepthTexture(dbSize.x, dbSize.y);
+    gTarget.depthTexture.type = THREE.UnsignedIntType;
     const normalMaterial = new THREE.MeshNormalMaterial();
     // PERF round 1: hand GTAO our shared normal+depth G-buffer so it skips its
     // own per-frame full-scene normal render (setGBuffer → _renderGBuffer=false).
@@ -2962,10 +2979,10 @@ export default function TinyWorld() {
     // and separate depth sampled from .x (DEPTH_SWIZZLING='x'), so AO is
     // identical. The prepass guard below guarantees normalTarget is rendered
     // whenever GTAO is enabled, so it's never stale.
-    if (_gtaoReuse) ssaoPass.setGBuffer(normalTarget.depthTexture, normalTarget.texture);
+    if (_gtaoReuse) ssaoPass.setGBuffer(_onePass ? gTarget.depthTexture : normalTarget.depthTexture, normalTarget.texture);
     const outlinePass = new ShaderPass(OUTLINE_SHADER);
     outlinePass.uniforms.tNormal.value = normalTarget.texture;
-    outlinePass.uniforms.tDepth.value = normalTarget.depthTexture;
+    outlinePass.uniforms.tDepth.value = _onePass ? gTarget.depthTexture : normalTarget.depthTexture;
     outlinePass.uniforms.resolution.value = new THREE.Vector2(dbSize.x, dbSize.y);
     outlinePass.uniforms.cameraNear.value = camera.near;
     outlinePass.uniforms.cameraFar.value = camera.far;
@@ -2982,6 +2999,65 @@ export default function TinyWorld() {
       target: normalTarget,
       material: normalMaterial,
     };
+    // ─── PERF round 3: one-geometry-pass G-buffer machinery ──────────────
+    // (1) Fullscreen normal reconstruction: view-space normals from gTarget's
+    // depth, in MeshNormalMaterial encoding (n*0.5+0.5) so GTAO/outline read
+    // the same format as the old prepass. Edge-aware neighbor pick (closer
+    // depth wins) avoids silhouette smearing; exact for flat voxel faces.
+    const _reconMat = new THREE.ShaderMaterial({
+      depthTest: false,
+      depthWrite: false,
+      uniforms: {
+        tDepth: { value: gTarget.depthTexture },
+        uProjInv: { value: camera.projectionMatrixInverse },
+        uTexel: { value: new THREE.Vector2(1 / dbSize.x, 1 / dbSize.y) },
+      },
+      vertexShader:
+        "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+      fragmentShader: [
+        "varying vec2 vUv;",
+        "uniform highp sampler2D tDepth;",
+        "uniform mat4 uProjInv;",
+        "uniform vec2 uTexel;",
+        "float dAt(vec2 uv){ return texture2D(tDepth, uv).x; }",
+        "vec3 vp(vec2 uv, float d){",
+        "  vec4 ndc = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);",
+        "  vec4 v = uProjInv * ndc;",
+        "  return v.xyz / v.w;",
+        "}",
+        "void main(){",
+        "  float dc = dAt(vUv);",
+        "  if (dc >= 0.9999999) { gl_FragColor = vec4(0.5, 0.5, 1.0, 1.0); return; }",
+        "  vec3 pc = vp(vUv, dc);",
+        "  vec2 ox = vec2(uTexel.x, 0.0), oy = vec2(0.0, uTexel.y);",
+        "  float dl = dAt(vUv - ox), dr = dAt(vUv + ox);",
+        "  float dd = dAt(vUv - oy), du = dAt(vUv + oy);",
+        "  vec3 px = abs(dr - dc) < abs(dl - dc) ? vp(vUv + ox, dr) - pc : pc - vp(vUv - ox, dl);",
+        "  vec3 py = abs(du - dc) < abs(dd - dc) ? vp(vUv + oy, du) - pc : pc - vp(vUv - oy, dd);",
+        "  vec3 n = normalize(cross(px, py));",
+        "  gl_FragColor = vec4(n * 0.5 + 0.5, 1.0);",
+        "}",
+      ].join("\n"),
+    });
+    const _reconScene = new THREE.Scene();
+    _reconScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), _reconMat));
+    const _reconCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    // (2) Copy pass: the composer chain starts from gTarget's beauty color (one
+    // fullscreen quad) instead of the RenderPass scene re-render. textureID is
+    // a dummy so ShaderPass doesn't overwrite tDiffuse with the readBuffer.
+    const copyPass = new ShaderPass(
+      {
+        uniforms: { tDiffuse: { value: null } },
+        vertexShader:
+          "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+        fragmentShader:
+          "uniform sampler2D tDiffuse; varying vec2 vUv; void main(){ gl_FragColor = texture2D(tDiffuse, vUv); }",
+      },
+      "tSrcUnused",
+    );
+    copyPass.uniforms.tDiffuse.value = gTarget.texture;
+    copyPass.enabled = false; // toggled per-frame with renderPass in the loop
+    composer.insertPass(copyPass, 1);
 
     composerRef.current = composer;
 
@@ -11901,6 +11977,8 @@ export default function TinyWorld() {
       }
       const db = renderer.getDrawingBufferSize(new THREE.Vector2());
       normalTarget.setSize(db.x, db.y);
+      gTarget.setSize(db.x, db.y);
+      _reconMat.uniforms.uTexel.value.set(1 / db.x, 1 / db.y);
       outlinePass.uniforms.resolution.value.set(db.x, db.y);
       chaseCamRef.current.set = false;
     };
@@ -20501,16 +20579,35 @@ export default function TinyWorld() {
           // case (GTAO would have rendered its own normal pass anyway) and saves
           // a full-scene pass whenever GI is on (one buffer feeds both).
           const _gtaoReadsNormal = _gtaoReuse && ssaoPass.enabled;
-          if (_outlineOn || _giOn || _gtaoReadsNormal) {
-            scene.overrideMaterial = normalMaterial;
-            renderer.setRenderTarget(normalTarget);
-            renderer.clear();
-            renderer.render(scene, camera);
-            scene.overrideMaterial = null;
-            renderer.setRenderTarget(null);
+          const _needGB = _outlineOn || _giOn || _gtaoReadsNormal;
+          const _onePassNow = _onePass && _needGB;
+          if (_needGB) {
+            if (_onePassNow) {
+              // PERF round 3: the beauty render IS the G-buffer — scene renders
+              // ONCE into gTarget (color + depth), one fullscreen quad
+              // reconstructs view normals from that depth into normalTarget,
+              // and the composer chain starts from copyPass (gTarget color)
+              // instead of a RenderPass scene re-render.
+              renderer.setRenderTarget(gTarget);
+              renderer.clear();
+              renderer.render(scene, camera);
+              renderer.setRenderTarget(normalTarget);
+              renderer.clear();
+              renderer.render(_reconScene, _reconCam);
+              renderer.setRenderTarget(null);
+            } else {
+              scene.overrideMaterial = normalMaterial;
+              renderer.setRenderTarget(normalTarget);
+              renderer.clear();
+              renderer.render(scene, camera);
+              scene.overrideMaterial = null;
+              renderer.setRenderTarget(null);
+            }
             outlinePass.uniforms.cameraNear.value = camera.near;
             outlinePass.uniforms.cameraFar.value = camera.far;
           }
+          renderPass.enabled = !_onePassNow;
+          copyPass.enabled = _onePassNow;
           outlinePass.enabled = _outlineOn;
           if (_giOn) {
             const _key = moon.intensity > sun.intensity ? moon : sun;
@@ -20519,7 +20616,7 @@ export default function TinyWorld() {
             _giSkyCol.copy(hemi.color).multiplyScalar(Math.max(hemi.intensity, 0.04) * 0.7 + 0.05);
             const _giTex = raygi.update({
               camera,
-              depthTexture: normalTarget.depthTexture,
+              depthTexture: _onePass ? gTarget.depthTexture : normalTarget.depthTexture,
               normalTexture: normalTarget.texture,
               sunDir: _giSunDir,
               sunColor: _giSunCol,
