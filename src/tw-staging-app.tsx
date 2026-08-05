@@ -2425,16 +2425,23 @@ export default function TinyWorld() {
       for (const [n, l] of Object.entries(outLayers)) { if (n !== "hidden_dirt") _visCount += l.length / 3; }
       result.visibleCount = _visCount;
       result.voxel = (result.voxel as number) * CF;
-      // latent underside: coarsen the per-column [yMin,yMax] ranges by union
+      // latent underside: coarsen per-column ranges by CENTER-POINT SAMPLING,
+      // matching how the visible layers are coarsened. The previous union
+      // merge (min-bottom/max-top over all merged fine columns) smeared the
+      // dirt sideways and upward to the neighborhood extreme — brown shelves
+      // above the grass line and a ballooned keel (KJ Aug 5 screenshot).
       if (result.latentCols && (result.latentCols as ArrayBuffer).byteLength) {
         const q = new Int32Array(result.latentCols as ArrayBuffer);
+        const fineCols = new Map<string, [number, number]>();
+        for (let i = 0; i + 3 < q.length; i += 4)
+          fineCols.set(q[i] + "," + q[i + 1], [q[i + 2], q[i + 3]]);
         const merged = new Map<string, [number, number]>();
         for (let i = 0; i + 3 < q.length; i += 4) {
-          const ck = Math.floor(q[i] / CF) + "," + Math.floor(q[i + 1] / CF);
-          const y0 = Math.floor(q[i + 2] / CF), y1 = Math.floor(q[i + 3] / CF);
-          const prev = merged.get(ck);
-          if (prev) { prev[0] = Math.min(prev[0], y0); prev[1] = Math.max(prev[1], y1); }
-          else merged.set(ck, [y0, y1]);
+          const cx = Math.floor(q[i] / CF), cz = Math.floor(q[i + 1] / CF);
+          const ck = cx + "," + cz;
+          if (merged.has(ck)) continue;
+          const r = fineCols.get(Math.floor((cx + 0.5) * CF) + "," + Math.floor((cz + 0.5) * CF));
+          if (r) merged.set(ck, [Math.floor(r[0] / CF), Math.floor(r[1] / CF)]);
         }
         const out = new Int32Array(merged.size * 4);
         let w = 0;
