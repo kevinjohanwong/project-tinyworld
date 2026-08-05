@@ -19399,7 +19399,29 @@ export default function TinyWorld() {
     const loop = () => {
       try {
         rafRef.current = requestAnimationFrame(loop);
-        frameCount += 1;
+        frameCount += 1;        // __twPerf — MEASUREMENT-ONLY probe (fidelity-neutral perf rounds; zero
+        // visual/behavior change): rolling frame-time EMA + whole-frame renderer
+        // totals. autoReset=false + manual reset here so info accumulates across
+        // ALL composer passes in a frame instead of only the last pass.
+        {
+          const _pnow = performance.now();
+          const _pp: any = (window as any).__twPerf || ((window as any).__twPerf = { emaMs: 0 });
+          if (_pp._last) _pp.emaMs = _pp.emaMs ? _pp.emaMs * 0.95 + (_pnow - _pp._last) * 0.05 : (_pnow - _pp._last);
+          _pp._last = _pnow;
+          renderer.info.autoReset = false;
+          _pp.calls = renderer.info.render.calls;
+          _pp.triangles = renderer.info.render.triangles;
+          renderer.info.reset();
+          _pp.sample = () => ({
+            emaMs: Math.round(_pp.emaMs * 100) / 100,
+            fps: _pp.emaMs > 0 ? Math.round(10000 / _pp.emaMs) / 10 : 0,
+            calls: _pp.calls,
+            triangles: _pp.triangles,
+            geometries: renderer.info.memory.geometries,
+            textures: renderer.info.memory.textures,
+            programs: renderer.info.programs?.length,
+          });
+        }
         if (greedyWall) greedyWall.flushDirty(6);
         if (greedyGround) greedyGround.flushDirty(4);
         processSupportQueue(performance.now());

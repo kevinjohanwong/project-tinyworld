@@ -5,6 +5,17 @@
 // directional light + shadow map, so headless frames match the device and it
 // never trips the iOS GPU watchdog.
 //
+// PERF (Aug 5, fidelity-neutral round 2): the population is now INSTANCED.
+// The scatter math is unchanged (same PRNG order → bit-identical layout), but
+// instead of ~1,100 cloned meshes (each a draw call, a matrixWorld update, and
+// a transparent-sort entry — twice per frame when the RayGI/GTAO normal
+// prepass re-renders the scene), every sub-piece is recorded as an instance of
+// one of the ≤9 GLB piece geometries → ≤9 InstancedMesh draws. Per frame we do
+// our own CPU frustum culling (conservative sphere test — never over-culls)
+// and write visible instances BACK-TO-FRONT so the feathered-edge alpha
+// blending keeps the same sorted result three's per-object sort produced.
+// Same pixels, ~2 orders of magnitude fewer draw calls.
+//
 // Public API mirrors createVolumetricCloudRing so it drops into the same call
 // site: { mesh, state, update(), configure(), dispose() }.
 
@@ -139,7 +150,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     color: 0xffffff, roughness: 1, metalness: 0, vertexColors: true,
     transparent: true, depthWrite: true, // depthWrite keeps the opaque core sorted; only silhouette edges blend
   });
-  material.customProgramCacheKey = () => "tinyworldVoxelCloudVDtone";
+  material.customProgramCacheKey = () => "tinyworldVoxelCloudVEinst";
   material.onBeforeCompile = (shader: any) => {
     Object.assign(shader.uniforms, {
       uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uBack, uSpanRef, uHaze,
@@ -149,8 +160,17 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       shader.vertexShader.replace(
         "#include <project_vertex>",
         "#include <project_vertex>\n" +
-          "  vec3 _wp = (modelMatrix * vec4(transformed, 1.0)).xyz;\n" +
-          "  vWN = normalize(mat3(modelMatrix) * objectNormal);\n" +
+          // INSTANCING: the per-piece transform now lives in instanceMatrix, so
+          // fold it in before modelMatrix — the product equals the old per-mesh
+          // modelMatrix exactly (bit-identical world pos/normal math).
+          "  vec4 _lp4 = vec4(transformed, 1.0);\n" +
+          "  vec3 _ln = objectNormal;\n" +
+          "#ifdef USE_INSTANCING\n" +
+          "  _lp4 = instanceMatrix * _lp4;\n" +
+          "  _ln = mat3(instanceMatrix) * _ln;\n" +
+          "#endif\n" +
+          "  vec3 _wp = (modelMatrix * _lp4).xyz;\n" +
+          "  vWN = normalize(mat3(modelMatrix) * _ln);\n" +
           "  vVDir = normalize(cameraPosition - _wp);\n" +
           "  vWPos = _wp;\n" +
           "  vY01 = aY01;",
@@ -232,15 +252,20 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       );
   };
 
-  const pieces: any[] = []; // template meshes from the GLB
-  const instances: {
-    obj: any;
-    baseY: number;
-    angle: number;
-    radius: number;
-    bobPhase: number;
-    bobRate: number;
+  const pieces: any[] = []; // template meshes from the GLB (geometry + aY01 baked)
+  const pieceRadius: number[] = []; // conservative unit bounding radius per piece
+  // INSTANCED population. Each logical "cloud" (sky cloud or sea swell) keeps
+  // its bob params; each rendered sub-piece is a flat instance spec pointing at
+  // its piece geometry, its cloud (for bob), and its group-local matrix.
+  const cloudsMeta: { bobPhase: number; bobRate: number }[] = [];
+  const specs: {
+    piece: number;
+    m: any; // Matrix4, group-local, at bob=0
+    cloud: number;
+    cx: number; cy: number; cz: number; // translation (== m elements 12..14)
+    rad: number; // conservative world bounding radius
   }[] = [];
+  let bucketMeshes: any[] = []; // one InstancedMesh per piece geometry (or null)
   let ready = false;
   const seaDiscs: any[] = [];
   // Sea-disc material — NOT flat white (KJ Aug 4): procedural cloud-ocean
@@ -283,11 +308,61 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       );
   };
 
+  // Record one rendered sub-piece as an instance (replaces piece.clone(true)).
+  // Same transform semantics as the old scene-graph clones: group-local
+  // position, Y-rotation, per-axis scale.
+  const _rq = new THREE.Quaternion();
+  const _re = new THREE.Euler();
+  const _rv = new THREE.Vector3();
+  const _rs = new THREE.Vector3();
+  const record = (
+    pieceIdx: number, cloudIdx: number,
+    px: number, py: number, pz: number,
+    rotY: number, sx: number, sy: number, sz: number,
+  ) => {
+    const m = new THREE.Matrix4();
+    _re.set(0, rotY, 0);
+    _rq.setFromEuler(_re);
+    m.compose(_rv.set(px, py, pz), _rq, _rs.set(sx, sy, sz));
+    specs.push({
+      piece: pieceIdx, m, cloud: cloudIdx,
+      cx: px, cy: py, cz: pz,
+      rad: pieceRadius[pieceIdx] * Math.max(sx, sy, sz),
+    });
+  };
+
+  const rebuildBuckets = () => {
+    for (const bm of bucketMeshes) {
+      if (!bm) continue;
+      group.remove(bm);
+      bm.dispose();
+    }
+    bucketMeshes = [];
+    const byPiece: number[][] = pieces.map(() => []);
+    for (let i = 0; i < specs.length; i++) byPiece[specs[i].piece].push(i);
+    for (let p = 0; p < pieces.length; p++) {
+      const list = byPiece[p];
+      if (!list.length) { bucketMeshes.push(null); continue; }
+      const im = new THREE.InstancedMesh(pieces[p].geometry, material, list.length);
+      im.name = "voxelCloudBucket" + p;
+      // We cull per-instance on the CPU each frame (the whole-population sphere
+      // would never leave the frustum anyway — the sky surrounds the camera).
+      im.frustumCulled = false;
+      im.castShadow = false;
+      im.receiveShadow = false;
+      im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      im.count = 0; // populated by update()
+      (im as any).__specIdx = list;
+      group.add(im);
+      bucketMeshes.push(im);
+    }
+  };
+
   const scatter = () => {
     if (!pieces.length) return;
-    // Clear existing
-    for (const inst of instances) group.remove(inst.obj);
-    instances.length = 0;
+    // Clear existing population (buckets rebuilt below).
+    specs.length = 0;
+    cloudsMeta.length = 0;
 
     const rnd = mulberry32(0xc10d5); // stable seed
     const innerR = span * state.inner;
@@ -320,7 +395,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       // Heroes are always big billowing TOWERS; others mix tower/fine/coarse.
       const roll = isHero ? -1 : rnd();
 
-      let obj: any;
+      const cloudIdx = cloudsMeta.length;
+      // sub-piece transforms are recorded RELATIVE to the cloud origin, then
+      // offset by it — identical math to the old parent-Group hierarchy.
+      const pending: { pieceIdx: number; px: number; py: number; pz: number; rotY: number; sx: number; sy: number; sz: number }[] = [];
+
       if (roll < state.towerFrac) {
         // TOWER (cumulus congestus, the Ghibli day reference): a BROAD billowing
         // cauliflower MASS — roughly as wide as it is tall — not a thin totem.
@@ -328,7 +407,6 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
         // (a wide billowing band), stacked with heavy vertical overlap so the body
         // reads as one continuous dense mass. Profile: spreading base → slight
         // waist → bulging round head → domed crown.
-        obj = new THREE.Group();
         const levels = Math.max(3, Math.round(state.towerLevels));
         const leanA = rnd() * Math.PI * 2;
         const leanX = Math.cos(leanA) * footprint * state.towerLean;
@@ -363,20 +441,21 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           const nSub = Math.max(4, Math.round(4 + prof * 3.2)) + (isBase || isCrown ? 3 : 0);
           const prMul = isBase ? 0.66 : isCrown ? 0.6 : 0.4;
           for (let p = 0; p < nSub; p++) {
-            const sub = pieces[Math.floor(rnd() * pieces.length)].clone(true);
-            sub.scale.setScalar(lw * (0.6 + rnd() * 0.4)); // bigger rounder lobes
+            const pieceIdx = Math.floor(rnd() * pieces.length);
+            const ss = lw * (0.6 + rnd() * 0.4); // bigger rounder lobes
             // flatten crown lobes so tall GLB pieces dome over instead of spiking
-            if (isCrown) sub.scale.y *= 0.62;
-            sub.rotation.y = rnd() * Math.PI * 2;
+            const sy = isCrown ? ss * 0.62 : ss;
+            const rotY = rnd() * Math.PI * 2;
             const pa = rnd() * Math.PI * 2;
             const pr = lw * prMul * Math.sqrt(rnd());
             const yJit = (rnd() - 0.5) * lw * 0.14;
-            sub.position.set(
-              Math.cos(pa) * pr + leanX * f,
-              y + yJit,
-              Math.sin(pa) * pr + leanZ * f,
-            );
-            obj.add(sub);
+            pending.push({
+              pieceIdx,
+              px: Math.cos(pa) * pr + leanX * f,
+              py: y + yJit,
+              pz: Math.sin(pa) * pr + leanZ * f,
+              rotY, sx: ss, sy, sz: ss,
+            });
           }
           // step is mostly FIXED (not proportional to the wide head) so no vertical
           // gap opens beneath the bulge — keeps the body one continuous mass.
@@ -390,30 +469,35 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
         // sub-piece is fineScale× the footprint, so its voxels read ~2× smaller;
         // packing 3–5 of them overlapping rebuilds a cloud of similar size out
         // of finer cubes. Slight per-sub-piece scale jitter keeps it organic.
-        obj = new THREE.Group();
         const k = 3 + Math.floor(rnd() * 3); // 3..5 sub-pieces
         const spread = footprint * state.fineSpread;
         for (let j = 0; j < k; j++) {
-          const sub = pieces[Math.floor(rnd() * pieces.length)].clone(true);
+          const pieceIdx = Math.floor(rnd() * pieces.length);
           const ss = footprint * state.fineScale * (0.72 + rnd() * 0.62);
-          sub.scale.setScalar(ss);
-          sub.rotation.y = rnd() * Math.PI * 2;
+          const rotY = rnd() * Math.PI * 2;
           const oa = rnd() * Math.PI * 2;
           const orr = spread * Math.sqrt(rnd()); // area-uniform → packed, not ring
-          sub.position.set(Math.cos(oa) * orr, (rnd() - 0.5) * spread * 0.9, Math.sin(oa) * orr);
-          obj.add(sub);
+          pending.push({
+            pieceIdx,
+            px: Math.cos(oa) * orr,
+            py: (rnd() - 0.5) * spread * 0.9,
+            pz: Math.sin(oa) * orr,
+            rotY, sx: ss, sy: ss, sz: ss,
+          });
         }
       } else {
         // COARSE: one piece at full footprint (the current chunky look).
-        obj = pieces[i % pieces.length].clone(true);
-        obj.scale.setScalar(footprint);
-        obj.rotation.y = rnd() * Math.PI * 2;
+        pending.push({
+          pieceIdx: i % pieces.length,
+          px: 0, py: 0, pz: 0,
+          rotY: rnd() * Math.PI * 2,
+          sx: footprint, sy: footprint, sz: footprint,
+        });
       }
-      obj.position.set(Math.cos(angle) * radius, baseY, Math.sin(angle) * radius);
-      obj.traverse((n: any) => { if (n.isMesh) { n.castShadow = false; n.receiveShadow = false; } });
-      group.add(obj);
-      instances.push({
-        obj, baseY, angle, radius,
+      const ox = Math.cos(angle) * radius, oy = baseY, oz = Math.sin(angle) * radius;
+      for (const s of pending)
+        record(s.pieceIdx, cloudIdx, s.px + ox, s.py + oy, s.pz + oz, s.rotY, s.sx, s.sy, s.sz);
+      cloudsMeta.push({
         bobPhase: rnd() * Math.PI * 2,
         bobRate: 0.04 + rnd() * 0.07, // much slower vertical bob
       });
@@ -463,22 +547,24 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       const radius = seaInnerR + Math.sqrt(rnd()) * Math.max(0.001, seaOuterR - seaInnerR);
       const rFrac = (radius - seaInnerR) / Math.max(0.001, seaOuterR - seaInnerR);
       const footprint = span * 0.34 * (1.75 + rnd() * 0.95) * (1 + rFrac * 1.3) * state.sizeScale;
-      const obj = pieces[Math.floor(rnd() * pieces.length)].clone(true);
-      obj.scale.setScalar(footprint);
-      obj.scale.y *= state.seaFlat * (0.8 + rnd() * 0.5);
-      obj.rotation.y = rnd() * Math.PI * 2;
+      const pieceIdx = Math.floor(rnd() * pieces.length);
+      const syFlat = footprint * state.seaFlat * (0.8 + rnd() * 0.5);
+      const rotY = rnd() * Math.PI * 2;
       const baseY = seaY + (rnd() - 0.5) * span * 0.06;
-      obj.position.set(Math.cos(angle) * radius, baseY, Math.sin(angle) * radius);
-      obj.traverse((n: any) => { if (n.isMesh) { n.castShadow = false; n.receiveShadow = false; } });
-      group.add(obj);
-      instances.push({
-        obj, baseY, angle, radius,
+      const cloudIdx = cloudsMeta.length;
+      record(
+        pieceIdx, cloudIdx,
+        Math.cos(angle) * radius, baseY, Math.sin(angle) * radius,
+        rotY, footprint, syFlat, footprint,
+      );
+      cloudsMeta.push({
         bobPhase: rnd() * Math.PI * 2,
         bobRate: 0.02 + rnd() * 0.04, // the sea heaves even slower than the sky
       });
     }
     // aerial-haze band tracks the sea's reach (far clouds dissolve to horizon)
     uHaze.value.set(seaOuterR * 0.5, seaOuterR * 0.95);
+    rebuildBuckets();
     ready = true;
   };
 
@@ -505,6 +591,10 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
             for (let k = 0; k < pos.count; k++) arr[k] = (pos.getY(k) - y0) / h;
             geo.setAttribute("aY01", new THREE.BufferAttribute(arr, 1));
           }
+          // Conservative cull radius: sphere radius + center offset, so the
+          // instance-translation-centered sphere test can never over-cull.
+          geo.computeBoundingSphere();
+          pieceRadius.push(geo.boundingSphere.radius + geo.boundingSphere.center.length());
           pieces.push(m);
         }
       });
@@ -514,6 +604,13 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     undefined,
     (err: any) => console.error("[voxel-clouds] failed to load", glbUrl, err),
   );
+
+  // Per-frame scratch (no steady-state allocation beyond the visible lists).
+  const _frustum = new THREE.Frustum();
+  const _projView = new THREE.Matrix4();
+  const _wpos = new THREE.Vector3();
+  const _sphere = new THREE.Sphere();
+  let _bobs: number[] = [];
 
   const update = (input: VoxelCloudUpdate) => {
     if (!state.enabled || !ready) return;
@@ -528,8 +625,44 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     const t = input.elapsedSeconds;
     uSeaTime.value = t;
     group.rotation.y = t * state.driftSpeed;
-    for (const inst of instances) {
-      inst.obj.position.y = inst.baseY + Math.sin(t * inst.bobRate + inst.bobPhase) * state.bob;
+    group.updateMatrixWorld(true);
+    // Per-cloud bob offsets (identical math to the old per-object position.y).
+    if (_bobs.length !== cloudsMeta.length) _bobs = new Array(cloudsMeta.length);
+    for (let c = 0; c < cloudsMeta.length; c++) {
+      const cm = cloudsMeta[c];
+      _bobs[c] = Math.sin(t * cm.bobRate + cm.bobPhase) * state.bob;
+    }
+    // CPU frustum culling + back-to-front instance ordering. Replaces what
+    // three.js did per-object (~1,100 matrixWorld updates + cull tests + a
+    // 1,100-entry transparent sort + 1,100 draws) with ≤9 instanced draws.
+    camera.updateMatrixWorld();
+    _projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    _frustum.setFromProjectionMatrix(_projView);
+    const gm = group.matrixWorld;
+    const camX = camera.position.x, camY = camera.position.y, camZ = camera.position.z;
+    for (const im of bucketMeshes) {
+      if (!im) continue;
+      const idxs = (im as any).__specIdx as number[];
+      const vis: { i: number; d: number }[] = [];
+      for (let k = 0; k < idxs.length; k++) {
+        const s = specs[idxs[k]];
+        const by = _bobs[s.cloud] || 0;
+        _wpos.set(s.cx, s.cy + by, s.cz).applyMatrix4(gm);
+        _sphere.center.copy(_wpos);
+        _sphere.radius = s.rad;
+        if (!_frustum.intersectsSphere(_sphere)) continue;
+        const dx = _wpos.x - camX, dy = _wpos.y - camY, dz = _wpos.z - camZ;
+        vis.push({ i: idxs[k], d: dx * dx + dy * dy + dz * dz });
+      }
+      vis.sort((a, b) => b.d - a.d); // far → near (back-to-front blending)
+      const arr = im.instanceMatrix.array as Float32Array;
+      for (let w = 0; w < vis.length; w++) {
+        const s = specs[vis[w].i];
+        arr.set(s.m.elements, w * 16);
+        arr[w * 16 + 13] = s.m.elements[13] + (_bobs[s.cloud] || 0);
+      }
+      im.count = vis.length;
+      im.instanceMatrix.needsUpdate = true;
     }
   };
 
@@ -577,6 +710,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     configure,
     isVoxel: true,
     dispose() {
+      for (const bm of bucketMeshes) if (bm) bm.dispose();
       scene.remove(group);
       material.dispose();
     },
