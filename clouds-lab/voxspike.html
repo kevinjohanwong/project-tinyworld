@@ -20,6 +20,8 @@ const CF = parseFloat(P.get("cf") || "2"); // coarse factor: coarse cell = fineV
 const SUF = CF === 2 ? "" : "-cf" + String(CF).replace(".", "_");
 const SKIP_BASE = P.get("skipbase") === "1"; // skip mesh+fine renders (already on disk)
 const ONLY_MG = P.get("only") === "meshgrey"; // render ONLY the grey-material mesh (geometry ground truth)
+const COLOR = P.get("color") === "1"; // sample scan colors per cell + per-instance colors
+const PRE = COLOR ? "cspike" : "spike";
 const W = 1280, H = 860;
 
 const status = (s) => { document.title = "voxspike: " + s; };
@@ -45,18 +47,72 @@ status("gathering tris");
 const tris = [];
 const bbox = new THREE.Box3();
 const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+// color sources: per-tri texture UVs (sampled from ImageData) or vertex colors
+const texDatas = []; // {d,w,h}
+const triTex = []; // per tri: texDatas index or -1
+const triUV = []; // 6 floats per tri (only valid when triTex >= 0)
+const triVC = []; // 9 floats per tri (vertex rgb fallback)
 srcScene.traverse((o) => {
   if (!o.isMesh) return;
   const g = o.geometry, pos = g.attributes.position, idx = g.index, m = o.matrixWorld;
+  const uvAttr = g.attributes.uv, colAttr = g.attributes.color;
+  let texIdx = -1;
+  const map = o.material && o.material.map;
+  if (COLOR && map && map.image && uvAttr) {
+    const img = map.image;
+    const cnv = document.createElement("canvas");
+    cnv.width = img.width; cnv.height = img.height;
+    const ctx = cnv.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0);
+    texDatas.push({ d: ctx.getImageData(0, 0, img.width, img.height).data, w: img.width, h: img.height });
+    texIdx = texDatas.length - 1;
+  }
   const n = idx ? idx.count : pos.count;
   for (let i = 0; i < n; i += 3) {
-    va.fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(m);
-    vb.fromBufferAttribute(pos, idx ? idx.getX(i + 1) : i + 1).applyMatrix4(m);
-    vc.fromBufferAttribute(pos, idx ? idx.getX(i + 2) : i + 2).applyMatrix4(m);
+    const ia = idx ? idx.getX(i) : i, ib = idx ? idx.getX(i + 1) : i + 1, ic = idx ? idx.getX(i + 2) : i + 2;
+    va.fromBufferAttribute(pos, ia).applyMatrix4(m);
+    vb.fromBufferAttribute(pos, ib).applyMatrix4(m);
+    vc.fromBufferAttribute(pos, ic).applyMatrix4(m);
     tris.push(va.x, va.y, va.z, vb.x, vb.y, vb.z, vc.x, vc.y, vc.z);
     bbox.expandByPoint(va); bbox.expandByPoint(vb); bbox.expandByPoint(vc);
+    if (COLOR) {
+      triTex.push(texIdx);
+      if (texIdx >= 0) {
+        triUV.push(uvAttr.getX(ia), uvAttr.getY(ia), uvAttr.getX(ib), uvAttr.getY(ib), uvAttr.getX(ic), uvAttr.getY(ic));
+        triVC.push(0, 0, 0, 0, 0, 0, 0, 0, 0);
+      } else if (colAttr) {
+        triUV.push(0, 0, 0, 0, 0, 0);
+        triVC.push(colAttr.getX(ia), colAttr.getY(ia), colAttr.getZ(ia),
+          colAttr.getX(ib), colAttr.getY(ib), colAttr.getZ(ib),
+          colAttr.getX(ic), colAttr.getY(ic), colAttr.getZ(ic));
+      } else {
+        triUV.push(0, 0, 0, 0, 0, 0);
+        triVC.push(0.72, 0.7, 0.65, 0.72, 0.7, 0.65, 0.72, 0.7, 0.65);
+      }
+    }
   }
 });
+// barycentric color at (u,v) on triangle ti: P = A + ab*u + ac*v → wa=1-u-v, wb=u, wc=v
+function colorAt(ti, u, v) {
+  const wa = 1 - u - v;
+  const t = triTex[ti];
+  if (t >= 0) {
+    const o6 = ti * 6;
+    let uu = triUV[o6] * wa + triUV[o6 + 2] * u + triUV[o6 + 4] * v;
+    let vv = triUV[o6 + 1] * wa + triUV[o6 + 3] * u + triUV[o6 + 5] * v;
+    uu -= Math.floor(uu); vv -= Math.floor(vv);
+    const td = texDatas[t];
+    const px = Math.min(td.w - 1, (uu * td.w) | 0), py = Math.min(td.h - 1, (vv * td.h) | 0);
+    const i4 = (py * td.w + px) * 4;
+    return [td.d[i4] / 255, td.d[i4 + 1] / 255, td.d[i4 + 2] / 255];
+  }
+  const o9 = ti * 9;
+  return [
+    triVC[o9] * wa + triVC[o9 + 3] * u + triVC[o9 + 6] * v,
+    triVC[o9 + 1] * wa + triVC[o9 + 4] * u + triVC[o9 + 7] * v,
+    triVC[o9 + 2] * wa + triVC[o9 + 5] * u + triVC[o9 + 8] * v,
+  ];
+}
 const size = bbox.getSize(new THREE.Vector3());
 const maxDim = Math.max(size.x, size.y, size.z);
 const fineVox = maxDim / FINE_MAX;
@@ -66,23 +122,37 @@ const nx = Math.ceil(size.x / fineVox) + 2, ny = Math.ceil(size.y / fineVox) + 2
 // ---- fine occupancy via surface sampling ----
 status("voxelizing " + nx + "x" + ny + "x" + nz);
 const fine = new Set();
+const fineCol = new Map(); // key -> [rSum,gSum,bSum,n]
 const key = (ix, iy, iz) => ix + iy * nx + iz * nx * ny;
 const step = fineVox * 0.4;
 const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
-function bin(x, y, z) {
+function accum(map, k, col) {
+  let e = map.get(k);
+  if (!e) { e = [0, 0, 0, 0]; map.set(k, e); }
+  e[0] += col[0]; e[1] += col[1]; e[2] += col[2]; e[3]++;
+}
+function bin(x, y, z, col) {
   const ix = ((x - org.x) / fineVox) | 0, iy = ((y - org.y) / fineVox) | 0, iz = ((z - org.z) / fineVox) | 0;
-  if (ix >= 0 && iy >= 0 && iz >= 0 && ix < nx && iy < ny && iz < nz) fine.add(key(ix, iy, iz));
+  if (ix >= 0 && iy >= 0 && iz >= 0 && ix < nx && iy < ny && iz < nz) {
+    const k = key(ix, iy, iz);
+    fine.add(k);
+    if (col) accum(fineCol, k, col);
+  }
 }
 if (!ONLY_MG) for (let t = 0; t < tris.length; t += 9) {
+  const ti = t / 9;
   A.set(tris[t], tris[t + 1], tris[t + 2]); B.set(tris[t + 3], tris[t + 4], tris[t + 5]); C.set(tris[t + 6], tris[t + 7], tris[t + 8]);
-  bin(A.x, A.y, A.z); bin(B.x, B.y, B.z); bin(C.x, C.y, C.z);
+  bin(A.x, A.y, A.z, COLOR ? colorAt(ti, 0, 0) : null);
+  bin(B.x, B.y, B.z, COLOR ? colorAt(ti, 1, 0) : null);
+  bin(C.x, C.y, C.z, COLOR ? colorAt(ti, 0, 1) : null);
   const ab = B.clone().sub(A), ac = C.clone().sub(A);
   const area = ab.clone().cross(ac).length() * 0.5;
   const nS = Math.min(4000, Math.ceil(area / (step * step)));
   for (let s = 0; s < nS; s++) {
     let u = Math.random(), v = Math.random();
     if (u + v > 1) { u = 1 - u; v = 1 - v; }
-    bin(A.x + ab.x * u + ac.x * v, A.y + ab.y * u + ac.y * v, A.z + ab.z * u + ac.z * v);
+    bin(A.x + ab.x * u + ac.x * v, A.y + ab.y * u + ac.y * v, A.z + ab.z * u + ac.z * v,
+      COLOR ? colorAt(ti, u, v) : null);
   }
 }
 
@@ -93,23 +163,31 @@ status("sub-voxelizing (cf=" + CF + ")");
 const subVox = fineVox * CF / 2;
 const snx = Math.ceil(size.x / subVox) + 2, sny = Math.ceil(size.y / subVox) + 2, snz = Math.ceil(size.z / subVox) + 2;
 const sub = new Set();
+const coarseCol = new Map(); // ckey -> [rSum,gSum,bSum,n] (accumulated directly at coarse res)
 const skeyF = (ix, iy, iz) => ix + iy * snx + iz * snx * sny;
-function sbin(x, y, z) {
+function sbin(x, y, z, col) {
   const ix = ((x - org.x) / subVox) | 0, iy = ((y - org.y) / subVox) | 0, iz = ((z - org.z) / subVox) | 0;
-  if (ix >= 0 && iy >= 0 && iz >= 0 && ix < snx && iy < sny && iz < snz) sub.add(skeyF(ix, iy, iz));
+  if (ix >= 0 && iy >= 0 && iz >= 0 && ix < snx && iy < sny && iz < snz) {
+    sub.add(skeyF(ix, iy, iz));
+    if (col) accum(coarseCol, (ix >> 1) + (iy >> 1) * Math.ceil(snx / 2) + (iz >> 1) * Math.ceil(snx / 2) * Math.ceil(sny / 2), col);
+  }
 }
 if (!ONLY_MG) {
   const sstep = subVox * 0.4;
   for (let t = 0; t < tris.length; t += 9) {
+    const ti = t / 9;
     A.set(tris[t], tris[t + 1], tris[t + 2]); B.set(tris[t + 3], tris[t + 4], tris[t + 5]); C.set(tris[t + 6], tris[t + 7], tris[t + 8]);
-    sbin(A.x, A.y, A.z); sbin(B.x, B.y, B.z); sbin(C.x, C.y, C.z);
+    sbin(A.x, A.y, A.z, COLOR ? colorAt(ti, 0, 0) : null);
+    sbin(B.x, B.y, B.z, COLOR ? colorAt(ti, 1, 0) : null);
+    sbin(C.x, C.y, C.z, COLOR ? colorAt(ti, 0, 1) : null);
     const ab = B.clone().sub(A), ac = C.clone().sub(A);
     const area = ab.clone().cross(ac).length() * 0.5;
     const nS = Math.min(4000, Math.ceil(area / (sstep * sstep)));
     for (let s = 0; s < nS; s++) {
       let u = Math.random(), v = Math.random();
       if (u + v > 1) { u = 1 - u; v = 1 - v; }
-      sbin(A.x + ab.x * u + ac.x * v, A.y + ab.y * u + ac.y * v, A.z + ab.z * u + ac.z * v);
+      sbin(A.x + ab.x * u + ac.x * v, A.y + ab.y * u + ac.y * v, A.z + ab.z * u + ac.z * v,
+        COLOR ? colorAt(ti, u, v) : null);
     }
   }
 }
@@ -185,16 +263,26 @@ const cams = {
     c.lookAt(center.clone().add(new THREE.Vector3(0, -maxDim * 0.06, 0))); return c; })(),
 };
 const mat = new THREE.MeshStandardMaterial({ color: 0xb9b2a6, roughness: 0.92 });
+const colMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92 });
 const boxGeom = new THREE.BoxGeometry(1, 1, 1);
 boxGeom.translate(0.5, 0.5, 0.5); // origin at min corner — matches off/size math
 
-function buildInstanced(list) { // list of [x,y,z, sx,sy,sz] world units
-  const im = new THREE.InstancedMesh(boxGeom, mat, list.length);
+const _c = new THREE.Color();
+const cellColor = (map, k) => {
+  const e = map.get(k);
+  if (!e || !e[3]) return _c.setRGB(0.72, 0.7, 0.65);
+  // texture bytes are sRGB — convert to linear for lighting
+  return _c.setRGB(e[0] / e[3], e[1] / e[3], e[2] / e[3]).convertSRGBToLinear();
+};
+
+function buildInstanced(list, cols) { // list of [x,y,z, sx,sy,sz]; cols: THREE.Color per instance (optional)
+  const im = new THREE.InstancedMesh(boxGeom, cols ? colMat : mat, list.length);
   const m4 = new THREE.Matrix4();
   for (let i = 0; i < list.length; i++) {
     const [x, y, z, sx, sy, sz] = list[i];
     m4.makeScale(sx, sy, sz); m4.setPosition(x, y, z);
     im.setMatrixAt(i, m4);
+    if (cols) im.setColorAt(i, cols[i]);
   }
   im.castShadow = true; im.receiveShadow = true;
   return im;
@@ -205,7 +293,7 @@ async function renderMode(name, obj) {
   scene.add(obj);
   for (const [cn, cam] of Object.entries(cams)) {
     renderer.render(scene, cam);
-    await shot(`spike-${name}${name === "mesh" || name === "fine" ? "" : SUF}-${cn}.png`);
+    await shot(`${PRE}-${name}${name === "mesh" || name === "fine" ? "" : SUF}-${cn}.png`);
   }
   scene.remove(obj);
 }
@@ -220,12 +308,13 @@ if (!SKIP_BASE) {
 // ---- mode: fine cubes (baseline density) ----
 status("build fine (" + fine.size + " cells)");
 if (!SKIP_BASE) {
-  const list = [];
+  const list = [], cols = COLOR ? [] : null;
   for (const k of fine) {
     const ix = k % nx, iy = ((k / nx) | 0) % ny, iz = (k / (nx * ny)) | 0;
     list.push([org.x + ix * fineVox, org.y + iy * fineVox, org.z + iz * fineVox, fineVox, fineVox, fineVox]);
+    if (cols) cols.push(cellColor(fineCol, k).clone());
   }
-  const im = buildInstanced(list);
+  const im = buildInstanced(list, cols);
   status("render fine " + list.length);
   await renderMode("fine", im);
   im.dispose();
@@ -245,12 +334,13 @@ if (ONLY_MG) {
 const cv = fineVox * CF;
 status("build coarse (" + coarse.size + " cells)");
 {
-  const list = [];
+  const list = [], cols = COLOR ? [] : null;
   for (const [ck] of coarse) {
     const ix = ck % cnx, iy = ((ck / cnx) | 0) % cny, iz = (ck / (cnx * cny)) | 0;
     list.push([org.x + ix * cv, org.y + iy * cv, org.z + iz * cv, cv, cv, cv]);
+    if (cols) cols.push(cellColor(coarseCol, ck).clone());
   }
-  const im = buildInstanced(list);
+  const im = buildInstanced(list, cols);
   status("render coarse " + list.length);
   await renderMode("coarse", im);
   im.dispose();
@@ -259,7 +349,7 @@ status("build coarse (" + coarse.size + " cells)");
 // ---- mode: coarse + fitted shapes (half density, spike) ----
 status("fit shapes");
 {
-  const list = [];
+  const list = [], cols = COLOR ? [] : null;
   const shapeCounts = {};
   for (const [ck, occ] of coarse) {
     const ix = ck % cnx, iy = ((ck / cnx) | 0) % cny, iz = (ck / (cnx * cny)) | 0;
@@ -270,16 +360,17 @@ status("fit shapes");
       org.x + (ix + s.off[0]) * cv, org.y + (iy + s.off[1]) * cv, org.z + (iz + s.off[2]) * cv,
       s.size[0] * cv, s.size[1] * cv, s.size[2] * cv,
     ]);
+    if (cols) cols.push(cellColor(coarseCol, ck).clone());
   }
   window.__spikeStats = { cf: CF, fine: fine.size, coarse: coarse.size, shapeCounts };
-  const im = buildInstanced(list);
+  const im = buildInstanced(list, cols);
   status("render shapes " + list.length);
   await renderMode("shapes", im);
   im.dispose();
 }
 
 await fetch("/shot", { method: "POST", headers: { "content-type": "application/json" },
-  body: JSON.stringify({ name: "spike-stats" + SUF + ".json", data: "data:image/png;base64," + btoa(JSON.stringify(window.__spikeStats)) }) });
+  body: JSON.stringify({ name: PRE + "-stats" + SUF + ".json", data: "data:image/png;base64," + btoa(JSON.stringify(window.__spikeStats)) }) });
 await fetch("/done", { method: "POST" });
 status("DONE");
 </script>
