@@ -16,6 +16,10 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
 const P = new URLSearchParams(location.search);
 const FINE_MAX = parseInt(P.get("fine") || "200", 10); // fine grid max dimension (baseline density)
+const CF = parseFloat(P.get("cf") || "2"); // coarse factor: coarse cell = fineVox * CF
+const SUF = CF === 2 ? "" : "-cf" + String(CF).replace(".", "_");
+const SKIP_BASE = P.get("skipbase") === "1"; // skip mesh+fine renders (already on disk)
+const ONLY_MG = P.get("only") === "meshgrey"; // render ONLY the grey-material mesh (geometry ground truth)
 const W = 1280, H = 860;
 
 const status = (s) => { document.title = "voxspike: " + s; };
@@ -69,7 +73,7 @@ function bin(x, y, z) {
   const ix = ((x - org.x) / fineVox) | 0, iy = ((y - org.y) / fineVox) | 0, iz = ((z - org.z) / fineVox) | 0;
   if (ix >= 0 && iy >= 0 && iz >= 0 && ix < nx && iy < ny && iz < nz) fine.add(key(ix, iy, iz));
 }
-for (let t = 0; t < tris.length; t += 9) {
+if (!ONLY_MG) for (let t = 0; t < tris.length; t += 9) {
   A.set(tris[t], tris[t + 1], tris[t + 2]); B.set(tris[t + 3], tris[t + 4], tris[t + 5]); C.set(tris[t + 6], tris[t + 7], tris[t + 8]);
   bin(A.x, A.y, A.z); bin(B.x, B.y, B.z); bin(C.x, C.y, C.z);
   const ab = B.clone().sub(A), ac = C.clone().sub(A);
@@ -82,13 +86,39 @@ for (let t = 0; t < tris.length; t += 9) {
   }
 }
 
-// ---- coarse cells (2x2x2 fine) with sub-occupancy masks ----
+// ---- coarse cells with 2x2x2 sub-occupancy masks ----
+// sub grid = half the coarse cell size, voxelized directly from the tris,
+// so any coarse factor CF works (CF=2 reproduces the original fine-derived masks).
+status("sub-voxelizing (cf=" + CF + ")");
+const subVox = fineVox * CF / 2;
+const snx = Math.ceil(size.x / subVox) + 2, sny = Math.ceil(size.y / subVox) + 2, snz = Math.ceil(size.z / subVox) + 2;
+const sub = new Set();
+const skeyF = (ix, iy, iz) => ix + iy * snx + iz * snx * sny;
+function sbin(x, y, z) {
+  const ix = ((x - org.x) / subVox) | 0, iy = ((y - org.y) / subVox) | 0, iz = ((z - org.z) / subVox) | 0;
+  if (ix >= 0 && iy >= 0 && iz >= 0 && ix < snx && iy < sny && iz < snz) sub.add(skeyF(ix, iy, iz));
+}
+if (!ONLY_MG) {
+  const sstep = subVox * 0.4;
+  for (let t = 0; t < tris.length; t += 9) {
+    A.set(tris[t], tris[t + 1], tris[t + 2]); B.set(tris[t + 3], tris[t + 4], tris[t + 5]); C.set(tris[t + 6], tris[t + 7], tris[t + 8]);
+    sbin(A.x, A.y, A.z); sbin(B.x, B.y, B.z); sbin(C.x, C.y, C.z);
+    const ab = B.clone().sub(A), ac = C.clone().sub(A);
+    const area = ab.clone().cross(ac).length() * 0.5;
+    const nS = Math.min(4000, Math.ceil(area / (sstep * sstep)));
+    for (let s = 0; s < nS; s++) {
+      let u = Math.random(), v = Math.random();
+      if (u + v > 1) { u = 1 - u; v = 1 - v; }
+      sbin(A.x + ab.x * u + ac.x * v, A.y + ab.y * u + ac.y * v, A.z + ab.z * u + ac.z * v);
+    }
+  }
+}
 status("coarsening");
-const cnx = Math.ceil(nx / 2), cny = Math.ceil(ny / 2), cnz = Math.ceil(nz / 2);
+const cnx = Math.ceil(snx / 2), cny = Math.ceil(sny / 2), cnz = Math.ceil(snz / 2);
 const ckey = (ix, iy, iz) => ix + iy * cnx + iz * cnx * cny;
 const coarse = new Map(); // ckey -> 8-bit submask, bit = sx + sy*2 + sz*4
-for (const k of fine) {
-  const ix = k % nx, iy = ((k / nx) | 0) % ny, iz = (k / (nx * ny)) | 0;
+for (const k of sub) {
+  const ix = k % snx, iy = ((k / snx) | 0) % sny, iz = (k / (snx * sny)) | 0;
   const ck = ckey(ix >> 1, iy >> 1, iz >> 1);
   const bit = (ix & 1) + (iy & 1) * 2 + (iz & 1) * 4;
   coarse.set(ck, (coarse.get(ck) || 0) | (1 << bit));
@@ -175,19 +205,21 @@ async function renderMode(name, obj) {
   scene.add(obj);
   for (const [cn, cam] of Object.entries(cams)) {
     renderer.render(scene, cam);
-    await shot(`spike-${name}-${cn}.png`);
+    await shot(`spike-${name}${name === "mesh" || name === "fine" ? "" : SUF}-${cn}.png`);
   }
   scene.remove(obj);
 }
 
 // ---- mode: raw mesh (ground truth) ----
-status("render mesh");
-srcScene.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
-await renderMode("mesh", srcScene);
+if (!SKIP_BASE) {
+  status("render mesh");
+  srcScene.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  await renderMode("mesh", srcScene);
+}
 
 // ---- mode: fine cubes (baseline density) ----
 status("build fine (" + fine.size + " cells)");
-{
+if (!SKIP_BASE) {
   const list = [];
   for (const k of fine) {
     const ix = k % nx, iy = ((k / nx) | 0) % ny, iz = (k / (nx * ny)) | 0;
@@ -199,8 +231,18 @@ status("build fine (" + fine.size + " cells)");
   im.dispose();
 }
 
-// ---- mode: coarse cubes (half density, control) ----
-const cv = fineVox * 2;
+// ---- mode: grey-material mesh (geometry ground truth for fair RMSE) ----
+if (ONLY_MG) {
+  const gm = new THREE.MeshStandardMaterial({ color: 0xb9b2a6, roughness: 0.92 });
+  srcScene.traverse((o) => { if (o.isMesh) { o.material = gm; o.castShadow = true; o.receiveShadow = true; } });
+  await renderMode("meshgrey", srcScene);
+  await fetch("/done", { method: "POST" });
+  status("DONE");
+  throw new Error("meshgrey-only run complete");
+}
+
+// ---- mode: coarse cubes (control) ----
+const cv = fineVox * CF;
 status("build coarse (" + coarse.size + " cells)");
 {
   const list = [];
@@ -229,7 +271,7 @@ status("fit shapes");
       s.size[0] * cv, s.size[1] * cv, s.size[2] * cv,
     ]);
   }
-  window.__spikeStats = { fine: fine.size, coarse: coarse.size, shapeCounts };
+  window.__spikeStats = { cf: CF, fine: fine.size, coarse: coarse.size, shapeCounts };
   const im = buildInstanced(list);
   status("render shapes " + list.length);
   await renderMode("shapes", im);
@@ -237,7 +279,7 @@ status("fit shapes");
 }
 
 await fetch("/shot", { method: "POST", headers: { "content-type": "application/json" },
-  body: JSON.stringify({ name: "spike-stats.json", data: "data:image/png;base64," + btoa(JSON.stringify(window.__spikeStats)) }) });
+  body: JSON.stringify({ name: "spike-stats" + SUF + ".json", data: "data:image/png;base64," + btoa(JSON.stringify(window.__spikeStats)) }) });
 await fetch("/done", { method: "POST" });
 status("DONE");
 </script>
