@@ -2309,7 +2309,13 @@ export default function TinyWorld() {
     // never double-coarsens (their shape fits are NOT persisted yet — they
     // reload as full cubes; v1 caveat).
     const __shapeParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
-    const SHAPES_ON = __shapeParams.get("shapes") === "1"
+    // DEFAULT ON for FRESH scans only (File uploads + the debug world, both of
+    // which run the worker). Saved worlds stay param-only so loading an old
+    // fine world can never silently coarsen its save via autosave — that would
+    // be an irreversible data loss. ?shapes=1 forces, ?shapes=0 disables.
+    const _shapesParam = __shapeParams.get("shapes");
+    const _freshScanBuild = source instanceof File || (source as any)?.meta?.debugWorld === true;
+    const SHAPES_ON = (_shapesParam === "1" || (_shapesParam !== "0" && _freshScanBuild))
       && !((source as any)?.meta?.shapesApplied === true);
     const SHAPE_CF = Math.max(1.05, Math.min(4, Number(__shapeParams.get("shapecf")) || 1.5));
     const shapeFitMap = new Map<string, [number, number, number, number, number, number]>();
@@ -2439,32 +2445,12 @@ export default function TinyWorld() {
       for (const [n, l] of Object.entries(outLayers)) { if (n !== "hidden_dirt") _visCount += l.length / 3; }
       result.visibleCount = _visCount;
       result.voxel = (result.voxel as number) * CF;
-      // latent underside: coarsen per-column ranges by CENTER-POINT SAMPLING,
-      // matching how the visible layers are coarsened. The previous union
-      // merge (min-bottom/max-top over all merged fine columns) smeared the
-      // dirt sideways and upward to the neighborhood extreme — brown shelves
-      // above the grass line and a ballooned keel (KJ Aug 5 screenshot).
-      if (result.latentCols && (result.latentCols as ArrayBuffer).byteLength) {
-        const q = new Int32Array(result.latentCols as ArrayBuffer);
-        const fineCols = new Map<string, [number, number]>();
-        for (let i = 0; i + 3 < q.length; i += 4)
-          fineCols.set(q[i] + "," + q[i + 1], [q[i + 2], q[i + 3]]);
-        const merged = new Map<string, [number, number]>();
-        for (let i = 0; i + 3 < q.length; i += 4) {
-          const cx = Math.floor(q[i] / CF), cz = Math.floor(q[i + 1] / CF);
-          const ck = cx + "," + cz;
-          if (merged.has(ck)) continue;
-          const r = fineCols.get(Math.floor((cx + 0.5) * CF) + "," + Math.floor((cz + 0.5) * CF));
-          if (r) merged.set(ck, [Math.floor(r[0] / CF), Math.floor(r[1] / CF)]);
-        }
-        const out = new Int32Array(merged.size * 4);
-        let w = 0;
-        for (const [ck, r] of merged) {
-          const p = ck.split(",");
-          out[w++] = +p[0]; out[w++] = +p[1]; out[w++] = r[0]; out[w++] = r[1];
-        }
-        result.latentCols = out.buffer;
-      }
+      // latent underside: NOT coarsened here. All consumers read the latent
+      // cols via worldData meta → latentRef, and the decode site (see the
+      // latentRef block) is the SINGLE owner of shapes-mode latent coarsening
+      // (center-point sampling) + re-persists the coarse encoding into meta so
+      // saves stay consistent. Coarsening here too would double-coarsen the
+      // File-upload path, whose meta is encoded AFTER this block.
       console.log("[tinyworld shapes] cf", CF, ":", fine.size, "fine ->", coarseOcc.size, "coarse cells,",
         _shaped, "shaped,", Math.round(performance.now() - _t0), "ms");
     }
@@ -2508,7 +2494,42 @@ export default function TinyWorld() {
     const worldMeta = ((worldDataRef.current?.meta || {}) as any);
     // shapes mode: stamp the world so a save/reload never re-coarsens, and keep
     // meta.voxel consistent with the coarsened pitch for the saved-world path.
-    if (SHAPES_ON) { worldMeta.shapesApplied = true; worldMeta.shapeCf = SHAPE_CF; worldMeta.voxel = voxel; }
+    if (SHAPES_ON) {
+      worldMeta.shapesApplied = true; worldMeta.shapeCf = SHAPE_CF; worldMeta.voxel = voxel;
+      // Persist the shape fits so a saved shapes world reloads with its
+      // sub-cell detail instead of degrading to full coarse cubes. Encoding:
+      // Int16 quads [x, y, z, bits] — off bits 0..2 (set → 0.5), size bits
+      // 3..5 (set → 0.5, clear → 1). Whole-cell edit semantics make this
+      // stable: digs only orphan entries (harmless — no matching cell),
+      // places add full cubes (no entry needed).
+      if (shapeFitMap.size) {
+        const _fq = new Int16Array(shapeFitMap.size * 4);
+        let _fw = 0;
+        for (const [k, f] of shapeFitMap) {
+          const p = k.split(",");
+          let bits = 0;
+          for (let a = 0; a < 3; a++) {
+            if (f[a] > 0.25) bits |= 1 << a;
+            if (f[a + 3] < 0.75) bits |= 1 << (a + 3);
+          }
+          _fq[_fw++] = +p[0]; _fq[_fw++] = +p[1]; _fq[_fw++] = +p[2]; _fq[_fw++] = bits;
+        }
+        worldMeta.shapeFits = encodeBase64Bytes(new Uint8Array(_fq.buffer));
+      }
+    } else if (worldMeta.shapesApplied === true && typeof worldMeta.shapeFits === "string" && worldMeta.shapeFits) {
+      // Saved-under-shapes world reloading: restore the persisted fits so the
+      // sub-cell shapes render again (addLayer looks them up per cell; entries
+      // whose cell was dug simply never match).
+      const _u8 = decodeBase64Bytes(worldMeta.shapeFits);
+      const _fq = new Int16Array(_u8.buffer, _u8.byteOffset, Math.floor(_u8.byteLength / 2));
+      for (let i = 0; i + 3 < _fq.length; i += 4) {
+        const bits = _fq[i + 3];
+        shapeFitMap.set(_fq[i] + "," + _fq[i + 1] + "," + _fq[i + 2], [
+          bits & 1 ? 0.5 : 0, bits & 2 ? 0.5 : 0, bits & 4 ? 0.5 : 0,
+          bits & 8 ? 0.5 : 1, bits & 16 ? 0.5 : 1, bits & 32 ? 0.5 : 1,
+        ]);
+      }
+    }
     structuralGrassRef.current = new Set(Array.isArray(worldMeta.structuralGrass) ? worldMeta.structuralGrass.map(String) : []);
     const inferredMeta = (worldMeta.inferredFrom || {}) as any;
     // NOTE: latentCols presence alone no longer flags a metric world — scan
@@ -3118,7 +3139,10 @@ export default function TinyWorld() {
     // real sun, no raymarch, mobile-safe). ?clouds=vol → the volumetric
     // raymarch ring (heavier, desktop-oriented, kept for comparison).
     const _cloudMode = __diagParams.get("clouds");
-    const _cloudsEnabled = _cloudMode === "1" || _cloudMode === "vol";
+    // DEFAULT ON (KJ Aug 5 "implement all the changes into main"): voxel
+    // clouds + heroes + cloud sea on every world. ?clouds=0 kills, ?clouds=vol
+    // routes to the legacy volumetric raymarch for comparison.
+    const _cloudsEnabled = _cloudMode !== "0";
     const _useVoxelClouds = _cloudMode !== "vol";
     const volumetricClouds = _useVoxelClouds
       ? createVoxelCloudRing({
@@ -5961,6 +5985,17 @@ export default function TinyWorld() {
         }
         _cols.clear();
         for (const [k, r] of _coarse) _cols.set(k, r);
+        // Re-persist the COARSE encoding into meta so a save of this world
+        // carries coarse latent + shapesApplied together — otherwise a reload
+        // would draw fine latent indices at the coarse voxel (the Aug 5
+        // oversized-dirt bug) with no shapes pass left to correct them.
+        const _outQ = new Int32Array(_cols.size * 4);
+        let _w = 0;
+        for (const [k, r] of _cols) {
+          const p = k.split(",");
+          _outQ[_w++] = +p[0]; _outQ[_w++] = +p[1]; _outQ[_w++] = r[0]; _outQ[_w++] = r[1];
+        }
+        if (worldDataRef.current?.meta) (worldDataRef.current.meta as any).latentCols = encodeBase64Bytes(new Uint8Array(_outQ.buffer));
       }
       const _spent = new Set<string>();
       if (typeof _lm.latentSpent === "string" && _lm.latentSpent) {
