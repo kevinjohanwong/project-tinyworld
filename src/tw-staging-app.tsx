@@ -2323,11 +2323,21 @@ export default function TinyWorld() {
         const a = _i32(buf);
         for (let i = 0; i < a.length; i += 3) fine.set(a[i] + "," + a[i + 1] + "," + a[i + 2], name);
       }
-      const coarseOcc = new Map<string, { occ: number; layers: string[] }>();
-      for (const k of fine.keys()) {
+      const coarseOcc = new Map<string, { occ: number; layers: string[]; fbOcc: number; fb: string[] }>();
+      for (const [k, lname] of fine) {
         const p = k.split(",");
-        const ck = Math.floor(+p[0] / CF) + "," + Math.floor(+p[1] / CF) + "," + Math.floor(+p[2] / CF);
-        if (!coarseOcc.has(ck)) coarseOcc.set(ck, { occ: 0, layers: [] });
+        const fx = +p[0], fy = +p[1], fz = +p[2];
+        const cx = Math.floor(fx / CF), cy = Math.floor(fy / CF), cz = Math.floor(fz / CF);
+        const ck = cx + "," + cy + "," + cz;
+        let e = coarseOcc.get(ck);
+        if (!e) { e = { occ: 0, layers: [], fbOcc: 0, fb: [] }; coarseOcc.set(ck, e); }
+        // fallback occupancy + layers from where the fine cells actually sit,
+        // for thin sheets the 8-point sample misses entirely
+        const bx = (fx + 0.5 - cx * CF) / CF > 0.5 ? 1 : 0;
+        const by = (fy + 0.5 - cy * CF) / CF > 0.5 ? 1 : 0;
+        const bz = (fz + 0.5 - cz * CF) / CF > 0.5 ? 1 : 0;
+        e.fbOcc |= 1 << (bx + by * 2 + bz * 4);
+        e.fb.push(lname);
       }
       for (const [ck, e] of coarseOcc) {
         const p = ck.split(","), cx = +p[0], cy = +p[1], cz = +p[2];
@@ -2339,7 +2349,11 @@ export default function TinyWorld() {
             + Math.floor((cz + 0.25 + sz * 0.5) * CF));
           if (layer) { e.occ |= 1 << b; e.layers.push(layer); }
         }
-        if (!e.occ) { e.occ = 0b00001111; e.layers.push("dirt"); } // thin-diagonal: keep as bottom slab
+        // thin-diagonal fallback: keep the TRUE source layers and the fine
+        // cells' actual sub-cell occupancy. The old hardcoded "dirt" bottom
+        // slab converted every thin grey floor/sheet into brown dirt — the
+        // dominant cause of the shapes-mode dirt blowup (KJ Aug 5).
+        if (!e.occ) { e.occ = e.fbOcc || 0b00001111; for (const l of e.fb) e.layers.push(l); }
       }
       // shape vocabulary — every shape is an axis-aligned box {size, off} in cell fractions
       const _boxMask = (size: number[], off: number[]) => {
@@ -5926,6 +5940,27 @@ export default function TinyWorld() {
         const u8 = decodeBase64Bytes(_lm.latentCols);
         const q = new Int32Array(u8.buffer, u8.byteOffset, Math.floor(u8.byteLength / 4));
         for (let i = 0; i + 3 < q.length; i += 4) _cols.set(q[i] + "," + q[i + 1], [q[i + 2], q[i + 3]]);
+      }
+      // Shapes mode: the meta latentCols were captured from the worker's FINE
+      // output BEFORE the coarsening pass, so rendering them at the coarse
+      // voxel drew the dirt underside 1.5× oversized/offset while the surface
+      // stayed correct (KJ Aug 5 "dirt didn't scale with the rest"). Coarsen
+      // here by center-point sampling, matching the visible layers. SHAPES_ON
+      // is already false for saved-under-shapes worlds (meta.shapesApplied),
+      // whose latentCols are coarse — no double-coarsen.
+      if (SHAPES_ON && _cols.size) {
+        const _cf = SHAPE_CF;
+        const _coarse = new Map<string, [number, number]>();
+        for (const k of _cols.keys()) {
+          const p = k.split(",");
+          const cx = Math.floor(+p[0] / _cf), cz = Math.floor(+p[1] / _cf);
+          const ck = cx + "," + cz;
+          if (_coarse.has(ck)) continue;
+          const r = _cols.get(Math.floor((cx + 0.5) * _cf) + "," + Math.floor((cz + 0.5) * _cf));
+          if (r) _coarse.set(ck, [Math.floor(r[0] / _cf), Math.floor(r[1] / _cf)]);
+        }
+        _cols.clear();
+        for (const [k, r] of _coarse) _cols.set(k, r);
       }
       const _spent = new Set<string>();
       if (typeof _lm.latentSpent === "string" && _lm.latentSpent) {
