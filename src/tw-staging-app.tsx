@@ -33,6 +33,8 @@ import { installWaterSurface } from "@/water-surface-shader";
 import { createRayGI, RAYGI_COMPOSITE_SHADER, RAYGI_BOUNCE_STRENGTH } from "@/tw-raygi";
 import { createVolumetricCloudRing } from "@/tw-volumetric-clouds";
 import { createVoxelCloudRing } from "@/tw-voxel-cloud";
+import { patchDynShadowChunk, createDynShadowRig } from "@/tw-shadow-split";
+import type { DynShadowRig } from "@/tw-shadow-split";
 import type { GreedyWall } from "@/wall-greedy";
 import { WARSHIP_DIMS, warshipBlocks } from "@/tw-warship-vox";
 import {
@@ -2263,6 +2265,14 @@ export default function TinyWorld() {
     ]);
     const gltfMod = await import(GLTF_URL);
     const { GLTFLoader } = gltfMod as any;
+    // ── Static/dynamic shadow split (Aug 6) ──────────────────────────────────
+    // Movers (Sentinel/drone/workers) leave the big static maps and render into
+    // a small dedicated map every frame; the chunk patch multiplies that map's
+    // shadow into every real casting directional. Must patch BEFORE any
+    // material compiles. ?shadowsplit=0 restores the legacy single-map path.
+    const _shadowSplitOn =
+      new URLSearchParams(window.location.search).get("shadowsplit") !== "0" &&
+      patchDynShadowChunk(THREE);
     const { OrbitControls } = orbitMod as any;
     const { PointerLockControls } = fpMod as any;
     const { EffectComposer } = composerMod as any;
@@ -2837,10 +2847,41 @@ export default function TinyWorld() {
     renderer.shadowMap.needsUpdate = true; // paint once at startup
     let _shadowDirty = 6;              // frames of forced repaint remaining
     let _shadowSinceUpdate = 0;        // frames since last shadow repaint
-    const SHADOW_SAFETY_FRAMES = 30;   // idle safety repaint (~2/sec @60fps)
+    // Split mode: statics only repaint on TARGETED invalidations (edits, sun
+    // steps, deadband commits), so the safety floor stretches 30 → 600 frames
+    // (~10s @60fps) — it only backstops UNTRACKED transient casters (falling
+    // blocks, debris). Legacy mode keeps the old ~0.5s floor because movers
+    // still live in the static maps there. ?shadowsafety=N overrides; 0 = off.
+    const SHADOW_SAFETY_FRAMES = (() => {
+      const v = Number(__diagParams.get("shadowsafety"));
+      if (Number.isFinite(v) && v >= 0 && __diagParams.get("shadowsafety") !== null) return v;
+      return _shadowSplitOn ? 600 : 30;
+    })();
     const _shPrevCam = new THREE.Vector3(1e9, 1e9, 1e9); // camera pos at last repaint
+    // Per-light static dirty counters (split mode). markStatic targets one
+    // map — a world-box commit no longer repaints the moon map and vice versa.
+    let _shDirtySun = 6;
+    let _shDirtyMoon = 6;
+    const markStatic = (which: "sun" | "moon" | "all" = "all", frames = 2) => {
+      if (which !== "moon" && _shDirtySun < frames) _shDirtySun = frames;
+      if (which !== "sun" && _shDirtyMoon < frames) _shDirtyMoon = frames;
+    };
+    const _shadowStats = { staticSun: 0, staticMoon: 0, dynPaints: 0, sunCommits: 0 };
+    (window as any).__twShadowStats = _shadowStats;
+    // Sun-direction quantization: the real sun creeps ~0.25°/minute, so the
+    // ~1s ToD tick was forcing a full static repaint 60×/hour of pure idle.
+    // Commit the shadow/lighting direction in 45s steps (~0.19°/step —
+    // visually indistinguishable; colors still ramp every tick). ?sunstep=N
+    // seconds; 0 restores per-tick commits.
+    const SUN_STEP_MS = (() => {
+      const v = Number(__diagParams.get("sunstep"));
+      return Number.isFinite(v) && __diagParams.get("sunstep") !== null ? v * 1000 : 45000;
+    })();
+    let _sunCommitMs = -1; // -1 = commit on first tick
+    // Legacy name: external callers + in-file sites mark BOTH static maps.
     const markShadowDirty = (frames = 2) => {
       if (_shadowDirty < frames) _shadowDirty = frames;
+      markStatic("all", frames);
     };
     (window as any).__twMarkShadowDirty = markShadowDirty;
 
@@ -3114,6 +3155,9 @@ export default function TinyWorld() {
     let _sunDirLocked = false; // live tint loop drives the sun; forceSun() can pin it
     sun.position.copy(sunDir).multiplyScalar(span * 3);
     sun.castShadow = true;
+    // Split mode: this map is STATIC-ONLY — three repaints it solely when the
+    // frame loop raises shadow.needsUpdate from a targeted markStatic("sun").
+    if (_shadowSplitOn) sun.shadow.autoUpdate = false;
     // SHADOW map: the ONLY shadow caster now. A FOLLOW box (bounds set each frame
     // by updateSunShadow) — tight on the play area when walking, full-island in
     // overview. 7168 over a ~100u walk box ≈ 0.031 u/texel: a mech leg / trunk
@@ -3168,6 +3212,7 @@ export default function TinyWorld() {
     const moon = new THREE.DirectionalLight(MOON_COLOR, 0);
     moon.position.copy(moonDir).multiplyScalar(span * 3);
     moon.castShadow = false; // enabled at night by the day/night-edge handoff
+    if (_shadowSplitOn) moon.shadow.autoUpdate = false; // static-only, like the sun map
     moon.shadow.mapSize.set(3072, 3072);
     moon.shadow.camera.left = -span * 1.4;
     moon.shadow.camera.right = span * 1.4;
@@ -3323,6 +3368,16 @@ export default function TinyWorld() {
     const rim = new THREE.DirectionalLight(tp.rim, tp.rimI);
     rim.position.set(-6, 6, 14);
     scene.add(rim);
+
+    // ── Mover shadow rig (static/dynamic split) ──────────────────────────────
+    // A small always-fresh map for the ~dozen moving casters. MUST be added to
+    // the scene AFTER every other directional light: the chunk patch finds it
+    // as the LAST casting directional (three's casting-first sort is stable),
+    // so any earlier add would misroute the shadow combine. Point lights added
+    // later don't matter — only directional order does.
+    const dynShadow: DynShadowRig | null = _shadowSplitOn
+      ? createDynShadowRig(THREE, { scene, dist: span * 1.5, minHalf: 10, maxHalf: Math.max(20, span * 1.6) })
+      : null;
 
     // ── Bounce rig (Jul 25 lighting-fidelity pass) ────────────────────────────
     // Doctrine: every light must trace to a REAL source. The dormant hemi +
@@ -3840,11 +3895,15 @@ export default function TinyWorld() {
       model.traverse((o: any) => {
         if (o.isMesh) {
           o.material = droneHullMat;
-          o.castShadow = true;
+          // Split mode: the drone is a MOVER — it leaves the static maps and
+          // casts via the per-frame mover map instead (twDynCast tag).
+          o.castShadow = !_shadowSplitOn;
+          o.userData.twDynCast = true;
           o.receiveShadow = false;
           o.frustumCulled = false;
         }
       });
+      dynShadow?.register(droneRig, 2);
       const box = new THREE.Box3().setFromObject(model);
       const size = new THREE.Vector3(); box.getSize(size);
       const center = new THREE.Vector3(); box.getCenter(center);
@@ -6682,6 +6741,7 @@ export default function TinyWorld() {
       structuralGrassRef.current.delete(k);
       if (rmLayer === "grass" || rmLayer === "dryGrass") markGrassDirty(vx, vz);
       raygiEditHooks.remove?.(vx, vy, vz);
+      markShadowDirty(2); // carved block → repaint the static shadow maps
       terrainEdits.ver++;
       return true;
     };
@@ -8904,7 +8964,8 @@ export default function TinyWorld() {
           body.position.y = feetY + voxel * 0.75;
           const head = new THREE.Mesh(new THREE.BoxGeometry(voxel * 0.7, voxel * 0.6, voxel * 0.6), m);
           head.position.y = feetY + voxel * 1.8;
-          body.castShadow = head.castShadow = true;
+          body.castShadow = head.castShadow = !_shadowSplitOn; // movers use the mover map
+          body.userData.twDynCast = head.userData.twDynCast = true;
           tilt.parent?.remove(tilt);
           anim.add(body); anim.add(head);
           group.add(anim);
@@ -8913,7 +8974,8 @@ export default function TinyWorld() {
           const model = gltf.scene;
           model.traverse((o: any) => {
             if (o.isMesh) {
-              o.castShadow = true;
+              o.castShadow = !_shadowSplitOn; // movers use the mover map
+              o.userData.twDynCast = true;
               o.receiveShadow = true;
               o.frustumCulled = false;
               // Stone recolor: replace the GLB's baked palette material with
@@ -8978,7 +9040,8 @@ export default function TinyWorld() {
           new THREE.MeshPhongMaterial({ color: 0xffffff }),
         );
         carried.position.set(0, feetY + voxel * 3.0 * WORKER_VISUAL_SCALE, 0);
-        carried.castShadow = true;
+        carried.castShadow = !_shadowSplitOn; // mover-held block → mover map
+        carried.userData.twDynCast = true;
         carried.visible = false;
         group.add(carried);
         group.userData = { style: "mecha01", carriedMesh: carried, mecha: { anim, gaitPhase: 0, gaitSpeed: 0 } };
@@ -9108,7 +9171,8 @@ export default function TinyWorld() {
           if (cubes.length === 0) return null;
           const mesh = new THREE.InstancedMesh(cubeGeo, material, cubes.length);
           mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cubes.length * 3), 3);
-          mesh.castShadow = true;
+          mesh.castShadow = !_shadowSplitOn; // worker body → mover map
+          mesh.userData.twDynCast = true;
           mesh.receiveShadow = true;
           for (let i = 0; i < cubes.length; i++) {
             const cb = cubes[i];
@@ -9157,7 +9221,8 @@ export default function TinyWorld() {
           new THREE.MeshPhongMaterial({ color: 0xffffff }),
         );
         carried.position.set(0, feetY + voxel * 2.9 * WORKER_VISUAL_SCALE, 0);
-        carried.castShadow = true;
+        carried.castShadow = !_shadowSplitOn; // mover-held block → mover map
+        carried.userData.twDynCast = true;
         carried.visible = false;
         group.add(carried);
 
@@ -9562,6 +9627,7 @@ export default function TinyWorld() {
       const traits = traitsFor(id);
       const { group, carried } = buildWorkerVisual(style, traits, converted);
       scene.add(group);
+      dynShadow?.register(group, 1.5); // workers are movers (auto-pruned on despawn)
       const w: WorkerState = {
         id, vx, vy, vz,
         targetVX: vx, targetVY: vy, targetVZ: vz,
@@ -11901,6 +11967,7 @@ export default function TinyWorld() {
       (carryState.mesh.userData.slotMap as Map<string, number>).set(vx + "," + vy + "," + vz, slot);
       addCol(vx, vy, vz);
       raygiEditHooks.add?.(vx, vy, vz, (PAL as any)[carryState.layer] ?? 0x8a8a8a, RAYGI_BOUNCE_STRENGTH[carryState.layer] ?? 0.5);
+      markShadowDirty(2); // placed block → repaint the static shadow maps
       terrainEdits.ver++;
       protAdd(vx, vz, carryState.layer, 1);
       const cGrade = (carryState as any).grade || "raw";
@@ -16050,8 +16117,19 @@ export default function TinyWorld() {
         renderer.shadowMap.autoUpdate = !on;
         renderer.shadowMap.needsUpdate = true;
         if (on) markShadowDirty(4);
-        return { shadowThrottle: on, autoUpdate: renderer.shadowMap.autoUpdate };
+        return { shadowThrottle: on, autoUpdate: renderer.shadowMap.autoUpdate, note: _shadowSplitOn ? "split mode: statics are per-light gated regardless" : undefined };
       };
+      // Static/dynamic split diagnostics: repaint counters + mover-map state.
+      // Toggle only at load (?shadowsplit=0) — the chunk patch bakes into
+      // every compiled program, so a live toggle would need a full recompile.
+      (window as any).__tw.shadowSplit = () => ({
+        on: _shadowSplitOn,
+        ..._shadowStats,
+        dyn: dynShadow ? { ...dynShadow.stats } : null,
+        sunStepMs: SUN_STEP_MS,
+        safetyFrames: SHADOW_SAFETY_FRAMES,
+        pending: { sun: _shDirtySun, moon: _shDirtyMoon },
+      });
       // Live A/B for the third-person chase-camera framing. Merge any subset:
       //   __tw.camRig({ lat, up, dist, height, antiClip, clearR })
       //   lat    +ve slides the mech LEFT (recenter from too-far-right)
@@ -16223,9 +16301,13 @@ export default function TinyWorld() {
 
     new GLTFLoader().load("/sentinel-ao.glb", (gltf: any) => {
       const root = gltf.scene;
+      dynShadow?.register(sentinelGroup, 4);
       root.traverse((obj: any) => {
         if (obj.isMesh) {
-          obj.castShadow = true;
+          // Split mode: the Sentinel is a MOVER — per-frame mover map, not the
+          // big static maps (walking no longer repaints the world's shadows).
+          obj.castShadow = !_shadowSplitOn;
+          obj.userData.twDynCast = true;
           obj.receiveShadow = true;
           obj.frustumCulled = false; // skinned bounding boxes are unreliable
           // Recolor to match the wall palette (PAL.wall = 0x9a8c7c).
@@ -17563,6 +17645,7 @@ export default function TinyWorld() {
     const _commitCenter = (
       st: ReturnType<typeof _mkCommit>, ls: THREE.Vector3,
       half: number, dir: THREE.Vector3, texel: number,
+      which: "sun" | "moon" | "all" = "all",
     ) => {
       const band = half * SHADOW_DEADBAND.frac;
       const need = !st.has || st.half !== half
@@ -17574,7 +17657,9 @@ export default function TinyWorld() {
         st.z = ls.z;
         st.has = true; st.half = half;
         st.dx = dir.x; st.dy = dir.y; st.dz = dir.z;
-        markShadowDirty(2);
+        // Targeted: a world-box commit repaints only the map whose camera
+        // actually moved. Legacy mode still repaints globally via _shadowDirty.
+        if (_shadowSplitOn) markStatic(which, 2); else markShadowDirty(2);
       }
       ls.set(st.x, st.y, st.z);
     };
@@ -17603,7 +17688,7 @@ export default function TinyWorld() {
       }
       const WORLD_TEXEL = (2 * wHalf) / sun.shadow.mapSize.x;
       _shCenter.copy(_shFocus).applyMatrix4(_shLightInv);
-      _commitCenter(_shCommitSun, _shCenter, wHalf, sunDir, WORLD_TEXEL);
+      _commitCenter(_shCommitSun, _shCenter, wHalf, sunDir, WORLD_TEXEL, "sun");
       _shCenter.applyMatrix4(_shLight);
       sun.target.position.copy(_shCenter);
       sun.position.copy(_shCenter).addScaledVector(sunDir, span * 3);
@@ -17635,12 +17720,15 @@ export default function TinyWorld() {
         }
         const MOON_TEXEL = (2 * mHalf) / moon.shadow.mapSize.x;
         _shCenter.copy(_shFocus).applyMatrix4(_shLightInv);
-        _commitCenter(_shCommitMoon, _shCenter, mHalf, moonDir, MOON_TEXEL);
+        _commitCenter(_shCommitMoon, _shCenter, mHalf, moonDir, MOON_TEXEL, "moon");
         _shCenter.applyMatrix4(_shLight);
         moon.target.position.copy(_shCenter);
         moon.position.copy(_shCenter).addScaledVector(moonDir, span * 3);
         moon.target.updateMatrixWorld();
       }
+      // ── MOVER map: follows the same focus down the ACTIVE key direction so
+      //    mover shadows land exactly where the static key's would.
+      if (dynShadow) dynShadow.updateCamera(_shFocus, moon.castShadow ? moonDir : sunDir);
     };
 
     // ── M2 phantom shell: the real neighbourhood as DEAD STONE voxels ────────
@@ -19787,15 +19875,19 @@ export default function TinyWorld() {
           _applyBounce(liveTp.hemiS, liveTp.hemiI, daylight);
           fill.color.setHex(liveTp.hemiS).multiplyScalar(0.5);
           _updateGlowPool(1 - daylight);
-          // Refresh sun + moon DIRECTIONS from real solar geometry. The actual
-          // positions + shadow-camera bounds are applied each frame by
-          // updateSunShadow() (it follows the mech when walking), so we only
-          // update the unit directions here and let that function place them.
-          const dir = _solarDirection(_vt, _a.lat, _a.lon);
-          if (!_sunDirLocked) sunDir.set(dir.x, dir.y, dir.z).normalize();
-          const mdir = _moonDirection(_vt, _a.lat, _a.lon);
-          moonDir.set(mdir.x, mdir.y, mdir.z).normalize();
-          markShadowDirty(2); // sun/moon direction moved → repaint the shadow map
+          // Refresh sun + moon DIRECTIONS from real solar geometry — but only
+          // COMMIT them on the quantized step (default 45s). Between commits
+          // the directions hold bit-identical, so the deadband never sees a
+          // "light moved" edge and idle repaints drop ~2/sec → ~1/45s.
+          if (SUN_STEP_MS <= 0 || _sunCommitMs < 0 || performance.now() - _sunCommitMs >= SUN_STEP_MS) {
+            _sunCommitMs = performance.now();
+            const dir = _solarDirection(_vt, _a.lat, _a.lon);
+            if (!_sunDirLocked) sunDir.set(dir.x, dir.y, dir.z).normalize();
+            const mdir = _moonDirection(_vt, _a.lat, _a.lon);
+            moonDir.set(mdir.x, mdir.y, mdir.z).normalize();
+            _shadowStats.sunCommits++;
+            markShadowDirty(2); // sun/moon direction stepped → repaint the shadow map
+          }
         }
         // §#36a: all trees glow softly at night — flip leaf emissive on the
         // day/night edge only (isNightNow respects the ?tod= override).
@@ -19920,8 +20012,16 @@ export default function TinyWorld() {
           for (const w of workers) {
             const m = w.mode;
             if (m !== "dormant" && m !== "resting" && m !== "idle") {
-              markShadowDirty(2); // a worker is walking/carrying/building → its shadow moves
-              break;
+              if (_shadowSplitOn) {
+                // Movers repaint their own small map every frame — worker
+                // MOTION no longer touches the statics. But a BUILDING worker
+                // mutates world blocks, which land in the static maps; mark
+                // while it works (10×/sec tick ≈ prompt, still cheap).
+                if (m === "building") { markStatic("all", 1); break; }
+              } else {
+                markShadowDirty(2); // legacy: worker shadows live in the static maps
+                break;
+              }
             }
           }
           if (now - lastWorkerUiMs > 500) {
@@ -19955,6 +20055,12 @@ export default function TinyWorld() {
         renderSentinel(now);
         _pbM("shadow");
         updateSunShadow();
+        // Mover map: ~a dozen depth draws, every frame, after all poses are
+        // final. The static maps stay untouched unless something marked them.
+        if (dynShadow) {
+          dynShadow.paint(renderer);
+          _shadowStats.dynPaints = dynShadow.stats.dynPaints;
+        }
         _pbM("fx");
         if (now - lastVoidTickMs > VOID_TICK_MS) {
           tickVoidNight(now);
@@ -20706,9 +20812,35 @@ export default function TinyWorld() {
         // restores the old direct-render fast path if iOS can't sustain it.
         const _isMobileWalkRender = isMobileRef.current && walkingRef.current
           && (!_mobileMatchDesktop || __diagParams.get("mobilefast") === "1");
-        // ── Shadow throttle decision: repaint the shadow maps only when a
-        //    caster moved this frame (see the autoUpdate note at renderer init).
-        if (_shadowThrottle.on) {
+        // ── Shadow repaint decision ──────────────────────────────────────────
+        if (_shadowSplitOn) {
+          // Split mode — TARGETED invalidation only. No camera-move/walking
+          // blanket dirty: movers repaint their own map every frame, and the
+          // static camera only moves on deadband commits (which mark the right
+          // map themselves). The long safety floor (~10s) backstops untracked
+          // transient casters (falling blocks, debris FX).
+          _shadowSinceUpdate++;
+          if (SHADOW_SAFETY_FRAMES > 0 && _shadowSinceUpdate >= SHADOW_SAFETY_FRAMES) {
+            markStatic("all", 1);
+          }
+          let _shAny = false;
+          if (_shDirtySun > 0) {
+            sun.shadow.needsUpdate = true;
+            _shDirtySun--; _shAny = true; _shadowStats.staticSun++;
+          }
+          // Moon dirty holds until the moon actually casts (the handoff marks
+          // all anyway) — never repaint the inactive night map by day.
+          if (_shDirtyMoon > 0 && moon.castShadow) {
+            moon.shadow.needsUpdate = true;
+            _shDirtyMoon--; _shAny = true; _shadowStats.staticMoon++;
+          }
+          if (_shAny) {
+            renderer.shadowMap.needsUpdate = true; // first render() this frame consumes it
+            _shadowSinceUpdate = 0;
+          }
+        } else if (_shadowThrottle.on) {
+          // Legacy throttle: repaint the shadow maps only when a caster moved
+          // this frame (see the autoUpdate note at renderer init).
           _shadowSinceUpdate++;
           // Camera translation ⇒ the player/mech is moving through the world,
           // so nearby casters (mech, follow box) shift. Rotation alone doesn't
