@@ -6235,10 +6235,17 @@ export default function TinyWorld() {
       let horizonM = 2000;
       let fullM = 100;
       let beaconsOn = true;
+      let lodOn = true;
+      let lodF = 4;
+      let anyName = false; // ?nall=1 test lever: bypass the scan-name filter
       try {
         const q = new URLSearchParams(window.location.search);
         if (q.get("neighbors") === "0") neighborsOn = false;
         if (q.get("nbeacon") === "0") beaconsOn = false;
+        if (q.get("nlod") === "0") lodOn = false;
+        if (q.get("nall") === "1") anyName = true;
+        const lf = parseInt(q.get("nlodf") || "", 10);
+        if (Number.isFinite(lf) && lf >= 1) lodF = lf;
         const h = parseFloat(q.get("nhorizon") || "");
         if (Number.isFinite(h) && h > 0) horizonM = h;
         const f = parseFloat(q.get("nfull") || "");
@@ -6259,7 +6266,7 @@ export default function TinyWorld() {
           const data = await res.json();
           if (!data?.ok || !Array.isArray(data.worlds)) return;
           const rows = (data.worlds as any[]).filter(
-            (w) => GLB_RE.test(w.name || "") && w.hasSavedBlocks && typeof w.lat === "number" && typeof w.lon === "number",
+            (w) => (anyName || GLB_RE.test(w.name || "")) && w.hasSavedBlocks && typeof w.lat === "number" && typeof w.lon === "number",
           );
 
           const originId = savedWorldRef.current?.id || "";
@@ -6323,11 +6330,11 @@ export default function TinyWorld() {
             }
             if (total === 0) continue;
 
-            // Build a decimated instanced silhouette at a requested tier. "full"
+            // Legacy tier mesh (?nlod=0): decimated instanced box cloud. "full"
             // packs ~3x the instances of "silhouette"; a hard cap keeps even a
             // 200k-block neighbour inside the iOS VRAM budget. Boxes inflate by
             // cbrt(stride) so the subsampled cloud still reads as solid.
-            const buildTierMesh = (want: "full" | "silhouette") => {
+            const buildBoxMesh = (want: "full" | "silhouette") => {
               const maxInst = want === "full" ? 16000 : 5000;
               const stride = Math.max(1, Math.ceil(total / maxInst));
               const sizeMul = Math.cbrt(stride);
@@ -6360,6 +6367,127 @@ export default function TinyWorld() {
               m.count = idx;
               m.instanceMatrix.needsUpdate = true;
               return { mesh: m, instances: idx };
+            };
+
+            // Voxy-style coarse voxel LOD (default): downsample the neighbour's
+            // layers into an F³-cell grid (dominant material per cell, occupancy
+            // threshold), then emit ONE face-culled vertex-colored mesh — exact
+            // silhouette, real palette, correct parallax, single draw call.
+            // "full" halves the factor for a finer read up close.
+            const NLOD_COLORS: Record<string, number> = {
+              grass: PAL.grass, dryGrass: PAL.dryGrass, dirt: PAL.dirt,
+              snow: PAL.snow, wet: PAL.wet, stone: PAL.wall, wall: PAL.wall,
+              ceiling: PAL.ceiling, trunks: PAL.trunk, leaves: PAL.leaf,
+            };
+            const buildLODMesh = (want: "full" | "silhouette") => {
+              let F = want === "full" ? Math.max(1, lodF >> 1) : lodF;
+              let minX = Infinity, minY = Infinity, minZ = Infinity;
+              let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+              for (const k of SOLID_LAYERS) {
+                const a = nLayers[k];
+                if (!a) continue;
+                for (let i = 0; i < a.length; i += 3) {
+                  if (a[i] < minX) minX = a[i];
+                  if (a[i] > maxX) maxX = a[i];
+                  if (a[i + 1] < minY) minY = a[i + 1];
+                  if (a[i + 1] > maxY) maxY = a[i + 1];
+                  if (a[i + 2] < minZ) minZ = a[i + 2];
+                  if (a[i + 2] > maxZ) maxZ = a[i + 2];
+                }
+              }
+              if (!Number.isFinite(minX)) return null;
+              // Auto-coarsen until the grid fits a bounded cell budget.
+              let dx = 0, dy = 0, dz = 0;
+              for (;;) {
+                dx = Math.ceil((maxX - minX + 1) / F);
+                dy = Math.ceil((maxY - minY + 1) / F);
+                dz = Math.ceil((maxZ - minZ + 1) / F);
+                if (Math.max(dx, dy, dz) <= 160) break;
+                F++;
+              }
+              const cells = dx * dy * dz;
+              const tot = new Uint16Array(cells);
+              const best = new Uint8Array(cells);
+              const bestCnt = new Uint16Array(cells);
+              const cnt = new Uint16Array(cells);
+              const layerNames: string[] = [];
+              for (const k of SOLID_LAYERS) {
+                const a = nLayers[k];
+                layerNames.push(k);
+                const li = layerNames.length; // 1-based tag in `best`
+                if (!a || a.length === 0) continue;
+                cnt.fill(0);
+                for (let i = 0; i < a.length; i += 3) {
+                  const cx = ((a[i] - minX) / F) | 0;
+                  const cy = ((a[i + 1] - minY) / F) | 0;
+                  const cz = ((a[i + 2] - minZ) / F) | 0;
+                  const idx = (cy * dz + cz) * dx + cx;
+                  cnt[idx]++;
+                  tot[idx]++;
+                }
+                for (let c = 0; c < cells; c++) {
+                  if (cnt[c] > bestCnt[c]) { bestCnt[c] = cnt[c]; best[c] = li; }
+                }
+              }
+              const thresh = Math.max(1, Math.round(F * F * F * 0.1));
+              const isSolid = (cx: number, cy: number, cz: number) => {
+                if (cx < 0 || cy < 0 || cz < 0 || cx >= dx || cy >= dy || cz >= dz) return false;
+                return tot[(cy * dz + cz) * dx + cx] >= thresh;
+              };
+              const pos: number[] = [], nrm: number[] = [], col: number[] = [];
+              const c3 = new THREE.Color();
+              // 6 faces: [nx,ny,nz, 4 corners as offsets on the unit cell]
+              const FACES: Array<[number, number, number, number[][]]> = [
+                [1, 0, 0, [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]]],
+                [-1, 0, 0, [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]]],
+                [0, 1, 0, [[0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 1, 0]]],
+                [0, -1, 0, [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]]],
+                [0, 0, 1, [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]]],
+                [0, 0, -1, [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]]],
+              ];
+              let faces = 0;
+              for (let cy = 0; cy < dy; cy++) for (let cz = 0; cz < dz; cz++) for (let cx = 0; cx < dx; cx++) {
+                const idx = (cy * dz + cz) * dx + cx;
+                if (tot[idx] < thresh) continue;
+                const lname = layerNames[(best[idx] || 1) - 1];
+                c3.setHex(NLOD_COLORS[lname] ?? 0x777777);
+                // deterministic per-cell brightness variation, keeps the voxel read
+                const hv = ((cx * 73856093) ^ (cy * 19349663) ^ (cz * 83492791)) >>> 0;
+                const mul = 0.9 + ((hv % 1000) / 1000) * 0.18;
+                const r = c3.r * mul, g = c3.g * mul, b = c3.b * mul;
+                const x0 = minX + cx * F - 0.5 - nCx, y0 = minY + cy * F - 0.5, z0 = minZ + cz * F - 0.5 - nCz;
+                for (const [nx, ny, nz, corners] of FACES) {
+                  if (isSolid(cx + nx, cy + ny, cz + nz)) continue;
+                  const q = corners.map((c) => [x0 + c[0] * F, y0 + c[1] * F, z0 + c[2] * F]);
+                  for (const vi of [0, 1, 2, 0, 2, 3]) {
+                    pos.push(q[vi][0], q[vi][1], q[vi][2]);
+                    nrm.push(nx, ny, nz);
+                    col.push(r, g, b);
+                  }
+                  faces++;
+                }
+              }
+              if (faces === 0) return null;
+              const geo = new THREE.BufferGeometry();
+              geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+              geo.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+              geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+              const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
+              const m = new THREE.Mesh(geo, mat);
+              m.castShadow = false;
+              m.receiveShadow = false;
+              m.userData = { neighbor: true, worldId: w.id, tier: want, lodF: F, lodTris: faces * 2 };
+              m.scale.set(nVoxel, nVoxel, nVoxel);
+              m.position.set(ox, 0, oz);
+              return { mesh: m, instances: faces * 2 };
+            };
+
+            const buildTierMesh = (want: "full" | "silhouette") => {
+              if (lodOn) {
+                const r = buildLODMesh(want);
+                if (r) return r;
+              }
+              return buildBoxMesh(want);
             };
 
             let built = buildTierMesh(tier);
