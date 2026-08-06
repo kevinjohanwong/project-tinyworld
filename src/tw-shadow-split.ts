@@ -68,7 +68,7 @@ export interface DynShadowRig {
   register(root: any, radius?: number): void;
   updateCamera(focus: any, dir: any): void;
   paint(renderer: any): void;
-  stats: { dynPaints: number; movers: number; half: number };
+  stats: { dynPaints: number; dynSkips: number; movers: number; half: number };
 }
 
 export function createDynShadowRig(
@@ -114,7 +114,7 @@ export function createDynShadowRig(
   scratch.overrideMaterial = depthMat;
 
   const movers: { root: any; radius: number }[] = [];
-  const stats = { dynPaints: 0, movers: 0, half: 0 };
+  const stats = { dynPaints: 0, dynSkips: 0, movers: 0, half: 0 };
   let half = minHalf;
   const _clr = new THREE.Color();
   const _p = new THREE.Vector3();
@@ -124,6 +124,23 @@ export function createDynShadowRig(
   const _zero = new THREE.Vector3(0, 0, 0);
   const _upY = new THREE.Vector3(0, 1, 0);
   const _upZ = new THREE.Vector3(0, 0, 1);
+  let _lastSignature = -1;
+
+  const signature = () => {
+    let h = 2166136261 >>> 0;
+    const note = (v: number, scale: number) => {
+      h ^= Math.round(v * scale) | 0;
+      h = Math.imul(h, 16777619) >>> 0;
+    };
+    const sm = light.shadow.matrix.elements;
+    for (let i = 0; i < 16; i++) note(sm[i], 1e6);
+    for (const mesh of _meshes) {
+      const e = mesh.matrixWorld.elements;
+      for (let i = 0; i < 16; i++) note(e[i], (i === 12 || i === 13 || i === 14) ? size / (2 * half) : 2048);
+    }
+    note(_meshes.length, 1);
+    return h;
+  };
 
   const collect = (o: any) => {
     if (o.visible === false) return;
@@ -191,6 +208,12 @@ export function createDynShadowRig(
         collect(m.root);
       }
       stats.movers = _meshes.length;
+      const sig = signature();
+      if (sig === _lastSignature) {
+        stats.dynSkips++;
+        return;
+      }
+      _lastSignature = sig;
       renderer.getClearColor(_clr);
       const a = renderer.getClearAlpha();
       const auto = renderer.autoClear;

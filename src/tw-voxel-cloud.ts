@@ -146,18 +146,22 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   // aerial haze band (world units): far clouds dissolve toward the sun-tinted
   // horizon instead of ending at a hard edge. Set from the sea reach at scatter.
   const uHaze = { value: new THREE.Vector2(span * 4.5, span * 9.0) };
+  const uCloudMotion = { value: new THREE.Vector2(0, 0) };
   const material = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 1, metalness: 0, vertexColors: true,
     transparent: true, depthWrite: true, // depthWrite keeps the opaque core sorted; only silhouette edges blend
   });
-  material.customProgramCacheKey = () => "tinyworldVoxelCloudVEinst";
+  material.customProgramCacheKey = () => "tinyworldVoxelCloudVEinstBobGPU";
   material.onBeforeCompile = (shader: any) => {
     Object.assign(shader.uniforms, {
-      uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uBack, uSpanRef, uHaze,
+      uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uBack, uSpanRef, uHaze, uCloudMotion,
     });
     shader.vertexShader =
-      "attribute float aY01;\nvarying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\nvarying vec3 vWPos;\n" +
+      "attribute float aY01;\nattribute vec2 aCloudBob;\nuniform vec2 uCloudMotion;\nvarying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\nvarying vec3 vWPos;\n" +
       shader.vertexShader.replace(
+        "#include <begin_vertex>",
+        "#include <begin_vertex>\n#ifdef USE_INSTANCING\n  transformed.y += sin(uCloudMotion.x * aCloudBob.y + aCloudBob.x) * uCloudMotion.y;\n#endif",
+      ).replace(
         "#include <project_vertex>",
         "#include <project_vertex>\n" +
           // INSTANCING: the per-piece transform now lives in instanceMatrix, so
@@ -351,6 +355,15 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       im.castShadow = false;
       im.receiveShadow = false;
       im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      const bob = new Float32Array(list.length * 2);
+      for (let i = 0; i < list.length; i++) {
+        const cm = cloudsMeta[specs[list[i]].cloud];
+        bob[i * 2] = cm.bobPhase;
+        bob[i * 2 + 1] = cm.bobRate;
+      }
+      const bobAttr = new THREE.InstancedBufferAttribute(bob, 2);
+      bobAttr.setUsage(THREE.DynamicDrawUsage);
+      im.geometry.setAttribute("aCloudBob", bobAttr);
       im.count = 0; // populated by update()
       (im as any).__specIdx = list;
       group.add(im);
@@ -610,7 +623,10 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   const _projView = new THREE.Matrix4();
   const _wpos = new THREE.Vector3();
   const _sphere = new THREE.Sphere();
-  let _bobs: number[] = [];
+  const _lastCullPos = new THREE.Vector3(Infinity, Infinity, Infinity);
+  const _lastCullQuat = new THREE.Quaternion();
+  let _lastCullAngle = Infinity;
+  let _lastCullMs = -Infinity;
 
   const update = (input: VoxelCloudUpdate) => {
     if (!state.enabled || !ready) return;
@@ -624,14 +640,19 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     }
     const t = input.elapsedSeconds;
     uSeaTime.value = t;
+    uCloudMotion.value.set(t, state.bob);
     group.rotation.y = t * state.driftSpeed;
     group.updateMatrixWorld(true);
-    // Per-cloud bob offsets (identical math to the old per-object position.y).
-    if (_bobs.length !== cloudsMeta.length) _bobs = new Array(cloudsMeta.length);
-    for (let c = 0; c < cloudsMeta.length; c++) {
-      const cm = cloudsMeta[c];
-      _bobs[c] = Math.sin(t * cm.bobRate + cm.bobPhase) * state.bob;
-    }
+    const angle = group.rotation.y;
+    const nowMs = t * 1000;
+    const posMoved = camera.position.distanceToSquared(_lastCullPos) > Math.pow(Math.max(0.02, span * 0.005), 2);
+    const viewMoved = 1 - Math.abs(camera.quaternion.dot(_lastCullQuat)) > 0.000002;
+    const bankMoved = Math.abs(angle - _lastCullAngle) * span * state.outer > Math.max(0.02, span * 0.005);
+    if (!posMoved && !viewMoved && !bankMoved && nowMs - _lastCullMs < 750) return;
+    _lastCullPos.copy(camera.position);
+    _lastCullQuat.copy(camera.quaternion);
+    _lastCullAngle = angle;
+    _lastCullMs = nowMs;
     // CPU frustum culling + back-to-front instance ordering. Replaces what
     // three.js did per-object (~1,100 matrixWorld updates + cull tests + a
     // 1,100-entry transparent sort + 1,100 draws) with ≤9 instanced draws.
@@ -646,23 +667,29 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       const vis: { i: number; d: number }[] = [];
       for (let k = 0; k < idxs.length; k++) {
         const s = specs[idxs[k]];
-        const by = _bobs[s.cloud] || 0;
+        const cm = cloudsMeta[s.cloud];
+        const by = Math.sin(t * cm.bobRate + cm.bobPhase) * state.bob;
         _wpos.set(s.cx, s.cy + by, s.cz).applyMatrix4(gm);
         _sphere.center.copy(_wpos);
-        _sphere.radius = s.rad;
+        _sphere.radius = s.rad + Math.abs(state.bob);
         if (!_frustum.intersectsSphere(_sphere)) continue;
         const dx = _wpos.x - camX, dy = _wpos.y - camY, dz = _wpos.z - camZ;
         vis.push({ i: idxs[k], d: dx * dx + dy * dy + dz * dz });
       }
       vis.sort((a, b) => b.d - a.d); // far → near (back-to-front blending)
       const arr = im.instanceMatrix.array as Float32Array;
+      const bobAttr = im.geometry.getAttribute("aCloudBob");
+      const bobArr = bobAttr.array as Float32Array;
       for (let w = 0; w < vis.length; w++) {
         const s = specs[vis[w].i];
         arr.set(s.m.elements, w * 16);
-        arr[w * 16 + 13] = s.m.elements[13] + (_bobs[s.cloud] || 0);
+        const cm = cloudsMeta[s.cloud];
+        bobArr[w * 2] = cm.bobPhase;
+        bobArr[w * 2 + 1] = cm.bobRate;
       }
       im.count = vis.length;
       im.instanceMatrix.needsUpdate = true;
+      bobAttr.needsUpdate = true;
     }
   };
 
