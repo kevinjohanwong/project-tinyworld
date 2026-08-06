@@ -4448,6 +4448,17 @@ export default function TinyWorld() {
         const _a = _buf instanceof Int32Array ? _buf : new Int32Array(_buf);
         for (let i = 0; i < _a.length; i += 3) _globalOcc.add(_a[i] + "," + _a[i+1] + "," + _a[i+2]);
       }
+      // ── Face-mask occupancy (hybrid shapes seam fix, KJ Aug 6) ──
+      // Only opaque, never-fading layers may cull a face behind them: culling
+      // against water/leaves/ceiling would open holes (translucency, gaps,
+      // interior fade). hidden_dirt counts — it materializes on reveal.
+      const _maskOcc = new Set<string>();
+      for (const _k of ["dirt","grass","dryGrass","snow","wet","trunks","wall","hidden_dirt"]) {
+        const _buf = (layers as any)[_k];
+        if (!_buf) continue;
+        const _a = _buf instanceof Int32Array ? _buf : new Int32Array(_buf);
+        for (let i = 0; i < _a.length; i += 3) _maskOcc.add(_a[i] + "," + _a[i+1] + "," + _a[i+2]);
+      }
 
       // ── Per-vertex corner AO bake helper (Minecraft-style) ──
       // Aplied per face per vertex. Each cube vertex sees 3 neighbor voxels:
@@ -4593,11 +4604,43 @@ export default function TinyWorld() {
       const _aoTmp = new Float32Array(24);
       const _aoF: Float32Array[] = [];
       for (let f = 0; f < 6; f++) _aoF.push(new Float32Array(totalCap * 4));
+      // ── Per-instance face-occlusion mask (hybrid shapes, KJ Aug 6) ──
+      // Bit f set → face f is fully covered by an opaque full-coverage
+      // neighbor; the vertex shader collapses it to a degenerate triangle.
+      // Kills the dark seam lines where buried instanced side faces leak at
+      // shared edges (greedy owns full-cube terrain; this owns the rest).
+      const _fitOf = (x: number, y: number, z: number) =>
+        shapeFitMap.size ? shapeFitMap.get(x + "," + y + "," + z) : undefined;
+      const _faceMaskFor = (x: number, y: number, z: number) => {
+        const own = _fitOf(x, y, z);
+        let m = 0;
+        for (let f = 0; f < 6; f++) {
+          const axis = f >> 1, positive = (f & 1) === 0;
+          if (own) {
+            // own face must lie exactly on the cell-boundary plane
+            if (positive ? own[axis] + own[axis + 3] < 0.999 : own[axis] > 0.001) continue;
+          }
+          const n = FACE_NORMS[f];
+          if (!_maskOcc.has((x + n[0]) + "," + (y + n[1]) + "," + (z + n[2]))) continue;
+          const nf = _fitOf(x + n[0], y + n[1], z + n[2]);
+          if (nf) {
+            // fitted neighbor must span the full shared plane
+            if (positive ? nf[axis] > 0.001 : nf[axis] + nf[axis + 3] < 0.999) continue;
+            const t1 = axis === 0 ? 1 : 0, t2 = axis === 2 ? 1 : 2;
+            if (nf[t1] > 0.001 || nf[t1 + 3] < 0.999) continue;
+            if (nf[t2] > 0.001 || nf[t2 + 3] < 0.999) continue;
+          }
+          m |= 1 << f;
+        }
+        return m;
+      };
+      const _faceMaskArr = layerName !== "water" ? new Float32Array(totalCap) : null;
       let _aoIdx2 = 0;
-      const _writeAOPerVertex = (x: number, y: number, z: number) => {
+      const _writeAOPerVertex = (x: number, y: number, z: number, visible: boolean) => {
         _computeVertexAOs(x, y, z, _aoTmp);
         if (_treeShade) _treeShade[_aoIdx2] = _treeBakedShade(x, y, z);
         if (_superAttr) _superAttr[_aoIdx2] = (_superSet && _superSet.has(x + "," + y + "," + z)) ? 1 : 0;
+        if (_faceMaskArr && visible) _faceMaskArr[_aoIdx2] = _faceMaskFor(x, y, z);
         for (let f = 0; f < 6; f++) {
           const off = _aoIdx2 * 4;
           _aoF[f][off + 0] = _aoTmp[f * 4 + 0];
@@ -4607,13 +4650,18 @@ export default function TinyWorld() {
         }
         _aoIdx2++;
       };
-      for (let i = 0; i < arr.length; i += 3) _writeAOPerVertex(arr[i], arr[i + 1], arr[i + 2]);
-      for (let i = 0; i < hiddenArr.length; i += 3) _writeAOPerVertex(hiddenArr[i], hiddenArr[i + 1], hiddenArr[i + 2]);
+      for (let i = 0; i < arr.length; i += 3) _writeAOPerVertex(arr[i], arr[i + 1], arr[i + 2], true);
+      for (let i = 0; i < hiddenArr.length; i += 3) _writeAOPerVertex(hiddenArr[i], hiddenArr[i + 1], hiddenArr[i + 2], false);
 
       const _aoGeo = box.clone();
       _bakeAOIdxAttr(_aoGeo);
       for (let f = 0; f < 6; f++) {
         _aoGeo.setAttribute("aoF" + f, new THREE.InstancedBufferAttribute(_aoF[f], 4));
+      }
+      let _faceMaskAttr: any = null;
+      if (_faceMaskArr) {
+        _faceMaskAttr = new THREE.InstancedBufferAttribute(_faceMaskArr, 1);
+        _aoGeo.setAttribute("aFaceMask", _faceMaskAttr);
       }
       if (_treeShade) {
         _aoGeo.setAttribute("treeShade", new THREE.InstancedBufferAttribute(_treeShade, 1));
@@ -4627,7 +4675,7 @@ export default function TinyWorld() {
         material.onBeforeCompile = (shader: any) => {
           if (_prevCompile) _prevCompile.call(material, shader);
           shader.vertexShader =
-            "attribute vec4 aoF0;\nattribute vec4 aoF1;\nattribute vec4 aoF2;\nattribute vec4 aoF3;\nattribute vec4 aoF4;\nattribute vec4 aoF5;\nattribute float aoIdx;\nvarying float vAoPerVert;\n"
+            "attribute vec4 aoF0;\nattribute vec4 aoF1;\nattribute vec4 aoF2;\nattribute vec4 aoF3;\nattribute vec4 aoF4;\nattribute vec4 aoF5;\nattribute float aoIdx;\nattribute float aFaceMask;\nvarying float vAoPerVert;\n"
             + (_isTreeLayer ? "attribute float treeShade;\nvarying float vTreeShade;\n" : "")
             + (_isLeaves ? "attribute float aSuper;\nvarying float vSuper;\n" : "")
             + shader.vertexShader.replace(
@@ -4645,7 +4693,8 @@ export default function TinyWorld() {
                vAoPerVert = _fAo[_vert];
                ${_isTreeLayer ? "vTreeShade = treeShade;" : ""}
                ${_isLeaves ? "vSuper = aSuper;" : ""}
-               #include <begin_vertex>`
+               #include <begin_vertex>
+               if (((int(aFaceMask + 0.5) >> _face) & 1) != 0) transformed = vec3(0.0);`
             );
           shader.fragmentShader =
             "varying float vAoPerVert;\n"
@@ -4670,7 +4719,7 @@ export default function TinyWorld() {
       const mesh = new THREE.InstancedMesh(_aoGeo, material, totalCap);
       mesh.castShadow = !NO_SHADOW_LAYERS.has(layerName);
       mesh.receiveShadow = true;
-      mesh.userData = { layer: layerName, freeSlots: [] as number[], slotMap: new Map<string, number>(), hiddenMap: new Map<string, number>() };
+      mesh.userData = { layer: layerName, freeSlots: [] as number[], slotMap: new Map<string, number>(), hiddenMap: new Map<string, number>(), faceMaskAttr: _faceMaskAttr };
       if (_treeShade) {
         let mn = Infinity, mx = -Infinity, sum = 0;
         for (let i = 0; i < _treeShade.length; i++) { const s = _treeShade[i]; mn = Math.min(mn, s); mx = Math.max(mx, s); sum += s; }
@@ -5398,6 +5447,9 @@ export default function TinyWorld() {
       season === "fall" ? 0x7a6a2f : PAL.grass,
       PAL.dryGrass,
       __diagParams.get("aomerge") !== "0" ? 1 : 0,
+      // hybrid shapes: greedy chunks are built from the full-cube subset, so
+      // the cache must discriminate on the fit set (deterministic per world).
+      "sf" + shapeFitMap.size,
     ].join(":");
     const _compiledCacheKey = compiledWorldFingerprint(layers, _compiledCacheVariant);
     const _compiledCache = await loadCompiledWorldCache(_compiledCacheKey);
@@ -5408,19 +5460,47 @@ export default function TinyWorld() {
     // wall shell — are never drawn. Facades keep the InstancedMesh protocol so
     // every edit/serialize path works unchanged. Disable per-load with
     // ?greedyground=0 to A/B against the instanced path.
-    // shapes mode forces the instanced path: greedy merge assumes full cubes,
-    // so fitted sub-cell boxes would render as full cells inside merged chunks.
-    const USE_GREEDY_GROUND = __diagParams.get("greedyground") !== "0" && !SHAPES_ON;
+    // Hybrid shapes render (KJ Aug 6): greedy merge assumes full cubes, so
+    // shapes mode used to force EVERYTHING instanced — which brought back the
+    // per-cube seam lines (buried dark side faces leaking at shared edges).
+    // Now only the FITTED sub-cell shapes render instanced; every full-cube
+    // cell goes back through the seamless greedy meshers.
+    const USE_GREEDY_GROUND = __diagParams.get("greedyground") !== "0";
     let greedyGround: GreedyGround | null = null;
     const _gg32 = (b: any): Int32Array | null =>
       !b ? null : (b instanceof Int32Array ? b : new Int32Array(b));
     const _ggDirt = _gg32(layers.dirt), _ggGrass = _gg32(layers.grass), _ggDry = _gg32(layers.dryGrass);
-    if (USE_GREEDY_GROUND && ((_ggDirt?.length || 0) + (_ggGrass?.length || 0) + (_ggDry?.length || 0)) > 0) {
+    // Split a layer into full-cube cells (greedy) vs shape-fitted cells
+    // (instanced). Render-only: `layers`, collision, serialization and edit
+    // semantics are untouched — each cell is simply drawn by exactly one path.
+    const _splitFits = (a: Int32Array | null): { full: Int32Array | null; fitted: Int32Array | null } => {
+      if (!a || !shapeFitMap.size) return { full: a, fitted: null };
+      const full: number[] = [], fitted: number[] = [];
+      for (let i = 0; i < a.length; i += 3) {
+        (shapeFitMap.has(a[i] + "," + a[i + 1] + "," + a[i + 2]) ? fitted : full)
+          .push(a[i], a[i + 1], a[i + 2]);
+      }
+      return {
+        full: full.length ? new Int32Array(full) : null,
+        fitted: fitted.length ? new Int32Array(fitted) : null,
+      };
+    };
+    const _dirtSplit = _splitFits(_ggDirt);
+    const _wallSplit = _splitFits(_gg32(layers.wall));
+    if (shapeFitMap.size) {
+      console.log("[tinyworld shapes] hybrid split: dirt", (_dirtSplit.fitted?.length || 0) / 3,
+        "fitted /", (_dirtSplit.full?.length || 0) / 3, "full; wall",
+        (_wallSplit.fitted?.length || 0) / 3, "fitted /", (_wallSplit.full?.length || 0) / 3, "full");
+    }
+    if (USE_GREEDY_GROUND && ((_dirtSplit.full?.length || 0) + (_ggGrass?.length || 0) + (_ggDry?.length || 0)) > 0) {
       greedyGround = createGreedyGround(THREE, {
-        layers: { dirt: _ggDirt, grass: _ggGrass, dryGrass: _ggDry },
+        layers: { dirt: _dirtSplit.full, grass: _ggGrass, dryGrass: _ggDry },
         hiddenDirt: _gg32((layers as any).hidden_dirt),
         colors: { dirt: PAL.dirt, grass: season === "fall" ? 0x7a6a2f : PAL.grass, dryGrass: PAL.dryGrass },
-        occluders: [_gg32(layers.wall)],
+        // fitted wall cells must NOT occlude: they don't fully cover the cell,
+        // so the ground face behind them stays visible (and digging the shape
+        // needs no reveal — the face already exists).
+        occluders: [_wallSplit.full],
         aoNeighbors: [_gg32(layers.ceiling), _gg32(layers.trunks), _gg32(layers.leaves), _gg32(layers.water)],
         voxel, cxRound, czRound,
         aoAware: __diagParams.get("aomerge") !== "0",
@@ -5434,7 +5514,7 @@ export default function TinyWorld() {
         scene.add(_f);
         meshesRef.current.push(_f);
       }
-      for (const _a of [_ggDirt, _ggGrass, _ggDry]) {
+      for (const _a of [_dirtSplit.full, _ggGrass, _ggDry]) {
         if (!_a) continue;
         currentBlocks += _a.length / 3;
         for (let i = 0; i < _a.length; i += 3) addCol(_a[i], _a[i + 1], _a[i + 2]);
@@ -5445,6 +5525,11 @@ export default function TinyWorld() {
       addLayer(layers.dirt, PAL.dirt, 1, "dirt", (layers as any).hidden_dirt);
       addLayer(layers.grass, season === "fall" ? 0x7a6a2f : PAL.grass, 1, "grass");
       addLayer(layers.dryGrass, PAL.dryGrass, 1, "dryGrass");
+    }
+    // Hybrid shapes: the fitted dirt cells render instanced (sub-cell boxes).
+    // addLayer handles currentBlocks/addCol/slotMap, so edits work unchanged.
+    if (greedyGround && _dirtSplit.fitted) {
+      addLayer(_dirtSplit.fitted, PAL.dirt, 1, "dirt");
     }
 
     // ─── Meadow grass + moss (ON by default; ?grass=0 disables) ────────────
@@ -6234,14 +6319,14 @@ export default function TinyWorld() {
     // Disable for A/B with ?greedy=0. Chunked so view-dependent residency for
     // future world-stitching can layer on.
     const USE_GREEDY_WALL = ((typeof window !== "undefined")
-      ? new URLSearchParams(window.location.search).get("greedy") !== "0" : true) && !SHAPES_ON;
+      ? new URLSearchParams(window.location.search).get("greedy") !== "0" : true);
     let wallUpperMesh: any = null;
-    if (USE_GREEDY_WALL && wallArr.length) {
+    if (USE_GREEDY_WALL && (_wallSplit.full?.length || 0) > 0) {
       // AO-aware merge is DEFAULT ON — it removes the AO-interpolation crease lines
       // on scan walls (verified on device). Costs ~+73% wall tris; disable per-load
       // with ?aomerge=0 if a very large scan hits the iOS GPU ceiling.
       greedyWall = createGreedyWall(THREE, {
-        wall: wallArr, voxel, cxRound, czRound, color: PAL.wall,
+        wall: _wallSplit.full!, voxel, cxRound, czRound, color: PAL.wall,
         aoAware: __diagParams.get("aomerge") !== "0",
         cachedChunks: _compiledCache?.wall,
         // keep the ground grid's wall occluders in sync: a dug wall block must
@@ -6251,12 +6336,19 @@ export default function TinyWorld() {
       (window as any).__twGreedyWall = greedyWall;
       scene.add(greedyWall.group);
       meshesRef.current.push(greedyWall.group);
-      for (let i = 0; i < wallArr.length; i += 3) addCol(wallArr[i], wallArr[i + 1], wallArr[i + 2]);
+      const _wf = _wallSplit.full!;
+      for (let i = 0; i < _wf.length; i += 3) addCol(_wf[i], _wf[i + 1], _wf[i + 2]);
       const _gs = greedyWall.stats();
       console.log("[tinyworld build 20260630b] greedy wall:", _gs.voxels, "voxels ->", _gs.tris, "tris,", _gs.chunks, "chunks");
     } else {
       addLayer(new Int32Array(lower), PAL.wall, 1, "wall");
       wallUpperMesh = addLayer(new Int32Array(upper), PAL.wall, 1, "wall");
+    }
+    // Hybrid shapes: fitted wall cells render instanced next to the greedy
+    // shell (no interior fade split — fits sit on silhouette edges).
+    if (greedyWall && _wallSplit.fitted) {
+      const _fwMesh = addLayer(_wallSplit.fitted, PAL.wall, 1, "wall");
+      if (_fwMesh) { _fwMesh.material.transparent = false; _fwMesh.material.depthWrite = true; _fwMesh.material.opacity = 1; }
     }
     const ceilingMesh = addLayer(layers.ceiling, PAL.ceiling, 1, "ceiling");
     if (wallUpperMesh) { wallUpperMesh.material.transparent = false; wallUpperMesh.material.depthWrite = true; wallUpperMesh.material.opacity = 1; }
@@ -6695,6 +6787,28 @@ export default function TinyWorld() {
       }
     }
 
+    // Hybrid shapes face-mask maintenance: a freed/detached instance must draw
+    // all faces if its slot is reused, and the neighbors of a removed cell must
+    // reveal the faces that were culled against it. Conservative direction —
+    // unmasking can only re-draw geometry, never open a hole.
+    const _clearFaceMask = (mesh: any, slot: number) => {
+      const attr = mesh?.userData?.faceMaskAttr;
+      if (attr && attr.array[slot] !== 0) { attr.array[slot] = 0; attr.needsUpdate = true; }
+    };
+    const _unmaskAround = (vx: number, vy: number, vz: number) => {
+      for (const m of meshesRef.current) {
+        const attr = (m as any)?.userData?.faceMaskAttr;
+        if (!attr) continue;
+        const sm = (m as any).userData.slotMap as Map<string, number> | undefined;
+        if (!sm || !sm.size) continue;
+        let dirty = false;
+        for (const d of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]] as const) {
+          const s = sm.get((vx + d[0]) + "," + (vy + d[1]) + "," + (vz + d[2]));
+          if (s !== undefined && attr.array[s] !== 0) { attr.array[s] = 0; dirty = true; }
+        }
+        if (dirty) attr.needsUpdate = true;
+      }
+    };
     const removeBlockFrom = (mesh: any, vx: number, vy: number, vz: number, source = "sim", sink: "void" | "stockpile" | "carried" = "void"): boolean => {
       if (!mesh) return false;
       const slotMap = mesh.userData.slotMap as Map<string, number>;
@@ -6705,6 +6819,8 @@ export default function TinyWorld() {
       mesh.setMatrixAt(slot, zeroM2);
       mesh.instanceMatrix.needsUpdate = true;
       (mesh.userData.freeSlots as number[]).push(slot);
+      _clearFaceMask(mesh, slot);
+      _unmaskAround(vx, vy, vz);
       slotMap.delete(k);
       (mesh.userData.latentKeys as Set<string> | undefined)?.delete(k);
       blockGradesRef.current.delete(k);
@@ -6859,6 +6975,8 @@ export default function TinyWorld() {
             // Immediate bookkeeping detach (mirrors removeBlockFrom minus slot-free).
             removeCol(c.x, c.y, c.z);
             slotMap.delete(key);
+            _clearFaceMask(c.mesh, c.slot);
+            _unmaskAround(c.x, c.y, c.z);
             blockGradesRef.current.delete(key);
             structuralGrassRef.current.delete(key);
             ledgerMove("world", "void", 1, "edit-floater");
@@ -6915,6 +7033,8 @@ export default function TinyWorld() {
           const gCurr = groundRef.current.map.get(gKey);
           if (gCurr === undefined || ny > gCurr) groundRef.current.map.set(gKey, ny);
         }
+        _clearFaceMask(c.mesh, c.slot);
+        _unmaskAround(c.x, c.y, c.z);
         if (c.mesh.userData.greedyWall || c.mesh.userData.greedyGround) {
           // greedy mesh: zero out old voxel, place at the landing cell —
           // chunk remesh snaps it down (merged geometry can't tween).
