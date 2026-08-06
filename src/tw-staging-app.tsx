@@ -2918,6 +2918,10 @@ export default function TinyWorld() {
     raygiPass.enabled = false;
     composer.addPass(raygiPass);
     const raygiEditHooks: { add: ((x: number, y: number, z: number, color: number, strength?: number) => void) | null; remove: ((x: number, y: number, z: number) => void) | null } = { add: null, remove: null };
+    // Terrain edit version — bumped alongside the RayGI edit hooks on every
+    // block place/remove; lets steady-state systems (irrigation) skip work
+    // when nothing has changed since their last pass.
+    const terrainEdits = { ver: 0 };
     const _giSunDir = new THREE.Vector3();
     const _giSunCol = new THREE.Color();
     const _giSkyCol = new THREE.Color();
@@ -6550,6 +6554,7 @@ export default function TinyWorld() {
       structuralGrassRef.current.delete(k);
       if (rmLayer === "grass" || rmLayer === "dryGrass") markGrassDirty(vx, vz);
       raygiEditHooks.remove?.(vx, vy, vz);
+      terrainEdits.ver++;
       return true;
     };
 
@@ -11768,6 +11773,7 @@ export default function TinyWorld() {
       (carryState.mesh.userData.slotMap as Map<string, number>).set(vx + "," + vy + "," + vz, slot);
       addCol(vx, vy, vz);
       raygiEditHooks.add?.(vx, vy, vz, (PAL as any)[carryState.layer] ?? 0x8a8a8a, RAYGI_BOUNCE_STRENGTH[carryState.layer] ?? 0.5);
+      terrainEdits.ver++;
       protAdd(vx, vz, carryState.layer, 1);
       const cGrade = (carryState as any).grade || "raw";
       ledgerMove("stockpile", "world", 1, "user", carryState.layer, cGrade);
@@ -19460,10 +19466,77 @@ export default function TinyWorld() {
       }
       for (const m of touched) if (m.instanceColor) m.instanceColor.needsUpdate = true;
     };
+    // Dirty-gate for the HEAVY pass (Aug 5): recomputeMoisture is a pure
+    // function of (grass/dryGrass slotMaps, water cell set) — when neither has
+    // changed since the last full pass, the rebuild is redundant and is
+    // skipped (steady state → signature check only, ~0 ms vs the full ~15 ms
+    // soil-map rebuild). Change detection: terrainEdits.ver (bumped on every
+    // block place/remove), an order-independent hash of all water cells
+    // (catches water MOVING at constant count — mass conservation), and the
+    // total grass slot count (catches wholesale mesh rebuilds). Safety net: a
+    // forced full pass every IRRIG_FORCE_MS bounds staleness from any edit
+    // path that doesn't bump the counter (e.g. worker builds). While skipping,
+    // pending waterlog holds still flip on time via a tiny timer-only loop —
+    // submersion state can't change without a water/terrain change, but the
+    // hold expiring can. Incremental (per-edit region) update is the deeper
+    // follow-up; this is the skip tier.
+    let _moistWaterSig = -1;
+    let _moistEditVer = -1;
+    let _moistGrassCount = -1;
+    let _lastFullIrrigMs = 0;
+    const IRRIG_FORCE_MS = IRRIG_MS * 8;
+    const _irrigStats = { full: 0, skipped: 0, lastSigMs: 0 };
+    const _waterSig = () => {
+      let h = 0, n = 0;
+      const wm = meshesRef.current.find((m: any) => m.userData?.layer === "water");
+      const wsm = wm?.userData?.slotMap as Map<string, number> | undefined;
+      if (wsm) for (const key of wsm.keys()) {
+        let s = 0;
+        for (let i = 0; i < key.length; i++) s = (s * 31 + key.charCodeAt(i)) | 0;
+        h = (h + (s ^ (s >>> 15))) | 0; n++;
+      }
+      const cellH = (c: [number, number, number]) => { const v = ((c[0] * 73856093) ^ (c[1] * 19349663) ^ (c[2] * 83492791)) | 0; return v ^ (v >>> 13); };
+      if (springCtrl) for (const c of springCtrl.waterCells()) { h = (h + cellH(c)) | 0; n++; }
+      if (pwCtrl) for (const c of pwCtrl.waterCells()) { h = (h + cellH(c)) | 0; n++; }
+      return (h ^ Math.imul(n, 2654435761)) | 0;
+    };
+    const _grassSlotCount = () => {
+      let n = 0;
+      for (const m of meshesRef.current) {
+        const l = m.userData?.layer;
+        if (l !== "grass" && l !== "dryGrass") continue;
+        const sm = m.userData?.slotMap as Map<string, number> | undefined;
+        if (sm) n += sm.size;
+      }
+      return n;
+    };
+    (window as any).__tw.irrigStats = () => ({ ..._irrigStats, editVer: terrainEdits.ver, forceMs: IRRIG_FORCE_MS });
     const runIrrigation = (nowMs: number) => {
       if (!irrigationOn) return;
       if (weatherData?.modifiers?.isRaining) recordRain();   // live weather wets the field (wall-clock)
-      if (nowMs - _lastIrrigMs >= IRRIG_MS) { _lastIrrigMs = nowMs; recomputeMoisture(nowMs); }
+      if (nowMs - _lastIrrigMs >= IRRIG_MS) {
+        _lastIrrigMs = nowMs;
+        const t0 = performance.now();
+        const ever = terrainEdits.ver, wsig = _waterSig(), gcnt = _grassSlotCount();
+        _irrigStats.lastSigMs = performance.now() - t0;
+        const dirty = ever !== _moistEditVer || wsig !== _moistWaterSig || gcnt !== _moistGrassCount
+          || (nowMs - _lastFullIrrigMs >= IRRIG_FORCE_MS);
+        if (dirty) {
+          _moistEditVer = ever; _moistWaterSig = wsig; _moistGrassCount = gcnt; _lastFullIrrigMs = nowMs;
+          _irrigStats.full++;
+          recomputeMoisture(nowMs);
+        } else {
+          _irrigStats.skipped++;
+          if (waterlogOn && submergeSince.size) {
+            const nowW = Date.now();
+            for (const [kk, since] of submergeSince) {
+              if (nowW - since >= WATERLOG_HOLD_MS && !waterloggedCols.has(kk)) {
+                waterloggedCols.add(kk); const c = kk.split(","); markGrassDirty(+c[0], +c[1]);
+              }
+            }
+          }
+        }
+      }
       if (nowMs - _lastEaseMs >= EASE_MS) { const dt = _lastEaseMs === 0 ? EASE_MS : (nowMs - _lastEaseMs); _lastEaseMs = nowMs; easeMoisture(nowMs, dt); }
     };
 
