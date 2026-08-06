@@ -4634,7 +4634,8 @@ export default function TinyWorld() {
         }
         return m;
       };
-      const _faceMaskArr = layerName !== "water" ? new Float32Array(totalCap) : null;
+      const _faceMaskArr = layerName !== "water" && __diagParams.get("facemask") !== "0"
+        ? new Float32Array(totalCap) : null;
       let _aoIdx2 = 0;
       const _writeAOPerVertex = (x: number, y: number, z: number, visible: boolean) => {
         _computeVertexAOs(x, y, z, _aoTmp);
