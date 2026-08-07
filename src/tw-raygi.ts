@@ -56,6 +56,7 @@ uniform float uMaxDist;
 uniform float uSunMaxDist;
 uniform float uReachMin;
 uniform float uReachMax;
+uniform float uBounces;
 in vec2 vUv;
 out vec4 outGI;
 
@@ -70,7 +71,7 @@ bool inVol(ivec3 c) {
     && c.x < int(uDims.x) && c.y < int(uDims.y) && c.z < int(uDims.z);
 }
 
-bool traceVol(vec3 ro, vec3 rd, float maxT, out vec4 mat, out float tHit) {
+bool traceVolN(vec3 ro, vec3 rd, float maxT, out vec4 mat, out float tHit, out vec3 hitN) {
   vec3 p = (ro - uVolOrigin) / uCell;
   ivec3 cell = ivec3(floor(p));
   vec3 inv = 1.0 / max(abs(rd), vec3(1e-6));
@@ -82,16 +83,30 @@ bool traceVol(vec3 ro, vec3 rd, float maxT, out vec4 mat, out float tHit) {
     rd.z > 0.0 ? (1.0 - fr.z) * inv.z : fr.z * inv.z
   );
   float t = 0.0;
+  int lastAxis = -1;
   for (int i = 0; i < 192; i++) {
     if (!inVol(cell)) return false;
     vec4 s = texelFetch(tVol, cell, 0);
-    if (s.a > 0.4) { mat = s; tHit = t * uCell; return true; }
-    if (tMax.x < tMax.y && tMax.x < tMax.z) { cell.x += stp.x; t = tMax.x; tMax.x += inv.x; }
-    else if (tMax.y < tMax.z)               { cell.y += stp.y; t = tMax.y; tMax.y += inv.y; }
-    else                                     { cell.z += stp.z; t = tMax.z; tMax.z += inv.z; }
+    if (s.a > 0.4) {
+      mat = s; tHit = t * uCell;
+      // Face normal from the last DDA step axis (entry face of the hit cell).
+      if (lastAxis == 0) hitN = vec3(-float(stp.x), 0.0, 0.0);
+      else if (lastAxis == 1) hitN = vec3(0.0, -float(stp.y), 0.0);
+      else if (lastAxis == 2) hitN = vec3(0.0, 0.0, -float(stp.z));
+      else hitN = -rd;
+      return true;
+    }
+    if (tMax.x < tMax.y && tMax.x < tMax.z) { cell.x += stp.x; t = tMax.x; tMax.x += inv.x; lastAxis = 0; }
+    else if (tMax.y < tMax.z)               { cell.y += stp.y; t = tMax.y; tMax.y += inv.y; lastAxis = 1; }
+    else                                     { cell.z += stp.z; t = tMax.z; tMax.z += inv.z; lastAxis = 2; }
     if (t * uCell > maxT) return false;
   }
   return false;
+}
+
+bool traceVol(vec3 ro, vec3 rd, float maxT, out vec4 mat, out float tHit) {
+  vec3 _hn;
+  return traceVolN(ro, rd, maxT, mat, tHit, _hn);
 }
 
 void main() {
@@ -133,8 +148,8 @@ void main() {
     float sinT = sqrt(b2);
     float cosT = sqrt(1.0 - b2);
     vec3 bd = normalize(t1 * cos(phi) * sinT + t2 * sin(phi) * sinT + n * cosT);
-    vec4 bmat; float bt;
-    if (traceVol(ro, bd, uMaxDist, bmat, bt)) {
+    vec4 bmat; float bt; vec3 hn;
+    if (traceVolN(ro, bd, uMaxDist, bmat, bt, hn)) {
       vec3 hp = ro + bd * bt;
       vec4 m2; float t2h;
       vec3 hro = hp - bd * (uCell * 0.2) + uSunDir * (uCell * 0.85);
@@ -146,6 +161,32 @@ void main() {
       float reach = mix(uReachMin, uReachMax, str);
       float fall = 1.0 - smoothstep(reach * 0.3, reach, bt);
       rad += bmat.rgb * (str * fall) * (uSunCol * (hVis * 0.9) + uSkyCol * 0.25);
+      // Experimental second hop (?gibounces=2): light that reaches the hit
+      // surface via ONE MORE bounce (sun → B → A → pixel). Same energy rules:
+      // both hops' albedo × strength × reach falloff, sun-lit at the far end,
+      // sky/miss contributes nothing. Off (uBounces=1) costs zero extra rays.
+      if (uBounces > 1.5) {
+        vec3 h1 = normalize(abs(hn.y) < 0.95 ? cross(hn, vec3(0, 1, 0)) : cross(hn, vec3(1, 0, 0)));
+        vec3 h2 = cross(hn, h1);
+        float c1 = hash13(vec3(vUv * 7717.3, uFrame + float(b) * 47.9 + 11.0));
+        float c2 = hash13(vec3(vUv * 4391.7, uFrame + float(b) * 83.1 + 3.0));
+        float phi2 = c1 * 6.2831853;
+        float sT2 = sqrt(c2);
+        float cT2 = sqrt(1.0 - c2);
+        vec3 bd2 = normalize(h1 * cos(phi2) * sT2 + h2 * sin(phi2) * sT2 + hn * cT2);
+        vec3 ro2 = hp + hn * (uCell * 0.6);
+        vec4 m3; float t3; vec3 hn3;
+        if (traceVolN(ro2, bd2, uMaxDist, m3, t3, hn3)) {
+          vec3 hp2 = ro2 + bd2 * t3;
+          vec4 m4; float t4;
+          vec3 hro2 = hp2 - bd2 * (uCell * 0.2) + uSunDir * (uCell * 0.85);
+          float hVis2 = traceVol(hro2, sdir, uSunMaxDist, m4, t4) ? 0.0 : 1.0;
+          float str2 = clamp((m3.a - 0.45) / 0.55, 0.0, 1.0);
+          float reach2 = mix(uReachMin, uReachMax, str2);
+          float fall2 = 1.0 - smoothstep(reach2 * 0.3, reach2, t3);
+          rad += bmat.rgb * (str * fall) * (m3.rgb * (str2 * fall2) * uSunCol * (hVis2 * 0.9));
+        }
+      }
     }
     // Miss = open sky: contributes NOTHING. Sky ambient is already in the
     // raster image via the hemi bounce rig — adding it here double-counts
@@ -251,6 +292,7 @@ export function createRayGI(THREE: any, renderer: any) {
     div: 2,             // per-axis resolution divisor (2 → quarter the pixels)
     reachMin: 1.5,      // bounce-light reach of a strength-0 surface (scene units)
     reachMax: 6.0,      // reach of a strength-1 surface — both set vs cell at build
+    bounces: 1,         // indirect hops; 2 = experimental second hop (?gibounces=2)
   };
 
   const geo = new THREE.BufferGeometry();
@@ -274,6 +316,7 @@ export function createRayGI(THREE: any, renderer: any) {
       uAperture: { value: params.aperture }, uFrame: { value: 0 },
       uMaxDist: { value: params.maxDist }, uSunMaxDist: { value: params.sunMaxDist },
       uReachMin: { value: params.reachMin }, uReachMax: { value: params.reachMax },
+      uBounces: { value: params.bounces },
     },
     depthTest: false, depthWrite: false,
   });
@@ -471,6 +514,7 @@ export function createRayGI(THREE: any, renderer: any) {
     gu.uSunMaxDist.value = params.sunMaxDist;
     gu.uReachMin.value = params.reachMin;
     gu.uReachMax.value = params.reachMax;
+    gu.uBounces.value = params.bounces;
 
     const prevTarget = renderer.getRenderTarget();
     quad.material = giMat;

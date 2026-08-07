@@ -2955,6 +2955,8 @@ export default function TinyWorld() {
       bounce: __diagParams.has("gibounce") ? Math.max(0, Number(__diagParams.get("gibounce")) || 0) : 1.9,
       shadow: __diagParams.has("gishadow") ? Math.max(0, Math.min(1, Number(__diagParams.get("gishadow")) || 0)) : 0.42,
     };
+    // ?gibounces=2 → experimental second indirect hop (sun → B → A → pixel).
+    if (__diagParams.has("gibounces")) raygi.params.bounces = Math.max(1, Math.min(2, Number(__diagParams.get("gibounces")) || 1));
     const raygiPass = new ShaderPass(RAYGI_COMPOSITE_SHADER);
     raygiPass.enabled = false;
     composer.addPass(raygiPass);
@@ -2974,7 +2976,7 @@ export default function TinyWorld() {
       }
       if (typeof o.bounce === "number") raygiState.bounce = o.bounce;
       if (typeof o.shadow === "number") raygiState.shadow = o.shadow;
-      for (const k of ["aperture", "blend", "maxDist", "sunMaxDist", "div", "reachMin", "reachMax"] as const) {
+      for (const k of ["aperture", "blend", "maxDist", "sunMaxDist", "div", "reachMin", "reachMax", "bounces"] as const) {
         if (typeof o[k] === "number") (raygi.params as any)[k] = o[k];
       }
       return { ...raygiState, params: { ...raygi.params }, volume: raygi.getReport() };
