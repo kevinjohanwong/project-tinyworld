@@ -2934,15 +2934,15 @@ export default function TinyWorld() {
     // Secondary DDA ray pass over a 3D-texture voxel volume: per-pixel
     // jittered sun visibility + 2 cosine bounce rays at half res per axis,
     // temporally accumulated, composited after GTAO / before bloom. Raster
-    // path untouched. Default ON for desktop on staging AND prod (formalized
-    // Jul 25); mobile stays off. ?raygi=1 forces on, ?raygi=0 kills.
-    // Live: __tw.raygi({...}) · state: window.__twRayGI.
+    // path untouched. Default OFF everywhere (locked Aug 8): outdoor RayGI
+    // added little over the raster sun/hemi rig for its cost, so it's now a
+    // debug-only toggle. Interiors will get explicit placed lights when rooms
+    // are built. ?raygi=1 forces on; live: __tw.raygi({enabled:true}). Mobile: off.
     const _raygiFlag = __diagParams.get("raygi");
     const raygi = createRayGI(THREE, renderer);
     (window as any).__twRayGI?.gi?.dispose?.();
     const raygiState = {
-      enabled: raygi.supported && (_raygiFlag === "1" ? true : _raygiFlag === "0" ? false
-        : (!isMobileRef.current || _mobileMatchDesktop)),
+      enabled: raygi.supported && _raygiFlag === "1",
       // Rebalanced for per-surface strength (avg ground ~0.3–0.35) + reach
       // falloff: bounce up from 0.55 (implicit strength=1 era) to keep dark-px
       // fill; shadow slightly shallower than 0.5 because the strength-scaled
@@ -15940,7 +15940,6 @@ export default function TinyWorld() {
     const sentinelCannonAxisLocal = new THREE.Vector3(0, 0, 1);
     const sentinelMuzzleWorld = new THREE.Vector3();
     const sentinelCannonWorld = new THREE.Vector3(0, 0, -1);
-    let sentinelElbowBend = THREE.MathUtils.degToRad(42);
     type SentState = "sitting" | "standingUp" | "standing" | "sittingDown";
     let sentinelAnimState: SentState = "sitting";
     let sentinelLoaded = false;
@@ -16881,64 +16880,142 @@ export default function TinyWorld() {
       bone.quaternion.copy(parentQ.multiply(worldQ));
     };
 
+    // KJ's 10 hand-authored aim poses (authored 2026-08-09 in /sentinel-pose-author,
+    // all ≤2.3° authored error, sweep-verified 0.0° with the assist in the lab).
+    // `dir` = normalized lab-target minus lab-shoulder in the model-native frame
+    // (chest = +Z); quats are LOCAL bone rotations on this same rig
+    // (/sentinel-ao.glb), so they transfer regardless of the group's world
+    // yaw/scale. Blend = IDW over direction angle (power 2, all poses), then a
+    // damped rigid whole-arm swing at the shoulder closes the residual so the
+    // cannon axis lands exactly on the aim ray.
+    const SENTINEL_AIM_POSES = [
+      { name: "center", dir: [0.26525076161278816, -0.21331921836436132, 0.9402855654216191], upper: [-0.22872738857393587, -0.8059909274939481, -0.5373120653444332, 0.0967378794121474], forearm: [-0.3731895595411779, -0.009793267008583684, 0.4666486039251281, 0.8017934442908498] },
+      { name: "topright", dir: [-0.447103962899345, 0.3685602641609681, 0.8150223175111824], upper: [-0.0989469679787573, -0.6385517736870354, -0.6311822850694467, 0.42903396243779834], forearm: [-0.2205736318530556, -0.02311313046106997, 0.5705657528548049, 0.790738758610667] },
+      { name: "topmiddle-offleft", dir: [0.2564010220275896, 0.3982634376986719, 0.8807069603992258], upper: [-0.20228628443896177, -0.6976587114482643, -0.6188775645110894, 0.29890338952668916], forearm: [-0.4791510756944071, -0.0074813835245888805, 0.5239973564889387, 0.7041200779247564] },
+      { name: "bottomright", dir: [-0.28505338583608075, -0.478371500791244, 0.8306053662565148], upper: [-0.10298199809248007, -0.6423105043026222, -0.6429028464240183, 0.4043611614000298], forearm: [-0.12468494137957493, -0.0042499825441387196, 0.13807145653624447, 0.9825334042756247] },
+      { name: "leftbottom", dir: [0.6262780815211998, -0.2543779223216936, 0.7369312296554025], upper: [0.2137473369867739, 0.7826594446419836, 0.48682566731636434, -0.32366234485529694], forearm: [-0.7023821899851542, 0.031321639678793756, 0.026299561353684053, 0.7106239580320048] },
+      { name: "topleft", dir: [0.7176387794292236, 0.2869494186097541, 0.6345507177671919], upper: [0.2137473369867739, 0.7826594446419836, 0.48682566731636434, -0.32366234485529694], forearm: [-0.7675238200060301, 0.01896439129212818, 0.3129672028607104, 0.5591054731415099] },
+      { name: "rightmiddle", dir: [-0.4893470802865731, -0.1225914825993058, 0.8634296516851331], upper: [-0.2195159014948686, -0.7129860436648547, -0.5584881941800297, 0.3627046591782846], forearm: [-0.05192392923155115, -0.018028106774048702, 0.3222990159832658, 0.9450408670693371] },
+      { name: "bottommiddle", dir: [0.23838126134533683, -0.4786318289519228, 0.8450360622799145], upper: [-0.08385829680873874, 0.8240380367251624, 0.553931469659551, 0.08419680255351913], forearm: [-0.42316261235968844, -0.012764169696929173, 0.5689808180870796, 0.7050044989532149] },
+      { name: "topgap", dir: [-0.1286058597686408, 0.4086160050895496, 0.9036002950518696], upper: [0.2659446214311207, 0.7009233397742284, 0.6174091904091946, -0.2382984462647501], forearm: [-0.09503255220478707, -0.033338116273475965, 0.644084347743809, 0.7582959227086539] },
+      { name: "leftmiddle", dir: [0.7486082075712556, -0.03779488107294726, 0.6619345122605662], upper: [0.216683377819285, 0.6800659345087094, 0.6363717687920019, -0.2925575809725171], forearm: [-0.6578097794218737, 0.02818596096646353, 0.04094372813367392, 0.7515420331656628] },
+    ].map((p) => ({
+      name: p.name,
+      dir: new THREE.Vector3().fromArray(p.dir),
+      upper: new THREE.Quaternion().fromArray(p.upper),
+      forearm: new THREE.Quaternion().fromArray(p.forearm),
+    }));
+    // Rest local quats for the bones the blend does NOT drive (identical across
+    // every authored pose): RightShoulder base + locked RightHand wrist.
+    const SENTINEL_AIM_SHOULDER_Q = new THREE.Quaternion(0.09215584397315979, -0.06452808529138565, 0.8139519095420837, 0.5699348449707031);
+    const SENTINEL_AIM_HAND_Q = new THREE.Quaternion(-7.497146725654602e-8, -1.4924444258213043e-7, -2.8172511434831904e-8, 1);
+    const sentinelBlendUpper = new THREE.Quaternion();
+    const sentinelBlendForearm = new THREE.Quaternion();
+    const sentinelSmoothUpper = new THREE.Quaternion();
+    const sentinelSmoothForearm = new THREE.Quaternion();
+    let sentinelBlendInit = false;
+    const SENTINEL_ASSIST_ITERS = 12;
+    const SENTINEL_ASSIST_GAIN = 0.6;
+    const SENTINEL_ASSIST_MAX_RAD = THREE.MathUtils.degToRad(30);
+
     aimSentinelCannon = (deltaSeconds: number) => {
       const active = sentinelLaserPortEnabled && aimModeRef.current && walkingRef.current && sentinelModeRef.current === "large" && !laserBuildModeRef.current;
-      if (!active || !sentinelArmRoot || !sentinelUpperBone || !sentinelForearmBone || !sentinelMuzzleBone) return;
+      if (!active || !sentinelArmRoot || !sentinelUpperBone || !sentinelForearmBone || !sentinelMuzzleBone) {
+        sentinelBlendInit = false;
+        return;
+      }
       sentinelGroup.updateMatrixWorld(true);
 
-      // Body frame from the model's yaw (matches the verified /sentinel-laser-test
-      // testbed convention): chest = +forward, so the cone/outward math lands on
-      // the same side as the isolated test. The prior (0,0,-1)·quat forward was
-      // the model's BACK, which mirrored the whole arm.
-      const yaw = sentinelGroup.rotation.y;
-      const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw)).normalize();
-      const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw)).normalize();
-      const up = new THREE.Vector3(0, 1, 0);
+      // Aim ray from the look angles (the same angles that steer the body yaw in
+      // aim mode), anchored at the camera so the beam converges on the crosshair.
+      const aimDir = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(targetLookRef.current.x, targetLookRef.current.y, 0, "YXZ"));
+      const aimTarget = camera.position.clone().addScaledVector(aimDir, SENTINEL_TARGET_H * 6);
+
+      // IDW blend weights over the authored poses, in the model-native frame.
       const shoulder = sentinelUpperBone.getWorldPosition(new THREE.Vector3());
-      const elbowRest = sentinelForearmBone.getWorldPosition(new THREE.Vector3());
-      const muzzleRest = sentinelMuzzleBone.getWorldPosition(new THREE.Vector3());
+      const invGroupQ = sentinelGroup.getWorldQuaternion(new THREE.Quaternion()).invert();
+      const queryDir = aimTarget.clone().sub(shoulder).applyQuaternion(invGroupQ).normalize();
+      const weights: number[] = [];
+      let snapIndex = -1;
+      for (let i = 0; i < SENTINEL_AIM_POSES.length; i++) {
+        const ang = Math.acos(THREE.MathUtils.clamp(queryDir.dot(SENTINEL_AIM_POSES[i].dir), -1, 1));
+        if (ang < 0.008) snapIndex = i;
+        weights.push(1 / (ang * ang + 1e-6));
+      }
+      if (snapIndex >= 0) for (let i = 0; i < weights.length; i++) weights[i] = i === snapIndex ? 1 : 0;
+      const totalW = weights.reduce((a, b) => a + b, 0) || 1;
 
-      // Which lateral side the cannon arm actually sits on (this rig's RightArm
-      // is on model −X). Derive it from the real shoulder position vs the body
-      // center so the cone/outward never mirror the arm through the torso.
-      const bodyCenter = sentinelGroup.getWorldPosition(new THREE.Vector3());
-      const shoulderLateral = shoulder.clone().sub(bodyCenter); shoulderLateral.y = 0;
-      const cannonSide = right.clone();
-      if (shoulderLateral.lengthSq() > 1e-6 && shoulderLateral.dot(cannonSide) < 0) cannonSide.negate();
+      // Weighted quaternion average with antipodal sign correction.
+      const blendQuat = (out: any, field: "upper" | "forearm") => {
+        let ax = 0, ay = 0, az = 0, aw = 0;
+        let rx = 0, ry = 0, rz = 0, rw = 1, first = true;
+        for (let i = 0; i < SENTINEL_AIM_POSES.length; i++) {
+          const w = weights[i] / totalW;
+          if (w <= 0) continue;
+          const q = SENTINEL_AIM_POSES[i][field];
+          let x = q.x, y = q.y, z = q.z, qw = q.w;
+          if (first) { rx = x; ry = y; rz = z; rw = qw; first = false; }
+          else if (x * rx + y * ry + z * rz + qw * rw < 0) { x = -x; y = -y; z = -z; qw = -qw; }
+          ax += w * x; ay += w * y; az += w * z; aw += w * qw;
+        }
+        const len = Math.hypot(ax, ay, az, aw) || 1;
+        out.set(ax / len, ay / len, az / len, aw / len);
+      };
+      blendQuat(sentinelBlendUpper, "upper");
+      blendQuat(sentinelBlendForearm, "forearm");
 
-      const coneCenter = up.clone().multiplyScalar(-0.88).addScaledVector(forward, 0.34).addScaledVector(cannonSide, 0.22).normalize();
-      const coneRight = cannonSide.clone().addScaledVector(coneCenter, -cannonSide.dot(coneCenter)).normalize();
-      const pitchInput = THREE.MathUtils.clamp(-targetLookRef.current.x / sentinelPitchLimit, -1, 1);
-      const shoulderDirection = coneCenter.clone().applyAxisAngle(coneRight, pitchInput * THREE.MathUtils.degToRad(10)).normalize();
-      const upperRestAxis = elbowRest.clone().sub(shoulder).normalize();
-      rotateSentinelBoneWorld(sentinelUpperBone, new THREE.Quaternion().setFromUnitVectors(upperRestAxis, shoulderDirection));
+      if (!sentinelBlendInit) {
+        sentinelSmoothUpper.copy(sentinelBlendUpper);
+        sentinelSmoothForearm.copy(sentinelBlendForearm);
+        sentinelBlendInit = true;
+      } else {
+        const k = 1 - Math.exp(-9 * Math.min(deltaSeconds, 0.1));
+        sentinelSmoothUpper.slerp(sentinelBlendUpper, k);
+        sentinelSmoothForearm.slerp(sentinelBlendForearm, k);
+      }
+
+      // Absolute local pose — this runs after the mixer update, so aim mode
+      // owns these four bones; the walk clip keeps the rest of the body.
+      if (sentinelShoulderBone) sentinelShoulderBone.quaternion.copy(SENTINEL_AIM_SHOULDER_Q);
+      sentinelUpperBone.quaternion.copy(sentinelSmoothUpper);
+      sentinelForearmBone.quaternion.copy(sentinelSmoothForearm);
+      sentinelMuzzleBone.quaternion.copy(SENTINEL_AIM_HAND_Q);
+
+      // Damped aim assist: swing the whole arm rigidly at the shoulder until the
+      // real cannon axis lies on the muzzle→target line. Preserves the authored
+      // elbow shape; the 0.6 gain prevents the oscillation undamped steps show
+      // when the target is close to the muzzle on the cannon-arm side.
+      let assistErrDeg = 0;
+      for (let iter = 0; iter < SENTINEL_ASSIST_ITERS; iter++) {
+        sentinelGroup.updateMatrixWorld(true);
+        sentinelMuzzleBone.getWorldPosition(sentinelMuzzleWorld);
+        sentinelCannonWorld.copy(sentinelCannonAxisLocal).applyQuaternion(sentinelForearmBone.getWorldQuaternion(new THREE.Quaternion())).normalize();
+        const wantDir = aimTarget.clone().sub(sentinelMuzzleWorld).normalize();
+        const dot = THREE.MathUtils.clamp(sentinelCannonWorld.dot(wantDir), -1, 1);
+        let ang = Math.acos(dot);
+        assistErrDeg = THREE.MathUtils.radToDeg(ang);
+        if (ang < 1e-4) break;
+        ang = Math.min(ang * SENTINEL_ASSIST_GAIN, SENTINEL_ASSIST_MAX_RAD);
+        const axis = new THREE.Vector3().crossVectors(sentinelCannonWorld, wantDir);
+        if (axis.lengthSq() < 1e-10) break;
+        axis.normalize();
+        rotateSentinelBoneWorld(sentinelUpperBone, new THREE.Quaternion().setFromAxisAngle(axis, ang));
+      }
       sentinelGroup.updateMatrixWorld(true);
-
-      const elbow = sentinelForearmBone.getWorldPosition(new THREE.Vector3());
-      const muzzleBefore = sentinelMuzzleBone.getWorldPosition(new THREE.Vector3());
-      const currentForearm = muzzleBefore.clone().sub(elbow).normalize();
-      const outward = cannonSide.clone().addScaledVector(shoulderDirection, -cannonSide.dot(shoulderDirection)).normalize();
-      const inwardForward = forward.clone().multiplyScalar(0.84).addScaledVector(outward, -0.55);
-      inwardForward.addScaledVector(shoulderDirection, -inwardForward.dot(shoulderDirection)).normalize();
-      const minBend = THREE.MathUtils.degToRad(25);
-      const maxBend = THREE.MathUtils.degToRad(110);
-      const bendTarget = THREE.MathUtils.lerp(minBend, maxBend, THREE.MathUtils.clamp((pitchInput + 1) * 0.5, 0, 1));
-      const response = 1 - Math.exp(-12 * Math.min(deltaSeconds, 0.05));
-      sentinelElbowBend = THREE.MathUtils.lerp(sentinelElbowBend, bendTarget, response);
-      const forearmDirection = shoulderDirection.clone().multiplyScalar(Math.cos(sentinelElbowBend)).addScaledVector(inwardForward, Math.sin(sentinelElbowBend)).normalize();
-      rotateSentinelBoneWorld(sentinelForearmBone, new THREE.Quaternion().setFromUnitVectors(currentForearm, forearmDirection));
-      sentinelGroup.updateMatrixWorld(true);
-
       sentinelMuzzleBone.getWorldPosition(sentinelMuzzleWorld);
       sentinelCannonWorld.copy(sentinelCannonAxisLocal).applyQuaternion(sentinelForearmBone.getWorldQuaternion(new THREE.Quaternion())).normalize();
       (window as any).__twSentinelArm = {
         active: true,
+        mode: "pose-blend",
         shoulder: shoulder.toArray(),
         elbow: sentinelForearmBone.getWorldPosition(new THREE.Vector3()).toArray(),
         muzzle: sentinelMuzzleWorld.toArray(),
         cannon: sentinelCannonWorld.toArray(),
-        elbowDeg: THREE.MathUtils.radToDeg(sentinelElbowBend),
-        wristCorrection: 0,
+        errorDeg: assistErrDeg,
+        weights: SENTINEL_AIM_POSES
+          .map((p, i) => ({ name: p.name, w: weights[i] / totalW }))
+          .sort((a, b) => b.w - a.w)
+          .slice(0, 3),
       };
     };
 
