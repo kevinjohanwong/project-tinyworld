@@ -22489,6 +22489,22 @@ export default function TinyWorld() {
       )}
       {walking && (
         <>
+          {/* Aim reticle: the point the cannon converges on (the pose-blend
+              solver drives the muzzle beam onto the camera's look ray, so the
+              screen center IS where the laser lands). Aim mode only — build
+              mode has its own ring reticle. */}
+          {aimMode && sentinelMode === "large" && !laserBuildMode && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-[1500]">
+              <div className="relative w-9 h-9">
+                <div className="absolute inset-0 rounded-full border border-red-400/80" style={{ boxShadow: "0 0 8px rgba(0,0,0,0.55)" }} />
+                <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-red-300" />
+                <div className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-full w-px h-2 bg-red-400/80" />
+                <div className="absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-full w-px h-2 bg-red-400/80" />
+                <div className="absolute top-1/2 left-0 -translate-y-1/2 -translate-x-full h-px w-2 bg-red-400/80" />
+                <div className="absolute top-1/2 right-0 -translate-y-1/2 translate-x-full h-px w-2 bg-red-400/80" />
+              </div>
+            </div>
+          )}
           {walkDebug && walkDebugUrlEnabledRef.current && (
             <div className="absolute top-20 left-4 right-4 bg-black/80 text-white text-[10px] font-mono p-2 rounded border border-yellow-400/60 pointer-events-none z-[2000] leading-tight">
               <div className="text-yellow-400 font-bold mb-1">WALK DEBUG</div>
