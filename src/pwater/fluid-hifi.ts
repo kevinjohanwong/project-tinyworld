@@ -458,6 +458,8 @@ export function createHiFiFluid(
     mistGeo.attributes.aImp.needsUpdate = true;
   }
 
+  const prevClearCol = new THREE.Color();
+  const fallbackClear = new THREE.Color(0x9db8cf);
   let w = 2, hgt = 2;
   function resize(pw: number, ph: number) {
     const pr = renderer.getPixelRatio();
@@ -477,15 +479,24 @@ export function createHiFiFluid(
     u.uSunCol.value.copy(key.color);
     u.uSkyHi.value.copy(hemiCol);
     if (fogCol) u.uSkyLo.value.copy(fogCol);
+    // Manual clear discipline: the canvas present is TWO renders (scene blit,
+    // then water) — autoClear would wipe the blit before the water pass.
     const prev = renderer.getRenderTarget();
+    const prevAuto = renderer.autoClear;
+    renderer.getClearColor(prevClearCol);
+    const prevClearA = renderer.getClearAlpha();
+    renderer.autoClear = false;
     renderer.setRenderTarget(sceneRT);
-    renderer.setClearColor(fogCol ?? new THREE.Color(0x9db8cf), 1);
-    renderer.clear(true, true, false);
+    renderer.setClearColor(fogCol ?? fallbackClear, 1);
+    renderer.clear(true, true, true);
     renderer.render(scene, camera);
     renderer.setRenderTarget(prev);
+    renderer.clear(true, true, true);
     renderer.render(blitScene, fsCam);
     renderer.clearDepth();
     renderer.render(waterScene, camera);
+    renderer.setClearColor(prevClearCol, prevClearA);
+    renderer.autoClear = prevAuto;
     return true;
   }
 
