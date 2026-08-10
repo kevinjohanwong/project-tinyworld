@@ -20045,7 +20045,7 @@ export default function TinyWorld() {
           }
         }
         (window as any).__tw.irrigationReport = () => ({ on: irrigationOn, irrigated: irrigatedCols.size, R: IRRIG_R, V: IRRIG_V, fruitDroughtMult: FRUIT_DROUGHT_MULT });
-        (window as any).__tw.aridReport = () => { let full = 0, arid = 0; for (const d of aridCols.values()) { if (d > 0) arid++; if (d >= 0.999) full++; } return { on: aridEnabled && irrigationOn, arid, full, near: ARID_NEAR, far: ARID_FAR, rainHeldMs: Math.max(0, GREEN_HOLD_MS - (Date.now() - lastGrassRainMs)) }; };
+        (window as any).__tw.aridReport = () => { let full = 0, arid = 0; for (const d of aridCols.values()) { if (d > 0) arid++; if (d >= 0.999) full++; } return { on: aridEnabled && irrigationOn, arid, full, near: ARID_NEAR, far: ARID_FAR, rainHeldMs: Math.max(0, GREEN_HOLD_MS - (Date.now() - lastGrassRainMs)), soilWet: soilWetMs.size, soilHoldMs: SOIL_HOLD_MS, soilFadeMs: SOIL_FADE_MS, dryEaseMs: EASE_DRY_MS }; };
       }
     } catch (e) { console.warn("[tw] spring init failed (non-fatal):", e); springCtrl = null; }
 
@@ -20071,8 +20071,21 @@ export default function TinyWorld() {
     // sessions until the hold really elapses. Default 2 days; `?greenholdh`
     // sets it in hours, `?greenhold` in ms.
     const GREEN_HOLD_MS = Math.max(0, _iq.get("greenholdh") ? Number(_iq.get("greenholdh")) * 3600000 : (Number(_iq.get("greenhold")) || 172800000));
-    const EASE_DRY_MS = Math.max(1000, Number(_iq.get("decayms")) || 22000);    // green → yellow decay
+    // 22000 → 60000 (KJ Aug 9: "grass green calculation too sudden") — the
+    // visible green→yellow transition itself now takes a minute, not 22s.
+    const EASE_DRY_MS = Math.max(1000, Number(_iq.get("decayms")) || 60000);    // green → yellow decay
     const EASE_GREEN_MS = Math.max(1000, Number(_iq.get("greenms")) || 6000);   // yellow → green after rain
+    // Soil memory (KJ Aug 9: "once green should stay that way for much longer
+    // — and not recalculate all the time when the water recedes"): a column
+    // that water proximity made green records its last-wet wall-clock time
+    // and HOLDS full green for SOIL_HOLD_MS after the water recedes, then
+    // fades dry over SOIL_FADE_MS. While the hold is active the ease target
+    // never flips, so a receding/sloshing pool causes ZERO re-tint/re-blade
+    // churn on the shore. In-session only (not persisted in the save).
+    // `?soilholdh` hours / `?soilhold` ms, `?soilfade` ms.
+    const SOIL_HOLD_MS = Math.max(0, _iq.get("soilholdh") ? Number(_iq.get("soilholdh")) * 3600000 : (Number(_iq.get("soilhold")) || 14400000)); // default 4h
+    const SOIL_FADE_MS = Math.max(1000, Number(_iq.get("soilfade")) || 600000); // default 10 min
+    const soilWetMs = new Map<string, number>();       // col "x,z" → Date.now() last wet from standing water
     // Waterlogged grass (KJ Jul 18): a grass top with water directly above it
     // for longer than WATERLOG_HOLD_MS drowns to a short tuft (green tile). Real
     // time via Date.now(); recoverable, not persisted. `?waterlog=0` off,
@@ -20137,6 +20150,15 @@ export default function TinyWorld() {
           if (sy !== undefined && Math.abs(sy - wy) <= IRRIG_V) next.add(kk);
         }
       }
+      // Soil memory holds irrigation membership too: a column leaving the
+      // dilated set keeps its green blades while its soil is still within the
+      // wet hold, so a receding/sloshing pool doesn't re-blade the shore on
+      // every heavy pass — it only reverts after the hold truly expires.
+      const nowWI = Date.now();
+      for (const kk of irrigatedCols) if (!next.has(kk)) {
+        const tw = soilWetMs.get(kk);
+        if (tw !== undefined && nowWI - tw < SOIL_HOLD_MS && soilTop.has(kk)) next.add(kk);
+      }
       for (const kk of next) if (!irrigatedCols.has(kk)) { const c = kk.split(","); markGrassDirty(+c[0], +c[1]); }
       for (const kk of irrigatedCols) if (!next.has(kk)) { const c = kk.split(","); markGrassDirty(+c[0], +c[1]); }
       irrigatedCols.clear();
@@ -20184,16 +20206,33 @@ export default function TinyWorld() {
       }
       // Prune displayed columns that no longer exist (blocks removed/rebuilt).
       for (const kk of aridCols.keys()) if (!distDry.has(kk)) aridCols.delete(kk);
+      for (const kk of soilWetMs.keys()) if (!distDry.has(kk)) soilWetMs.delete(kk);
     };
 
     // LIGHT: ease displayed dryness toward target; re-tint block (cheap) always,
     // re-blade only when the column crosses a coarse 1/4 bucket (bounds rebuilds).
     const easeMoisture = (nowMs: number, dt: number) => {
-      const rainMoist = (Date.now() - lastGrassRainMs) < GREEN_HOLD_MS ? 1 : 0;   // wall-clock hold
+      const nowW = Date.now();
+      const rainMoist = (nowW - lastGrassRainMs) < GREEN_HOLD_MS ? 1 : 0;   // wall-clock hold
       const touched = new Set<any>();
       for (const [kk, dd] of distDry) {
         const waterMoist = 1 - dd;
-        const target = aridEnabled ? Math.max(0, 1 - Math.max(waterMoist, rainMoist)) : 0;
+        // Soil memory: refresh the last-wet stamp while the column is in the
+        // green half of the water gradient; after the water recedes the soil
+        // stays fully wet through the hold, then ramps dry over the fade —
+        // the slow-moving target keeps the ease smooth (never a snap).
+        let soilMoist = 0;
+        if (waterMoist >= 0.5) { soilWetMs.set(kk, nowW); soilMoist = 1; }
+        else {
+          const tw = soilWetMs.get(kk);
+          if (tw !== undefined) {
+            const age = nowW - tw;
+            if (age < SOIL_HOLD_MS) soilMoist = 1;
+            else if (age < SOIL_HOLD_MS + SOIL_FADE_MS) soilMoist = 1 - (age - SOIL_HOLD_MS) / SOIL_FADE_MS;
+            else soilWetMs.delete(kk);
+          }
+        }
+        const target = aridEnabled ? Math.max(0, 1 - Math.max(waterMoist, rainMoist, soilMoist)) : 0;
         const has = aridCols.has(kk);
         const cur = has ? (aridCols.get(kk) as number) : dd;   // new columns seed at their distance dryness
         if (has && Math.abs(target - cur) < 0.004) continue;   // settled
