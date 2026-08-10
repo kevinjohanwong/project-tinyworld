@@ -160,6 +160,76 @@ export function createParticleWater(ctx: PWaterCtx) {
 
   const renderPos = new Float32Array(SNAP_MAX_P * 3);
   const foamPos = new Float32Array(MAX_FOAM * 3);
+
+  // ── Render-side surface relaxation ("average out the tops") ─────────────
+  // The SIM is untouched — mass, flow, and every particle's real position are
+  // exactly what the solver produced. This smooths only the RENDERED y of
+  // near-surface, slow particles toward the local neighborhood surface
+  // height, so a settled pool splats as one coherent sheet instead of
+  // per-particle ball tops. It reconstructs the surface the particles already
+  // imply (local average, no imposed waterline), and it is speed-gated: fast
+  // water (rivers, falls, splashes) keeps its true per-particle shape.
+  // ?pwrelax=0..1 amount (0 disables), ?pwrelaxr= blur radius in cells.
+  let relaxAmt = Math.max(0, Math.min(1, num("pwrelax", 0.85)));
+  let relaxRad = Math.max(1, Math.min(6, Math.round(num("pwrelaxr", 2))));
+  const RELAX_SPEED = 3; // cell/s: full relax at 0, none at >= this
+  const gTop = new Float32Array(nx * nz);
+  const gHas = new Uint8Array(nx * nz);
+  const gTmpV = new Float32Array(nx * nz);
+  const gTmpH = new Uint8Array(nx * nz);
+  const gSurf = new Float32Array(nx * nz);
+
+  function relaxSurface(st: FrameState, extra: number) {
+    gHas.fill(0);
+    const n3 = st.count * 3;
+    for (let i = 0; i < n3; i += 3) {
+      const bx = st.pos[i] | 0;
+      const bz = st.pos[i + 2] | 0;
+      if (bx < 0 || bx >= nx || bz < 0 || bz >= nz) continue;
+      const b = bz * nx + bx;
+      const y = st.pos[i + 1];
+      if (!gHas[b] || y > gTop[b]) { gTop[b] = y; gHas[b] = 1; }
+    }
+    // Separable box blur over WATER bins only (empty bins carry no weight, so
+    // shorelines average against water, never against dry land at height 0).
+    const R = relaxRad;
+    for (let z = 0; z < nz; z++) {
+      const row = z * nx;
+      for (let x = 0; x < nx; x++) {
+        let s = 0, c = 0;
+        for (let d = -R; d <= R; d++) {
+          const xx = x + d;
+          if (xx < 0 || xx >= nx || !gHas[row + xx]) continue;
+          s += gTop[row + xx]; c++;
+        }
+        gTmpV[row + x] = c ? s / c : 0;
+        gTmpH[row + x] = c ? 1 : 0;
+      }
+    }
+    for (let x = 0; x < nx; x++) {
+      for (let z = 0; z < nz; z++) {
+        let s = 0, c = 0;
+        for (let d = -R; d <= R; d++) {
+          const zz = z + d;
+          if (zz < 0 || zz >= nz || !gTmpH[zz * nx + x]) continue;
+          s += gTmpV[zz * nx + x]; c++;
+        }
+        gSurf[z * nx + x] = c ? s / c : 0;
+      }
+    }
+    const surfBand = cellD * 1.3; // only the top particle layer relaxes
+    for (let i = 0; i < n3; i += 3) {
+      const bx = st.pos[i] | 0;
+      const bz = st.pos[i + 2] | 0;
+      if (bx < 0 || bx >= nx || bz < 0 || bz >= nz) continue;
+      const b = bz * nx + bx;
+      if (!gHas[b] || st.pos[i + 1] < gTop[b] - surfBand) continue;
+      const fade = relaxAmt * Math.max(0, 1 - st.speed[i / 3] / RELAX_SPEED);
+      if (fade <= 0) continue;
+      const y = st.pos[i + 1] + st.vel[i + 1] * extra;
+      renderPos[i + 1] = (y + (gSurf[b] - y) * fade + offY) * voxel;
+    }
+  }
   const sunDir = new THREE.Vector3(0, 1, 0);
   const sizeV = new THREE.Vector2();
   let lastW = 0;
@@ -203,6 +273,7 @@ export function createParticleWater(ctx: PWaterCtx) {
       renderPos[i + 1] = (st.pos[i + 1] + st.vel[i + 1] * extra + offY) * voxel;
       renderPos[i + 2] = (st.pos[i + 2] + st.vel[i + 2] * extra + offZ) * voxel;
     }
+    if (relaxAmt > 0) relaxSurface(st, extra);
     const f3 = st.foamCount * 3;
     for (let i = 0; i < f3; i += 3) {
       foamPos[i] = (st.foamPos[i] + offX) * voxel;
@@ -242,6 +313,7 @@ export function createParticleWater(ctx: PWaterCtx) {
       settings: {
         emitRate: ctl.emitRate, viscosity: ctl.viscosity, timeScale: ctl.timeScale,
         sleep: ctl.sleep, evaporation: ctl.evaporation, scale: ctl.scale,
+        relax: relaxAmt, relaxRad,
       },
       count: st?.count ?? 0,
       foam: st?.foamCount ?? 0,
@@ -265,6 +337,8 @@ export function createParticleWater(ctx: PWaterCtx) {
       ctl.resetTo = source; // rebuild at the new drop tier (same terrain)
     }
     if (o.reset) ctl.resetTo = source;
+    if (o.relax !== undefined) relaxAmt = Math.max(0, Math.min(1, Number(o.relax) || 0));
+    if (o.relaxRad !== undefined) relaxRad = Math.max(1, Math.min(6, Math.round(Number(o.relaxRad) || 2)));
     if (o.smooth) fluid.smooth(o.smooth);
     if (o.shadows !== undefined) fluid.shadows(!!o.shadows);
     return report();

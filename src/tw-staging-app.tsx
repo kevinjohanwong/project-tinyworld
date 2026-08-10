@@ -1416,6 +1416,9 @@ export default function TinyWorld() {
   const walkingRef = useRef(false);
   const isMobileRef = useRef(false);
   const targetLookRef = useRef({ x: 0, y: 0 });
+  // Aim deadzone box: the reticle DOM element, moved imperatively each frame
+  // (no React re-render) to its free-aim position within the box.
+  const aimReticleElRef = useRef<HTMLDivElement | null>(null);
   // Latched walk heading (Zelda-style): while the look-stick sweeps the
   // camera, walk direction holds this yaw instead of tracking the camera so
   // looking around no longer curves the path.
@@ -4135,11 +4138,12 @@ export default function TinyWorld() {
     }
     let lastChargeEndMs = 0;
 
-    const marchRay = () => {
-      const start = camera.position;
+    const marchRay = (origin?: THREE.Vector3, direction?: THREE.Vector3, reachOverride?: number) => {
+      const start = origin || camera.position;
       const dir = new THREE.Vector3();
-      camera.getWorldDirection(dir);
-      
+      if (direction) dir.copy(direction).normalize();
+      else camera.getWorldDirection(dir);
+
       let x = Math.floor(start.x / voxel);
       let y = Math.floor(start.y / voxel);
       let z = Math.floor(start.z / voxel);
@@ -4163,7 +4167,7 @@ export default function TinyWorld() {
       let lastStep = 0;
       // Drone mode hovers high above terrain, so the aimed ray needs more reach
       // than the walk-mode REACH (4 voxels) to actually land on a block below.
-      const reach = sentinelModeRef.current === "drone" ? voxel * 14 : voxel * 12;
+      const reach = reachOverride ?? (sentinelModeRef.current === "drone" ? voxel * 14 : voxel * 12);
       while (dist < reach) {
         if (tMaxX < tMaxY) {
           if (tMaxX < tMaxZ) { x += stepX; dist = tMaxX; tMaxX += tDeltaX; lastAxis = "x"; lastStep = stepX; }
@@ -4182,7 +4186,11 @@ export default function TinyWorld() {
           const nx = lastAxis === "x" ? -lastStep : 0;
           const ny = lastAxis === "y" ? -lastStep : 0;
           const nz = lastAxis === "z" ? -lastStep : 0;
-          return { ...resolved, nx, ny, nz };
+          // Entry-face world point (dist is world units along the normalized ray).
+          const hitX = start.x + dir.x * dist;
+          const hitY = start.y + dir.y * dist;
+          const hitZ = start.z + dir.z * dist;
+          return { ...resolved, nx, ny, nz, dist, hitX, hitY, hitZ };
         }
       }
       return null;
@@ -11563,6 +11571,24 @@ export default function TinyWorld() {
     let beamPulseCount = 0;
     let carryState: Carry | null = null;
 
+    // ── Spartan-laser beam phases (Sentinel large only; drone keeps the plain
+    // beam). hold → CHARGE (thin beam flickers up, no carving) → first charge
+    // completes → CARVE (sustained wide beam; capsule ticks keep firing while
+    // held) → release → COLLAPSE (2–3 fast stutters, then off). A release
+    // BEFORE the charge completes tap-zaps exactly the aimed block instead.
+    type MachineBeamPhase = "off" | "charge" | "carve" | "collapse";
+    let machineBeamPhase: MachineBeamPhase = "off";
+    let machineBeamPhaseStart = 0;
+    let machineBeamLastCharge = 0;
+    const BEAM_COLLAPSE_MS = 320;
+    // Cache of the last rendered beam so carve can ride through the 90ms
+    // recharge gap and collapse can replay the beam after chargeState is gone.
+    let lastBeamSnap: {
+      mx: number; my: number; mz: number;
+      qx: number; qy: number; qz: number; qw: number;
+      len: number; ex: number; ey: number; ez: number;
+    } | null = null;
+
     const beamGeometry = new THREE.CylinderGeometry(1, 1, 1, 10, 1, true);
     const beamOuterMaterial = new THREE.MeshBasicMaterial({
       color: 0x49d9ff,
@@ -11613,40 +11639,160 @@ export default function TinyWorld() {
     };
 
     const updateMachineBeam = (now: number) => {
-      if (!beamHeld || !walkingRef.current || carryState || !chargeState) {
+      const large = sentinelModeRef.current === "large";
+      if (!walkingRef.current || carryState) {
+        machineBeamPhase = "off";
         hideMachineBeam();
         return;
       }
-      const targetEnd = new THREE.Vector3(
-        (chargeState.vx - cxRound) * voxel,
-        chargeState.vy * voxel,
-        (chargeState.vz - czRound) * voxel,
-      );
-      const drone = sentinelModeRef.current === "drone";
+      if (!large) {
+        // Drone: the original plain beam, base material look restored.
+        machineBeamPhase = "off";
+        if (!beamHeld || !chargeState) {
+          hideMachineBeam();
+          return;
+        }
+        beamOuterMaterial.opacity = 0.34;
+        beamCoreMaterial.opacity = 0.96;
+        const dTargetEnd = new THREE.Vector3(
+          (chargeState.vx - cxRound) * voxel,
+          chargeState.vy * voxel,
+          (chargeState.vz - czRound) * voxel,
+        );
+        const lensForward = new THREE.Vector3(0, 0, -1).applyQuaternion(sentinelGroup.quaternion).normalize();
+        const lensUp = new THREE.Vector3(0, 1, 0).applyQuaternion(sentinelGroup.quaternion).normalize();
+        beamStart.copy(sentinelGroup.position).addScaledVector(lensForward, SENTINEL_TARGET_H * 0.34).addScaledVector(lensUp, SENTINEL_TARGET_H * 0.62);
+        beamDirection.subVectors(dTargetEnd, beamStart).normalize();
+        const dDist = Math.max(voxel, dTargetEnd.distanceTo(beamStart));
+        if (dDist <= voxel * 0.1) { hideMachineBeam(); return; }
+        beamEnd.copy(beamStart).addScaledVector(beamDirection, dDist);
+        beamMidpoint.addVectors(beamStart, beamEnd).multiplyScalar(0.5);
+        const dPulse = 0.88 + Math.sin(now * 0.028) * 0.12;
+        for (const [mesh, radius] of [[beamOuter, voxel * 0.18 * dPulse], [beamCore, voxel * 0.055]] as const) {
+          mesh.position.copy(beamMidpoint);
+          mesh.quaternion.setFromUnitVectors(beamYAxis, beamDirection);
+          mesh.scale.set(radius, dDist, radius);
+          mesh.visible = true;
+        }
+        beamImpact.position.copy(beamEnd);
+        beamImpact.scale.setScalar(voxel * 0.42 * dPulse);
+        beamImpact.visible = true;
+        return;
+      }
+
+      // ── Sentinel large: phase machine ──
+      if (machineBeamPhase === "collapse" && now - machineBeamPhaseStart > BEAM_COLLAPSE_MS) {
+        machineBeamPhase = "off";
+      }
+      // Any release path (mouseup, blur, mode/build toggles clearing beamHeld)
+      // funnels through this central transition — no per-call-site hooks.
+      if ((machineBeamPhase === "charge" || machineBeamPhase === "carve") && !beamHeld) {
+        machineBeamPhase = lastBeamSnap ? "collapse" : "off";
+        machineBeamPhaseStart = now;
+      }
+      if (beamHeld && chargeState && (machineBeamPhase === "off" || machineBeamPhase === "collapse")) {
+        machineBeamPhase = "charge";
+        machineBeamPhaseStart = now;
+      }
+      // Carve with the target lost for a while (aimed at sky): collapse rather
+      // than freezing on the cached beam. The 90ms recharge gap rides through.
+      if (machineBeamPhase === "carve" && beamHeld && !chargeState && now - machineBeamLastCharge > 260) {
+        machineBeamPhase = "collapse";
+        machineBeamPhaseStart = now;
+      }
+      if (chargeState) machineBeamLastCharge = now;
+      (window as any).__twBeamPhase = machineBeamPhase;
+
+      if (machineBeamPhase === "off") {
+        hideMachineBeam();
+        return;
+      }
+
+      // Collapse: replay the cached beam with a decaying square-wave stutter
+      // (fast off — the asymmetry vs the slow charge is the weapon feel).
+      if (machineBeamPhase === "collapse") {
+        const t = (now - machineBeamPhaseStart) / BEAM_COLLAPSE_MS;
+        const on = ((now - machineBeamPhaseStart) % 110) < 58;
+        const s = lastBeamSnap;
+        if (!s || !on) { hideMachineBeam(); return; }
+        const fade = Math.max(0, 1 - t);
+        beamOuterMaterial.opacity = 0.5 * fade;
+        beamCoreMaterial.opacity = fade;
+        for (const [mesh, radius] of [[beamOuter, voxel * 0.95 * (0.4 + 0.6 * fade)], [beamCore, voxel * 0.28 * fade]] as const) {
+          mesh.position.set(s.mx, s.my, s.mz);
+          mesh.quaternion.set(s.qx, s.qy, s.qz, s.qw);
+          mesh.scale.set(radius, s.len, radius);
+          mesh.visible = true;
+        }
+        beamImpact.position.set(s.ex, s.ey, s.ez);
+        beamImpact.scale.setScalar(voxel * 1.1 * fade);
+        beamImpact.visible = fade > 0.1;
+        return;
+      }
+
+      // charge / carve: live target from chargeState; carve rides the cached
+      // endpoint through the recharge gap so the wide beam never blinks.
+      const targetEnd = new THREE.Vector3();
+      if (chargeState) {
+        targetEnd.set(
+          (chargeState.vx - cxRound) * voxel,
+          chargeState.vy * voxel,
+          (chargeState.vz - czRound) * voxel,
+        );
+      } else if (machineBeamPhase === "carve" && lastBeamSnap) {
+        targetEnd.set(lastBeamSnap.ex, lastBeamSnap.ey, lastBeamSnap.ez);
+      } else {
+        hideMachineBeam();
+        return;
+      }
       // Muzzle beam only when the cannon arm is actually aiming (aim mode). Out
       // of aim mode the solver doesn't run, so sentinelMuzzleWorld/CannonWorld
       // are stale — fall back to the lens beam like the drone/non-staging path.
-      const useMuzzleBeam = !drone && sentinelLaserPortEnabled && aimModeRef.current;
+      const useMuzzleBeam = sentinelLaserPortEnabled && aimModeRef.current;
       if (!useMuzzleBeam) {
         const lensForward = new THREE.Vector3(0, 0, -1).applyQuaternion(sentinelGroup.quaternion).normalize();
         const lensUp = new THREE.Vector3(0, 1, 0).applyQuaternion(sentinelGroup.quaternion).normalize();
         beamStart.copy(sentinelGroup.position).addScaledVector(lensForward, SENTINEL_TARGET_H * 0.34).addScaledVector(lensUp, SENTINEL_TARGET_H * 0.62);
         beamDirection.subVectors(targetEnd, beamStart).normalize();
       } else {
-        beamStart.copy(sentinelMuzzleWorld);
         beamDirection.copy(sentinelCannonWorld).normalize();
+        // Start at the barrel OPENING: hand-bone origin + measured barrel
+        // length along the fire direction (collinear, so aim is unchanged —
+        // it only trims the segment hidden inside the cannon housing).
+        const tipLen = aimBox.tip >= 0 ? aimBox.tip : sentinelMuzzleTipLen;
+        beamStart.copy(sentinelMuzzleWorld).addScaledVector(beamDirection, tipLen);
       }
-      const targetDistance = Math.max(voxel, targetEnd.distanceTo(beamStart));
-      beamEnd.copy(beamStart).addScaledVector(beamDirection, targetDistance);
-      const length = targetDistance;
+      const length = Math.max(voxel, targetEnd.distanceTo(beamStart));
       if (length <= voxel * 0.1) {
         hideMachineBeam();
         return;
       }
+      beamEnd.copy(beamStart).addScaledVector(beamDirection, length);
       beamMidpoint.addVectors(beamStart, beamEnd).multiplyScalar(0.5);
-      const pulse = 0.88 + Math.sin(now * 0.028) * 0.12;
-      const outerRadius = voxel * (drone ? 0.18 : 0.34) * pulse;
-      const coreRadius = voxel * (drone ? 0.055 : 0.1);
+
+      let outerRadius: number;
+      let coreRadius: number;
+      if (machineBeamPhase === "charge") {
+        // Irregular stutter (new pseudo-random value every 45ms) riding a
+        // growing envelope — energy building, not a smooth lamp ramp.
+        const pct = chargeState ? Math.min(1, (now - chargeState.startMs) / chargeState.hardMs) : 1;
+        const rnd = Math.abs(Math.sin(Math.floor(now / 45) * 127.1) * 43758.5453) % 1;
+        const stut = 0.45 + 0.55 * rnd;
+        const env = 0.22 + 0.78 * pct;
+        outerRadius = voxel * 0.34 * env * (0.55 + 0.45 * stut);
+        coreRadius = voxel * 0.1 * env;
+        beamOuterMaterial.opacity = 0.34 * env * (0.45 + 0.55 * stut);
+        beamCoreMaterial.opacity = 0.96 * (0.3 + 0.7 * env * stut);
+        beamImpact.scale.setScalar(voxel * 0.5 * env * (0.6 + 0.4 * stut));
+      } else {
+        // Carve: sustained wide beam, steady with a small breathing pulse.
+        const pulse = 0.92 + Math.sin(now * 0.028) * 0.08;
+        outerRadius = voxel * 0.95 * pulse;
+        coreRadius = voxel * 0.28;
+        beamOuterMaterial.opacity = 0.5;
+        beamCoreMaterial.opacity = 1.0;
+        beamImpact.scale.setScalar(voxel * 1.2 * pulse);
+      }
       for (const [mesh, radius] of [[beamOuter, outerRadius], [beamCore, coreRadius]] as const) {
         mesh.position.copy(beamMidpoint);
         mesh.quaternion.setFromUnitVectors(beamYAxis, beamDirection);
@@ -11654,8 +11800,12 @@ export default function TinyWorld() {
         mesh.visible = true;
       }
       beamImpact.position.copy(beamEnd);
-      beamImpact.scale.setScalar(voxel * (drone ? 0.42 : 0.72) * pulse);
       beamImpact.visible = true;
+      lastBeamSnap = {
+        mx: beamMidpoint.x, my: beamMidpoint.y, mz: beamMidpoint.z,
+        qx: beamOuter.quaternion.x, qy: beamOuter.quaternion.y, qz: beamOuter.quaternion.z, qw: beamOuter.quaternion.w,
+        len: length, ex: beamEnd.x, ey: beamEnd.y, ez: beamEnd.z,
+      };
     };
 
     const getPlacementTarget = () => {
@@ -11705,7 +11855,9 @@ export default function TinyWorld() {
 
     const tryPickup = () => {
       if ((!fp.isLocked && !isMobileRef.current) || carryState || chargeState) return;
-      let hit = marchRay();
+      let hit = sentinelLaserPortEnabled && aimModeRef.current && sentinelAimHit
+        ? sentinelAimHit
+        : marchRay();
       if (!hit && isMobileRef.current) {
         // Mobile aim is imprecise — fall back to nearest pickable top block within ~4 voxels.
         const px = Math.floor(camera.position.x / voxel) + cxRound;
@@ -11749,6 +11901,10 @@ export default function TinyWorld() {
       if (machineMode === "large" || machineMode === "drone") {
         const beam = capsuleBeam(vx, vy, vz);
         beamPulseCount++;
+        if (machineMode === "large" && machineBeamPhase !== "carve") {
+          machineBeamPhase = "carve";
+          machineBeamPhaseStart = performance.now();
+        }
         spawnPickFx((vx - cxRound) * voxel, vy * voxel, (vz - czRound) * voxel, color, machineMode === "drone" ? 1 : 4);
         if (beam.carved > 0) spawnDebrisChips((vx - cxRound) * voxel, vy * voxel, (vz - czRound) * voxel, color, machineMode === "drone" ? 1 : 4);
         hideChargeProxy();
@@ -12000,6 +12156,7 @@ export default function TinyWorld() {
         if (!chargeState) tryPickup();
       },
       stop: () => {
+        if (beamHeld && chargeState) tapZapBlock();
         beamHeld = false;
         cancelCharge();
       },
@@ -12063,6 +12220,28 @@ export default function TinyWorld() {
       }
       if (carved) syncHopperUi();
       return { carved, byLayer };
+    };
+
+    // Tap-zap: the player released BEFORE the charge completed — carve exactly
+    // the aimed block instead of the full capsule. Precision single-block
+    // removal on tap; hold = the wide channel carve. Sentinel large only.
+    const tapZapBlock = (): boolean => {
+      if (!chargeState || sentinelModeRef.current !== "large") return false;
+      const { vx, vy, vz, color } = chargeState;
+      if (hopperTotal() >= hopperCapacity()) return false;
+      const target = resolveBlockAt(vx, vy, vz);
+      if (!target) return false;
+      const layer = (target.mesh?.userData?.layer as string) || "dirt";
+      const h = MOVE_MS[layer];
+      if (h !== undefined && !isFinite(h)) return false;
+      if (!removeResolvedBlock(target, "machine-laser", "carried")) return false;
+      hopperByLayerRef.current[layer] = (hopperByLayerRef.current[layer] || 0) + 1;
+      syncHopperUi();
+      spawnPickFx((vx - cxRound) * voxel, vy * voxel, (vz - czRound) * voxel, color, 1);
+      spawnDebrisChips((vx - cxRound) * voxel, vy * voxel, (vz - czRound) * voxel, color, 1);
+      settleWaterNear(vx, vy, vz);
+      queueSupportCheck(vx, vy, vz);
+      return true;
     };
 
     const placeAt = (vx: number, vy: number, vz: number) => {
@@ -12227,7 +12406,11 @@ export default function TinyWorld() {
       else { beamHeld = true; tryPickup(); }
     });
     renderer.domElement.addEventListener("mouseup", (ev: MouseEvent) => {
-      if (ev.button === 0) { beamHeld = false; if (chargeState) cancelCharge(); }
+      if (ev.button === 0) {
+        if (beamHeld && chargeState) tapZapBlock();
+        beamHeld = false;
+        if (chargeState) cancelCharge();
+      }
     });
     const stopMachineBeam = () => {
       if (!beamHeld && !chargeState) return;
@@ -15920,6 +16103,10 @@ export default function TinyWorld() {
     // camera framing scales off SENTINEL_TARGET_H so the bigger body stays in
     // frame; collision still uses the player radius, not this visual scale.
     const SENTINEL_TARGET_H = 12.42 * voxel;
+    // How far the aim-mode cannon ray reaches (~40 world units / 80 voxels) —
+    // far longer than the walk-mode pick reach so the laser can target and carve
+    // distant blocks under the reticle. Live-tunable via __twAimBox.reach.
+    const SENTINEL_AIM_REACH = voxel * 80;
     const SENTINEL_NATIVE_H = 5.4;
     sentinelGroup.scale.setScalar(SENTINEL_TARGET_H / SENTINEL_NATIVE_H);
     // True world-space height of the mech's visible top above its planted foot,
@@ -15940,6 +16127,11 @@ export default function TinyWorld() {
     const sentinelCannonAxisLocal = new THREE.Vector3(0, 0, 1);
     const sentinelMuzzleWorld = new THREE.Vector3();
     const sentinelCannonWorld = new THREE.Vector3(0, 0, -1);
+    // World-space distance from the RightHand bone origin to the cannon's
+    // barrel opening along the fire axis — measured from the skinned mesh at
+    // load. The beam must START at the muzzle opening, not the wrist joint
+    // buried inside the cannon housing. __twAimBox.tip >= 0 overrides live.
+    let sentinelMuzzleTipLen = 0;
     type SentState = "sitting" | "standingUp" | "standing" | "sittingDown";
     let sentinelAnimState: SentState = "sitting";
     let sentinelLoaded = false;
@@ -16560,7 +16752,45 @@ export default function TinyWorld() {
         const elbow = sentinelForearmBone.getWorldPosition(new THREE.Vector3());
         const muzzle = sentinelMuzzleBone.getWorldPosition(new THREE.Vector3());
         const cannonQ = sentinelForearmBone.getWorldQuaternion(new THREE.Quaternion());
-        sentinelCannonAxisLocal.copy(muzzle.sub(elbow).normalize()).applyQuaternion(cannonQ.invert()).normalize();
+        const cannonAxisW = muzzle.clone().sub(elbow).normalize();
+        sentinelCannonAxisLocal.copy(cannonAxisW).applyQuaternion(cannonQ.invert()).normalize();
+        // Barrel-tip length: max projection of verts skinned to the cannon
+        // arm (RightForeArm/RightHand) onto the fire axis, past the hand
+        // bone. Rigid barrel => the bone-relative scalar is pose-invariant,
+        // so measuring the bind pose here (final scale applied) is exact.
+        try {
+          const tmpV = new THREE.Vector3();
+          let maxProj = 0;
+          root.traverse((sm: any) => {
+            if (!sm.isSkinnedMesh || !sm.getVertexPosition) return;
+            const bones = sm.skeleton?.bones;
+            if (!bones) return;
+            const armIdx = new Set<number>();
+            bones.forEach((b: any, i: number) => {
+              if (b === sentinelMuzzleBone || b === sentinelForearmBone) armIdx.add(i);
+            });
+            if (!armIdx.size) return;
+            const si = sm.geometry.attributes.skinIndex;
+            const sw = sm.geometry.attributes.skinWeight;
+            if (!si || !sw) return;
+            const cnt = sm.geometry.attributes.position.count;
+            for (let i = 0; i < cnt; i += 2) {
+              let w = 0;
+              for (let k = 0; k < 4; k++) {
+                if (armIdx.has(si.getComponent(i, k))) w += sw.getComponent(i, k);
+              }
+              if (w < 0.5) continue;
+              sm.getVertexPosition(i, tmpV);
+              tmpV.applyMatrix4(sm.matrixWorld);
+              const proj = tmpV.sub(muzzle).dot(cannonAxisW);
+              if (proj > maxProj) maxProj = proj;
+            }
+          });
+          sentinelMuzzleTipLen = maxProj;
+          console.log(`[sentinel] barrel tip measured: ${maxProj.toFixed(3)} world units past the hand bone`);
+        } catch (e) {
+          console.warn("[sentinel] barrel tip measure failed, beam starts at hand bone:", e);
+        }
       }
 
       sentinelLoaded = true;
@@ -16918,6 +17148,72 @@ export default function TinyWorld() {
     const SENTINEL_ASSIST_GAIN = 0.6;
     const SENTINEL_ASSIST_MAX_RAD = THREE.MathUtils.degToRad(30);
 
+    // KJ's authored over-the-shoulder aim framing (2026-08-09, saved in the
+    // /sentinel-pose-author "Shoulder cam author"). Coords are mech-local:
+    // mech feet at origin facing +Z, normalized to height 5.2 (the lab's GLB
+    // scale), so the staging port scale is SENTINEL_TARGET_H / 5.2. The whole
+    // rig (lens AND look point) pitches rigidly about the shoulder-height
+    // pivot with the aim pitch, so the authored composition holds while
+    // aiming up/down. The look direction is deliberately OFF the mech axis
+    // (mech sits low-left, aim space opens right of frame) — which is why aim
+    // mode must NOT use the absolute rotation.y→orbit recapture (see the
+    // delta capture at the chase restore).
+    const SENTINEL_AIM_CAM = {
+      pos: new THREE.Vector3(-2.470099906680893, 5.824151383350937, -11.342177477494744),
+      look: new THREE.Vector3(-6.325131071745528, 3.4031407521783192, 5.214314972300513),
+      fov: 46,
+      labHeight: 5.2,
+      pivotYFrac: 4.336 / 5.2, // lab shoulder height fraction — rig pitch pivot
+    };
+    // Last rendered aim-lens state. The beam target reads the ACTUAL lens
+    // (position + forward) from the previous frame so the laser converges
+    // exactly on the screen-center reticle, easing and occlusion included.
+    // rotX/rotY are the euler values WE set — the desktop mouse-delta capture
+    // diffs against them to extract pointer-lock input without drift.
+    const sentinelAimLens = {
+      pos: new THREE.Vector3(),
+      fwd: new THREE.Vector3(0, 0, -1),
+      quat: new THREE.Quaternion(),
+      fov: SENTINEL_AIM_CAM.fov,
+      aspect: 1,
+      set: false,
+      wasActive: false,
+      baseFov: 0,
+      rotX: 0,
+      rotY: 0,
+    };
+    // ── Aim deadzone box (desktop free-aim) ──
+    // In aim mode the cursor moves a FREE reticle inside a central box without
+    // moving the camera; only when the reticle reaches a box edge does the
+    // overshoot pan the camera (sticky-edge follow). x/y = box half-extents in
+    // NDC (0..1, half-screen); ret = mouse→reticle gain; pan = edge→camera-pan
+    // gain (1 = pans at normal look speed). Live-tunable via __tw.aimBox / the
+    // mutable __twAimBox object. enabled:false = old glued-centre pointer-look.
+    // tip: beam-origin offset past the hand bone (world units). -1 = use the
+    // barrel length measured from the skinned mesh at load (sentinelMuzzleTipLen).
+    const aimBox = { x: 0.46, y: 0.36, ret: 1.0, pan: 1.0, reach: SENTINEL_AIM_REACH, tip: -1, enabled: true };
+    const aimReticle = { x: 0, y: 0 }; // NDC position of the reticle, +y = up
+    (window as any).__twAimBox = aimBox;
+    (window as any).__tw = {
+      ...((window as any).__tw || {}),
+      aimBox: (next?: Partial<typeof aimBox>) => {
+        if (next) Object.assign(aimBox, next);
+        aimBox.x = THREE.MathUtils.clamp(Number(aimBox.x) || 0.46, 0.08, 0.9);
+        aimBox.y = THREE.MathUtils.clamp(Number(aimBox.y) || 0.36, 0.08, 0.9);
+        aimBox.ret = THREE.MathUtils.clamp(Number(aimBox.ret) || 1, 0.1, 4);
+        aimBox.pan = THREE.MathUtils.clamp(Number(aimBox.pan) || 1, 0.1, 4);
+        aimBox.reach = THREE.MathUtils.clamp(Number(aimBox.reach) || SENTINEL_AIM_REACH, voxel * 8, voxel * 240);
+        const tipN = Number(aimBox.tip);
+        aimBox.tip = Number.isFinite(tipN) && tipN >= 0 ? Math.min(tipN, voxel * 30) : -1;
+        aimReticle.x = THREE.MathUtils.clamp(aimReticle.x, -aimBox.x, aimBox.x);
+        aimReticle.y = THREE.MathUtils.clamp(aimReticle.y, -aimBox.y, aimBox.y);
+        return { ...aimBox, reticle: { ...aimReticle } };
+      },
+    };
+    // The per-frame world hit under the reticle (block the cannon aims at and
+    // the machine carves), so aim/beam/carve/highlight all target one point.
+    let sentinelAimHit: any = null;
+
     aimSentinelCannon = (deltaSeconds: number) => {
       const active = sentinelLaserPortEnabled && aimModeRef.current && walkingRef.current && sentinelModeRef.current === "large" && !laserBuildModeRef.current;
       if (!active || !sentinelArmRoot || !sentinelUpperBone || !sentinelForearmBone || !sentinelMuzzleBone) {
@@ -16926,10 +17222,45 @@ export default function TinyWorld() {
       }
       sentinelGroup.updateMatrixWorld(true);
 
-      // Aim ray from the look angles (the same angles that steer the body yaw in
-      // aim mode), anchored at the camera so the beam converges on the crosshair.
-      const aimDir = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(targetLookRef.current.x, targetLookRef.current.y, 0, "YXZ"));
-      const aimTarget = camera.position.clone().addScaledVector(aimDir, SENTINEL_TARGET_H * 6);
+      // Aim ray from the ACTUAL rendered lens (previous frame's authored aim
+      // rig — position, forward, easing and occlusion included) so the beam
+      // converges exactly on the screen-center reticle. First-frame fallback:
+      // the look angles anchored at the body camera, as before.
+      // Ray through the reticle's actual screen position (deadzone box), not
+      // screen centre: unproject the reticle NDC at the cached lens basis so the
+      // cannon aims where the reticle IS. A centred reticle (0,0) == forward.
+      let aimDir: THREE.Vector3;
+      let aimAnchor: THREE.Vector3;
+      if (sentinelAimLens.set) {
+        const tanHalf = Math.tan((sentinelAimLens.fov * Math.PI) / 360);
+        aimDir = new THREE.Vector3(
+          aimReticle.x * tanHalf * sentinelAimLens.aspect,
+          aimReticle.y * tanHalf,
+          -1,
+        ).applyQuaternion(sentinelAimLens.quat).normalize();
+        aimAnchor = sentinelAimLens.pos;
+      } else {
+        aimDir = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(targetLookRef.current.x, targetLookRef.current.y, 0, "YXZ"));
+        aimAnchor = camera.position;
+      }
+      // Aim at the ACTUAL world point under the reticle (the block that ray
+      // hits), NOT a fixed-distance point. The muzzle is offset from the lens,
+      // so a fixed 6H virtual target made the muzzle→cannon line diverge from
+      // the aim ray by parallax — the arm/beam landed off the reticle. Both the
+      // aim ray and the muzzle ray now converge on the SAME real point (also the
+      // block the machine carves), so arm + beam + carve + reticle agree at every
+      // distance. Fallback (sky/no hit): a far point along the ray.
+      // Long aim reach: the walk-mode marchRay cap (voxel*12 ≈ 6 units, shorter
+      // than the mech itself) meant distant blocks under the reticle returned no
+      // hit — the laser pointed right but nothing got targeted/carved. The whole
+      // aim pipeline (cannon, highlight, pickup, carve) reads this single hit, so
+      // extending it here fixes targeting distance coherently.
+      const aimReach = aimBox.reach || SENTINEL_AIM_REACH;
+      const aimHit = marchRay(aimAnchor, aimDir, aimReach);
+      sentinelAimHit = aimHit;
+      const aimTarget = aimHit
+        ? new THREE.Vector3(aimHit.hitX, aimHit.hitY, aimHit.hitZ)
+        : aimAnchor.clone().addScaledVector(aimDir, aimReach);
 
       // IDW blend weights over the authored poses, in the model-native frame.
       const shoulder = sentinelUpperBone.getWorldPosition(new THREE.Vector3());
@@ -17011,6 +17342,7 @@ export default function TinyWorld() {
         elbow: sentinelForearmBone.getWorldPosition(new THREE.Vector3()).toArray(),
         muzzle: sentinelMuzzleWorld.toArray(),
         cannon: sentinelCannonWorld.toArray(),
+        tipLen: sentinelMuzzleTipLen,
         errorDeg: assistErrDeg,
         weights: SENTINEL_AIM_POSES
           .map((p, i) => ({ name: p.name, w: weights[i] / totalW }))
@@ -20170,20 +20502,72 @@ export default function TinyWorld() {
         // occlusion march, same knobs — so switching machines keeps the camera.
         const _chaseDrone = walkingRef.current && sentinelModeRef.current === "drone";
         const _chaseActive = (walkingRef.current && viewModeRef.current === "third" && sentinelModeRef.current === "large") || _chaseDrone;
-        if (!_chaseActive && (camera as any).view?.enabled) camera.clearViewOffset();
+        if (!_chaseActive) {
+          if ((camera as any).view?.enabled) camera.clearViewOffset();
+          // Left walk/chase while the aim lens owned the fov — restore it.
+          if (sentinelAimLens.baseFov && camera.fov !== sentinelAimLens.baseFov) {
+            camera.fov = sentinelAimLens.baseFov;
+            camera.updateProjectionMatrix();
+          }
+          sentinelAimLens.set = false;
+          sentinelAimLens.wasActive = false;
+          aimReticle.x = 0;
+          aimReticle.y = 0;
+          if (aimReticleElRef.current) aimReticleElRef.current.style.transform = "translate(-50%, -50%)";
+        }
         if (_chaseActive) {
           // Desktop: pointer-lock mouse-look writes camera.rotation between
           // frames; the override clobbers rotation via lookAt, so the yaw here
           // is last frame's orbit yaw plus this frame's mouse delta. Capture
           // yaw only into the orbit (pitch holds a fixed pleasant chase angle).
           if (!isMobileRef.current && chaseWasActiveRef.current) {
-            targetLookRef.current.y = camera.rotation.y;
-            // Drone chase: pitch orbit follows mouse look too. Safe because
-            // the drone lens is placed on a TRUE sphere around the hull (see
-            // the override), so the lookAt pitch equals the orbit pitch and
-            // this recapture is drift-free — unlike the Sentinel, whose
-            // height-biased rig deliberately holds a fixed chase pitch.
-            if (_chaseDrone) targetLookRef.current.x = camera.rotation.x;
+            if (sentinelAimLens.wasActive && sentinelAimLens.set) {
+              // Authored aim rig: its lookAt yaw is offset from the orbit yaw
+              // by a pitch-dependent amount (the framing looks off the mech
+              // axis), so the absolute recapture below would spin the rig.
+              // Diff against the euler values WE set last frame — whatever
+              // moved since is pure pointer-lock input. Drift-free for any
+              // rig shape, and it gives aim mode desktop PITCH control too.
+              let _ady = camera.rotation.y - sentinelAimLens.rotY;
+              if (_ady > Math.PI) _ady -= Math.PI * 2;
+              else if (_ady < -Math.PI) _ady += Math.PI * 2;
+              const _adx = camera.rotation.x - sentinelAimLens.rotX;
+              if (aimBox.enabled) {
+                const tanHalf = Math.tan((sentinelAimLens.fov * Math.PI) / 360);
+                const yawSpan = Math.atan(tanHalf * sentinelAimLens.aspect);
+                const pitchSpan = Math.atan(tanHalf);
+                const oldX = aimReticle.x;
+                const oldY = aimReticle.y;
+                const wantedX = oldX - (_ady / yawSpan) * aimBox.ret;
+                const wantedY = oldY + (_adx / pitchSpan) * aimBox.ret;
+                aimReticle.x = THREE.MathUtils.clamp(wantedX, -aimBox.x, aimBox.x);
+                aimReticle.y = THREE.MathUtils.clamp(wantedY, -aimBox.y, aimBox.y);
+                const usedYaw = -(aimReticle.x - oldX) * yawSpan / aimBox.ret;
+                const usedPitch = (aimReticle.y - oldY) * pitchSpan / aimBox.ret;
+                targetLookRef.current.y += (_ady - usedYaw) * aimBox.pan;
+                targetLookRef.current.x = THREE.MathUtils.clamp(
+                  targetLookRef.current.x + (_adx - usedPitch) * aimBox.pan,
+                  -1.25,
+                  1.05,
+                );
+                if (aimReticleElRef.current) {
+                  aimReticleElRef.current.style.transform = `translate(calc(-50% + ${aimReticle.x * 50}vw), calc(-50% + ${-aimReticle.y * 50}vh))`;
+                }
+              } else {
+                aimReticle.x = 0;
+                aimReticle.y = 0;
+                targetLookRef.current.y += _ady;
+                targetLookRef.current.x = Math.max(-1.25, Math.min(1.05, targetLookRef.current.x + _adx));
+              }
+            } else {
+              targetLookRef.current.y = camera.rotation.y;
+              // Drone chase: pitch orbit follows mouse look too. Safe because
+              // the drone lens is placed on a TRUE sphere around the hull (see
+              // the override), so the lookAt pitch equals the orbit pitch and
+              // this recapture is drift-free — unlike the Sentinel, whose
+              // height-biased rig deliberately holds a fixed chase pitch.
+              if (_chaseDrone) targetLookRef.current.x = camera.rotation.x;
+            }
           }
           if (!chaseWasActiveRef.current || !bodyPosRef.current.set) {
             // Rising edge (entered walk in 3rd, or toggled CPIT->3RD mid-walk):
@@ -20723,7 +21107,9 @@ export default function TinyWorld() {
 
         if (!carryState) {
           if ((frameCount % 3) === 0) {
-            const hit = marchRay();
+            const hit = sentinelLaserPortEnabled && aimModeRef.current && sentinelAimHit
+              ? sentinelAimHit
+              : marchRay();
             if (hit) {
               highlight.position.set((hit.vx - cxRound) * voxel, hit.vy * voxel, (hit.vz - czRound) * voxel);
               highlight.scale.setScalar(sentinelModeRef.current === "large" ? 4 : 2.2);
@@ -20789,18 +21175,12 @@ export default function TinyWorld() {
           const portraitDistanceScale = Math.max(1, framingReferenceAspect / framingAspect);
           const mobileLandscapeScale = isMobileRef.current && framingAspect > 1 ? 0.65 : 1;
           const laserCameraActive = sentinelLaserPortEnabled && aimModeRef.current && !_chaseDrone && !laserBuildModeRef.current;
-          const laserDistanceScale = laserCameraActive ? 0.52 : 1;
-          const laserHeightScale = laserCameraActive ? 0.72 : 1;
-          const followDist = (SENTINEL_TARGET_H * 3.2 * camRig.dist * portraitDistanceScale * mobileLandscapeScale * laserDistanceScale)
+          const followDist = (SENTINEL_TARGET_H * 3.2 * camRig.dist * portraitDistanceScale * mobileLandscapeScale)
             + (_chaseDrone ? droneFwdPull : 0); // drone speed-zoom: thrust eases the lens back
-          const followHeight = SENTINEL_TARGET_H * 1.5 * camRig.height * laserHeightScale;
-          if (laserCameraActive) {
-            const vw = Math.max(1, renderer.domElement.clientWidth || innerWidth);
-            const vh = Math.max(1, renderer.domElement.clientHeight || innerHeight);
-            camera.setViewOffset(vw, vh, vw * 0.18, -vh * 0.14, vw, vh);
-          } else if ((camera as any).view?.enabled) {
-            camera.clearViewOffset();
-          }
+          const followHeight = SENTINEL_TARGET_H * 1.5 * camRig.height;
+          // Aim mode uses KJ's authored framing (SENTINEL_AIM_CAM) directly —
+          // no projection viewOffset trick needed anymore.
+          if ((camera as any).view?.enabled) camera.clearViewOffset();
           // Keep the physical lens orbit out of the ground, canopy, and mech.
           // Input can continue through the wider range below; beyond these safe
           // orbit angles it becomes a free-look aim offset instead of collapsing
@@ -20844,6 +21224,38 @@ export default function TinyWorld() {
             ? bodyPosRef.current.y - Math.sin(cameraOrbitPitch) * followDist
             : feetY + Math.max(sentinelTopY * 0.5, followHeight - pitchLift);
           const tz = bodyPosRef.current.z + offZ + shiftZ;
+          // ── Authored over-the-shoulder aim rig ──
+          // KJ's saved lab framing, ported: scale the mech-local lens/look by
+          // SENTINEL_TARGET_H / labHeight, pitch the WHOLE rig rigidly about
+          // the shoulder-height pivot (aim up → lens swings under, look point
+          // rises — composition preserved at every pitch), then rotate by the
+          // mech's world yaw and anchor at its feet. renderSentinel already
+          // placed sentinelGroup this frame, so its position/rotation are live.
+          let lensX = tx, lensY = ty, lensZ = tz;
+          let aimLookPt: { x: number; y: number; z: number } | null = null;
+          if (laserCameraActive) {
+            const s = SENTINEL_TARGET_H / SENTINEL_AIM_CAM.labHeight;
+            const pivotY = SENTINEL_TARGET_H * SENTINEL_AIM_CAM.pivotYFrac;
+            const aimPitch = Math.max(-1.25, Math.min(1.05, orbitPitch));
+            const ca = Math.cos(-aimPitch), sa = Math.sin(-aimPitch);
+            const my = sentinelGroup.rotation.y;
+            const cy = Math.cos(my), sy = Math.sin(my);
+            const rig = (v: { x: number; y: number; z: number }) => {
+              const lx = v.x * s;
+              const dy = v.y * s - pivotY;
+              const dz = v.z * s;
+              const ry = pivotY + dy * ca - dz * sa;
+              const rz = dy * sa + dz * ca;
+              return {
+                x: sentinelGroup.position.x + lx * cy + rz * sy,
+                y: sentinelGroup.position.y + ry,
+                z: sentinelGroup.position.z - lx * sy + rz * cy,
+              };
+            };
+            const wp = rig(SENTINEL_AIM_CAM.pos);
+            aimLookPt = rig(SENTINEL_AIM_CAM.look);
+            lensX = wp.x; lensY = wp.y; lensZ = wp.z;
+          }
           // ── Camera occlusion (no bumping / no obscuring) ──
           // March from the look-at pivot (mech upper-torso) toward the lens spot
           // through RENDERED voxels, not just the collision map. Scan-world
@@ -20872,7 +21284,7 @@ export default function TinyWorld() {
           const pvX = renderedCenter.x;
           const pvY = renderedCenter.y;
           const pvZ = renderedCenter.z;
-          let rdx = tx - pvX, rdy = ty - pvY, rdz = tz - pvZ;
+          let rdx = lensX - pvX, rdy = lensY - pvY, rdz = lensZ - pvZ;
           const idealDist = Math.hypot(rdx, rdy, rdz) || 1e-4;
           rdx /= idealDist; rdy /= idealDist; rdz /= idealDist;
           const camMargin = voxel * 0.8;
@@ -20961,7 +21373,40 @@ export default function TinyWorld() {
           // the mech at normal follow distance; residual close-range skew (camera
           // jammed near a cliff) is a distance problem, to be fixed at the
           // occlusion pull-in, not by rotating the lens.
-          camera.lookAt(pvX, pvY, pvZ);
+          if (laserCameraActive && aimLookPt) {
+            camera.lookAt(aimLookPt.x, aimLookPt.y, aimLookPt.z);
+          } else {
+            camera.lookAt(pvX, pvY, pvZ);
+          }
+          // Aim mode owns the fov (authored 46° vs the world's default) and
+          // publishes the FINAL lens state: the beam target reads pos+forward
+          // next frame so the laser lands exactly on the screen-center
+          // reticle, and the desktop delta capture diffs against rotX/rotY.
+          if (laserCameraActive) {
+            if (!sentinelAimLens.baseFov) sentinelAimLens.baseFov = camera.fov;
+            if (camera.fov !== SENTINEL_AIM_CAM.fov) {
+              camera.fov = SENTINEL_AIM_CAM.fov;
+              camera.updateProjectionMatrix();
+            }
+            sentinelAimLens.pos.copy(camera.position);
+            camera.getWorldDirection(sentinelAimLens.fwd);
+            sentinelAimLens.quat.copy(camera.quaternion);
+            sentinelAimLens.fov = camera.fov;
+            sentinelAimLens.aspect = camera.aspect;
+            sentinelAimLens.rotX = camera.rotation.x;
+            sentinelAimLens.rotY = camera.rotation.y;
+            sentinelAimLens.set = true;
+          } else {
+            if (sentinelAimLens.baseFov && camera.fov !== sentinelAimLens.baseFov) {
+              camera.fov = sentinelAimLens.baseFov;
+              camera.updateProjectionMatrix();
+            }
+            sentinelAimLens.set = false;
+            aimReticle.x = 0;
+            aimReticle.y = 0;
+            if (aimReticleElRef.current) aimReticleElRef.current.style.transform = "translate(-50%, -50%)";
+          }
+          sentinelAimLens.wasActive = laserCameraActive;
           camera.updateMatrixWorld(true);
           // ── TEMP lateral-offset debug (opt-in: append ?camdebug=1) ──
           // Overlays the aim pivot's screen NDC, the move/orbit yaw divergence,
@@ -22489,13 +22934,10 @@ export default function TinyWorld() {
       )}
       {walking && (
         <>
-          {/* Aim reticle: the point the cannon converges on (the pose-blend
-              solver drives the muzzle beam onto the camera's look ray, so the
-              screen center IS where the laser lands). Aim mode only — build
-              mode has its own ring reticle. */}
           {aimMode && sentinelMode === "large" && !laserBuildMode && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-[1500]">
-              <div className="relative w-9 h-9">
+            <div className="absolute inset-0 pointer-events-none z-[1500]">
+              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[46vw] h-[36vh] rounded-xl border border-white/10 bg-white/[0.015]" />
+              <div ref={aimReticleElRef} className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-9 h-9 will-change-transform">
                 <div className="absolute inset-0 rounded-full border border-red-400/80" style={{ boxShadow: "0 0 8px rgba(0,0,0,0.55)" }} />
                 <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-red-300" />
                 <div className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-full w-px h-2 bg-red-400/80" />
