@@ -21,6 +21,7 @@ import { createDriver, SNAP_MAX_P, type DriverCtl, type FrameState, type SimDriv
 import { MAX_FOAM } from "./foam";
 import type { Terrain } from "./particles";
 import { createFluidRenderer, type FluidRenderer } from "./fluid-ssfr";
+import { createHiFiFluid, type HiFiFluid } from "./fluid-hifi";
 
 export type PWaterCtx = {
   THREE: any;
@@ -161,6 +162,13 @@ export function createParticleWater(ctx: PWaterCtx) {
   const renderPos = new Float32Array(SNAP_MAX_P * 3);
   const foamPos = new Float32Array(MAX_FOAM * 3);
 
+  // Presentation: "hifi" (continuous surface, KJ-approved sandbox look) is
+  // the default; "?pwrender=ssfr" restores the splat pipeline.
+  const renderMode = params.get("pwrender") === "ssfr" ? "ssfr" : "hifi";
+  const hifi: HiFiFluid | null = renderMode === "hifi"
+    ? createHiFiFluid(THREE, renderer, nx, nz, { x: offX, y: offY, z: offZ }, voxel)
+    : null;
+
   // ── Render-side surface relaxation ("average out the tops") ─────────────
   // The SIM is untouched — mass, flow, and every particle's real position are
   // exactly what the solver produced. This smooths only the RENDERED y of
@@ -178,9 +186,20 @@ export function createParticleWater(ctx: PWaterCtx) {
   const gTmpV = new Float32Array(nx * nz);
   const gTmpH = new Uint8Array(nx * nz);
   const gSurf = new Float32Array(nx * nz);
+  const gMin = new Float32Array(nx * nz);
+  const gCnt = new Float32Array(nx * nz);
+  const gFx = new Float32Array(nx * nz);
+  const gFz = new Float32Array(nx * nz);
+  const gSpd = new Float32Array(nx * nz);
+  const gImp = new Float32Array(nx * nz);
+  const gFoam = new Float32Array(nx * nz);
 
-  function relaxSurface(st: FrameState, extra: number) {
-    gHas.fill(0);
+  // Per-column bins over the particle snapshot: surface top/bottom, mean
+  // horizontal flow, mean speed, fall-impact (fast downward particles), and
+  // foam density. Pure read-only telemetry over sim output.
+  function binFields(st: FrameState) {
+    gHas.fill(0); gCnt.fill(0); gFx.fill(0); gFz.fill(0);
+    gSpd.fill(0); gImp.fill(0); gFoam.fill(0);
     const n3 = st.count * 3;
     for (let i = 0; i < n3; i += 3) {
       const bx = st.pos[i] | 0;
@@ -188,7 +207,24 @@ export function createParticleWater(ctx: PWaterCtx) {
       if (bx < 0 || bx >= nx || bz < 0 || bz >= nz) continue;
       const b = bz * nx + bx;
       const y = st.pos[i + 1];
-      if (!gHas[b] || y > gTop[b]) { gTop[b] = y; gHas[b] = 1; }
+      if (!gHas[b]) { gTop[b] = y; gMin[b] = y; gHas[b] = 1; }
+      else {
+        if (y > gTop[b]) gTop[b] = y;
+        if (y < gMin[b]) gMin[b] = y;
+      }
+      gCnt[b]++;
+      gFx[b] += st.vel[i];
+      gFz[b] += st.vel[i + 2];
+      gSpd[b] += st.speed[i / 3];
+      const vy = st.vel[i + 1];
+      if (vy < -3) gImp[b] += Math.min(1, -vy / 12);
+    }
+    const f3 = st.foamCount * 3;
+    for (let i = 0; i < f3; i += 3) {
+      const bx = st.foamPos[i] | 0;
+      const bz = st.foamPos[i + 2] | 0;
+      if (bx < 0 || bx >= nx || bz < 0 || bz >= nz) continue;
+      gFoam[bz * nx + bx] += st.foamFade[i / 3];
     }
     // Separable box blur over WATER bins only (empty bins carry no weight, so
     // shorelines average against water, never against dry land at height 0).
@@ -217,6 +253,9 @@ export function createParticleWater(ctx: PWaterCtx) {
         gSurf[z * nx + x] = c ? s / c : 0;
       }
     }
+  }
+
+  function relaxSurface(st: FrameState, extra: number) {
     const surfBand = cellD * 1.3; // only the top particle layer relaxes
     for (let i = 0; i < n3; i += 3) {
       const bx = st.pos[i] | 0;
@@ -259,6 +298,38 @@ export function createParticleWater(ctx: PWaterCtx) {
     if (!st) return false; // worker warm-up: caller presents via the classic path
     gotSnap = true;
 
+    // Live palette (shared by both presentations): key light + hemi sky.
+    const key = ctx.moon.intensity > ctx.sun.intensity ? ctx.moon : ctx.sun;
+    sunDir.copy(key.position).sub(key.target.position).normalize();
+
+    if (hifi) {
+      binFields(st);
+      const f = hifi.fields;
+      const nb = nx * nz;
+      for (let b = 0; b < nb; b++) {
+        if (!gHas[b]) { f.mask[b] = 0; continue; }
+        f.mask[b] = 1;
+        f.h[b] = gSurf[b];
+        f.dep[b] = gTop[b] - gMin[b] + cellD;
+        const inv = 1 / gCnt[b];
+        f.fx[b] = gFx[b] * inv;
+        f.fz[b] = gFz[b] * inv;
+        const spdT = Math.min(1, (gSpd[b] * inv) / 8);
+        const impT = Math.min(1, gImp[b] * inv * 1.5);
+        f.imp[b] = impT;
+        f.foam[b] = Math.min(1, spdT * spdT * 0.8 + impT * 0.7 + Math.min(1, gFoam[b] / 3) * 0.5);
+      }
+      hifi.commit();
+      renderer.getSize(sizeV);
+      if (sizeV.x !== lastW || sizeV.y !== lastH) {
+        lastW = sizeV.x;
+        lastH = sizeV.y;
+        hifi.resize(sizeV.x, sizeV.y);
+      }
+      hifi.render(scene, camera, sunDir, key, ctx.hemi.color, scene.fog && scene.fog.color ? scene.fog.color : null);
+      return true;
+    }
+
     renderer.getSize(sizeV);
     if (sizeV.x !== lastW || sizeV.y !== lastH) {
       lastW = sizeV.x;
@@ -273,7 +344,10 @@ export function createParticleWater(ctx: PWaterCtx) {
       renderPos[i + 1] = (st.pos[i + 1] + st.vel[i + 1] * extra + offY) * voxel;
       renderPos[i + 2] = (st.pos[i + 2] + st.vel[i + 2] * extra + offZ) * voxel;
     }
-    if (relaxAmt > 0) relaxSurface(st, extra);
+    if (relaxAmt > 0) {
+      binFields(st);
+      relaxSurface(st, extra);
+    }
     const f3 = st.foamCount * 3;
     for (let i = 0; i < f3; i += 3) {
       foamPos[i] = (st.foamPos[i] + offX) * voxel;
@@ -283,10 +357,8 @@ export function createParticleWater(ctx: PWaterCtx) {
     fluid.updateParticles(renderPos, st.speed, st.count);
     fluid.updateFoam(foamPos, st.foamFade, st.foamCount);
 
-    // Live palette: key light + hemi sky drive the water exactly like the
+    // SSFR palette: key light + hemi sky drive the water exactly like the
     // sandbox sky presets did (doctrine: all water light from real sources).
-    const key = ctx.moon.intensity > ctx.sun.intensity ? ctx.moon : ctx.sun;
-    sunDir.copy(key.position).sub(key.target.position).normalize();
     const u = fluid._u as any;
     u.uSunColor.value.copy(key.color);
     u.uSkyCol.value.copy(ctx.hemi.color);
@@ -315,6 +387,8 @@ export function createParticleWater(ctx: PWaterCtx) {
         sleep: ctl.sleep, evaporation: ctl.evaporation, scale: ctl.scale,
         relax: relaxAmt, relaxRad,
       },
+      renderMode,
+      hifi: hifi ? hifi.state() : null,
       count: st?.count ?? 0,
       foam: st?.foamCount ?? 0,
       calm: st?.calm ?? false,
@@ -341,6 +415,7 @@ export function createParticleWater(ctx: PWaterCtx) {
     if (o.relaxRad !== undefined) relaxRad = Math.max(1, Math.min(6, Math.round(Number(o.relaxRad) || 2)));
     if (o.smooth) fluid.smooth(o.smooth);
     if (o.shadows !== undefined) fluid.shadows(!!o.shadows);
+    if (hifi && (o.absorb !== undefined || o.refract !== undefined || o.rippleAmp !== undefined || o.flowAdv !== undefined || o.ssr !== undefined)) hifi.knob(o);
     return report();
   }
 
@@ -369,6 +444,7 @@ export function createParticleWater(ctx: PWaterCtx) {
   function dispose() {
     driver.dispose();
     fluid.dispose();
+    if (hifi) hifi.dispose();
   }
 
   return { renderFrame, report, knob, waterCells, dispose, fluid: () => fluid, terrain: () => terrain };
