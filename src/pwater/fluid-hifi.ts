@@ -163,7 +163,8 @@ export function createHiFiFluid(
       }
 
       float streamDetail(vec2 xz, vec2 flowC, float speedT) {
-        vec2 d = normalize(flowC + vec2(0.0001, 0.0));
+        float flLen = length(flowC);
+        vec2 d = flLen > 1e-4 ? flowC / flLen : vec2(1.0, 0.0);
         vec2 across = vec2(-d.y, d.x);
         float along = dot(xz, d) * 1.55 - uTime * (0.45 + speedT * 2.2);
         float side = dot(xz, across) * 2.7;
@@ -299,7 +300,7 @@ export function createHiFiFluid(
         }
 
         // Foam: sim sources + depth-fade shoreline lace under advected breakup.
-        float breakup = fbm(vCell.xz * 0.95 - flowC * uFlowAdv * uTime * 0.9 + 11.3);
+        float breakup = ripple(vCell.xz * 1.7 + 11.3, flowC);
         float lace = smoothstep(0.6, 0.95, foamT * 0.95 + (breakup - 0.5) * 0.55);
         float shore = 1.0 - smoothstep(0.0, 0.32 * uVoxel, thick);
         float shoreLace = shore * smoothstep(0.52, 0.85, breakup + foamT * 0.4) * 0.55;
