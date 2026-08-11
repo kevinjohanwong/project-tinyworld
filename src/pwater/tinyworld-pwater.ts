@@ -74,12 +74,40 @@ export function createParticleWater(ctx: PWaterCtx) {
     if (z < minZ) minZ = z; else if (z > maxZ) maxZ = z;
   }
   for (const set of colMap.values()) for (const y of set) if (y > maxY) maxY = y;
+
+  // Ceiling mount: the emitter hangs just under the roof above the sited
+  // basin, so water falls from height and pools in the basin below (the pool
+  // target is unchanged — only the source's boundary condition moves, which
+  // the emergent-rules doctrine allows). Search the 3x3 columns around the
+  // spring for the LOWEST solid overhead; require real headroom (>= 6 cells)
+  // so a shallow ledge doesn't count. ?pwsrc=basin restores the old floor+2
+  // source; ?pwsrch=N forces an emit height N cells above the basin floor.
+  const solidAt = (x: number, y: number, z: number) =>
+    (colMap.get(`${x},${z}`)?.has(y) ?? false) || (extraSolid ? extraSolid(x, y, z) : false);
+  let ceilY = -1;
+  for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+    for (let y = origin.y + 6; y <= maxY; y++) {
+      if (solidAt(origin.x + dx, y, origin.z + dz)) {
+        if (ceilY < 0 || y < ceilY) ceilY = y;
+        break;
+      }
+    }
+  }
+  const srcMode = params.get("pwsrc") === "basin" || ceilY < 0 ? "basin" : "ceiling";
+  const srcH = num("pwsrch", NaN);
+  // Emit y in WORLD voxel coords (fractional): ceiling mode hangs 1.7 cells
+  // under the roof cell's bottom face so the spawn band (source y .. +1.2
+  // plus a drop radius) stays clear of the solid; basin mode keeps the
+  // sandbox's floor+2 hover; ?pwsrch overrides as cells above the basin.
+  const emitYW = Number.isFinite(srcH)
+    ? origin.y + srcH
+    : srcMode === "ceiling" ? ceilY - 1.7 : origin.y + 2.0;
   const clampBox = () => {
     const x0 = Math.max(minX - 2, origin.x - half);
     const x1 = Math.min(maxX + 3, origin.x + half);
     const z0 = Math.max(minZ - 2, origin.z - half);
     const z1 = Math.min(maxZ + 3, origin.z + half);
-    const y1 = Math.min(maxY + 4, origin.y + 10);
+    const y1 = Math.min(maxY + 4, Math.max(origin.y + 10, Math.ceil(emitYW) + 4));
     return { x0, x1, z0, z1, y0: 0, y1 };
   };
   let box = clampBox();
@@ -106,11 +134,11 @@ export function createParticleWater(ctx: PWaterCtx) {
     }
   }
   const sx = origin.x - box.x0 + 0.5;
-  // Source floats 2 cells above the sited outlet — the sandbox's own source
-  // geometry (its spring hovered 2 cells over the bowl floor). The drops fall
-  // as a small visible cascade instead of a sub-visible dribble at floor
-  // level, and the mouth stays clear of the pool's back-pressure gate longer.
-  const sy = origin.y - box.y0 + 2.0;
+  // Source height: ceiling-mounted when a roof hangs over the basin (water
+  // falls from under the roof into the pool), else the sandbox's floor+2
+  // hover (small visible cascade, mouth clear of the back-pressure gate).
+  // Grid mapping matches the old `origin.y - box.y0 + 2.0` convention.
+  const sy = emitYW - box.y0;
   const sz = origin.z - box.z0 + 0.5;
   const terrain: Terrain = {
     nx, ny, nz, solid,
@@ -119,12 +147,13 @@ export function createParticleWater(ctx: PWaterCtx) {
       x0: Math.max(0, Math.floor(sx) - 8), x1: Math.min(nx, Math.floor(sx) + 8),
       z0: Math.max(0, Math.floor(sz) - 8), z1: Math.min(nz, Math.floor(sz) + 8),
     },
-    rimY: Math.floor(sy),
+    rimY: Math.floor(origin.y - box.y0 + 2),
     open: "all",
   };
   console.log(
     `[pwater] terrain crop ${nx}x${ny}x${nz} (${((performance.now() - t0) | 0)}ms), ` +
-    `source cell (${origin.x},${origin.y},${origin.z})`,
+    `basin cell (${origin.x},${origin.y},${origin.z}), source ${srcMode}` +
+    (srcMode === "ceiling" ? ` (roof y=${ceilY}, emit y=${emitYW.toFixed(1)})` : ` (emit y=${emitYW.toFixed(1)})`),
   );
 
   // ── Driver + renderer ───────────────────────────────────────────────────
@@ -382,6 +411,7 @@ export function createParticleWater(ctx: PWaterCtx) {
       enabled: true,
       kind: driver.kind,
       box: { x0: box.x0, x1: box.x1, y1: box.y1, z0: box.z0, z1: box.z1 },
+      source: { mode: srcMode, basinY: origin.y, roofY: ceilY < 0 ? null : ceilY, emitY: Math.round(emitYW * 10) / 10 },
       settings: {
         emitRate: ctl.emitRate, viscosity: ctl.viscosity, timeScale: ctl.timeScale,
         sleep: ctl.sleep, evaporation: ctl.evaporation, scale: ctl.scale,
