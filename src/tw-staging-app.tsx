@@ -20093,6 +20093,18 @@ export default function TinyWorld() {
     const waterlogOn = _iq.get("waterlog") !== "0";
     const WATERLOG_HOLD_MS = Math.max(1000, _iq.get("waterloghours") ? Number(_iq.get("waterloghours")) * 3600000 : (Number(_iq.get("waterloghold")) || 60000));
     const submergeSince = new Map<string, number>();   // col "x,z" → Date.now() first seen submerged
+    // Waterlog hysteresis (Aug 11, proven in the water-sim-sandbox grass lab):
+    // the particle→cell water read blinks at the pool rim, and the old
+    // semantics — instant recovery + streak reset on a single dry read —
+    // re-bladed the shore constantly (tuft↔blades flicker as the pool
+    // sloshes). Symmetric memory, same shape as the soil hold: a dry read
+    // within WATERLOG_GAP_MS does NOT break a submersion streak, and a
+    // waterlogged column only recovers after WATERLOG_DRY_MS of continuous
+    // dryness. Lab A/B (same slosh + sampling noise): 88 → 8 un-logs.
+    // `?wlgap` ms (default 2 heavy passes) / `?wldry` ms (default = hold).
+    const WATERLOG_GAP_MS = Math.max(0, Number(_iq.get("wlgap")) || Math.max(2 * IRRIG_MS, 12000));
+    const WATERLOG_DRY_MS = Math.max(1000, Number(_iq.get("wldry")) || WATERLOG_HOLD_MS);
+    const lastSubmergedMs = new Map<string, number>(); // col "x,z" → Date.now() last seen submerged
     // Wall-clock (Date.now()) of the last rain that wet the field; restored from
     // the saved world so the hold survives reloads. -Infinity = never rained.
     let lastGrassRainMs = Number((worldDataRef.current?.meta as any)?.grassLastRainMs) || -Infinity;
@@ -20105,7 +20117,7 @@ export default function TinyWorld() {
     // Simulate a rain shower wetting the whole field (real weather also records
     // rain while raining). Grass greens up, holds GREEN_HOLD_MS, then decays.
     (window as any).__tw.wetGrass = () => { recordRain(); return { greenHoldMs: GREEN_HOLD_MS, decayMs: EASE_DRY_MS, greenMs: EASE_GREEN_MS }; };
-    (window as any).__tw.waterlogReport = () => ({ on: waterlogOn, waterlogged: waterloggedCols.size, submerging: submergeSince.size, holdMs: WATERLOG_HOLD_MS });
+    (window as any).__tw.waterlogReport = () => ({ on: waterlogOn, waterlogged: waterloggedCols.size, submerging: submergeSince.size, holdMs: WATERLOG_HOLD_MS, gapMs: WATERLOG_GAP_MS, dryMs: WATERLOG_DRY_MS, tracked: lastSubmergedMs.size });
     // Force-drown every currently-submerged column now (skips the hold) for a
     // device check: recompute to find submerged cols, backdate them, recompute
     // again to flip + re-blade.
@@ -20176,19 +20188,30 @@ export default function TinyWorld() {
         for (const [kk, sy] of soilTop) {
           const wtop = waterTopMap.get(kk);
           if (wtop !== undefined && wtop > sy) {           // submerged
+            lastSubmergedMs.set(kk, nowW);
             const since = submergeSince.get(kk);
             if (since === undefined) submergeSince.set(kk, nowW);
             else if (nowW - since >= WATERLOG_HOLD_MS && !waterloggedCols.has(kk)) {
               waterloggedCols.add(kk); const c = kk.split(","); markGrassDirty(+c[0], +c[1]);
             }
-          } else {                                          // dry / receded
-            submergeSince.delete(kk);
-            if (waterloggedCols.has(kk)) { waterloggedCols.delete(kk); const c = kk.split(","); markGrassDirty(+c[0], +c[1]); }
+          } else {                                          // dry READ this pass
+            const lw = lastSubmergedMs.get(kk);
+            const dryFor = lw === undefined ? Infinity : nowW - lw;
+            if (dryFor > WATERLOG_GAP_MS) submergeSince.delete(kk); // streak truly broken (not a sampling blink)
+            if (waterloggedCols.has(kk)) {
+              if (dryFor >= WATERLOG_DRY_MS) {
+                waterloggedCols.delete(kk); lastSubmergedMs.delete(kk);
+                const c = kk.split(","); markGrassDirty(+c[0], +c[1]);
+              }
+            } else if (dryFor > Math.max(WATERLOG_GAP_MS, WATERLOG_DRY_MS)) {
+              lastSubmergedMs.delete(kk);                   // stale stamp cleanup
+            }
           }
         }
         // Prune columns whose grass block no longer exists.
         for (const kk of waterloggedCols) if (!soilTop.has(kk)) { waterloggedCols.delete(kk); }
         for (const kk of submergeSince.keys()) if (!soilTop.has(kk)) submergeSince.delete(kk);
+        for (const kk of lastSubmergedMs.keys()) if (!soilTop.has(kk)) lastSubmergedMs.delete(kk);
       }
       const waters: Array<[number, number, number]> = [];
       for (const [wk, wy] of waterTopMap) { const wp = wk.split(","); waters.push([+wp[0], +wp[1], wy]); }
