@@ -5583,7 +5583,7 @@ export default function TinyWorld() {
     type GrassParams = {
       perTop: number; floorY: number; highY: number; bladeH: number;
       minX: number; minZ: number; chunkW: number; chunkD: number;
-      mat: any; uniforms: any; templatePos: any; templateNrm: any;
+      mat: any; uniforms: any; templatePos: any; templateNrm: any; templateIdx: any;
     };
     let grassChunks: GrassChunk[] = [];
     let grassLodMaterials: Array<{ mat: any; uniforms: any }> = [];
@@ -5899,6 +5899,7 @@ export default function TinyWorld() {
       const geo = new THREE.InstancedBufferGeometry();
       geo.setAttribute("position", p.templatePos);
       geo.setAttribute("normal", p.templateNrm);
+      geo.setIndex(p.templateIdx);
       geo.setAttribute("iOrigin", new THREE.InstancedBufferAttribute(originArr, 3));
       geo.setAttribute("iShape", new THREE.InstancedBufferAttribute(shapeArr, 4));
       geo.setAttribute("iColor", new THREE.InstancedBufferAttribute(colorArr, 4));
@@ -6008,8 +6009,8 @@ export default function TinyWorld() {
             "#ifdef USE_TANGENT\n\tvec3 objectTangent = vec3( tangent.xyz );\n#endif"
           ).replace(
             "#include <begin_vertex>",
-            // Template vert roles: position.x = -1|+1 (base corners), 0 (tip);
-            // position.y = 0 (base), 1 (tip). The blade is built right here.
+            // Authored five-vertex ribbon: root pair, shoulder pair, pointed tip.
+            // position.y is the rooted bend weight; position.x is blade side.
             "float side = position.x;\n" +
             "float tipF = position.y;\n" +
             "vec3 origin = iOrigin;\n" +
@@ -6027,16 +6028,20 @@ export default function TinyWorld() {
             "bendAngle += sin(uTime * 0.33 - dot(origin.xz, uWindDir) * uWindScale * 13.8) * (uMaxBend * 0.22);\n" +
             "bendAngle += sin(uTime * 2.6 + iColor.w * 6.2832) * 0.02;\n" +
             "vec3 bendAxis = normalize(vec3(wn.g, 0.0, wn.b) + vec3(1e-4, 0.0, 0.0));\n" +
-            // Tip = up + static lean, Rodrigues-rotated around bendAxis with
-            // length preserved, so wind-bent blades visibly shorten.
+            // Each vertex follows the same rooted circular bend, so the base is
+            // fixed while the authored shoulder/tip silhouette moves as one leaf.
             "float bladeKind = mod(iColor.x, 4.0);\n" +
-            "float shapeWidth = iShape.z * (bladeKind < 0.5 ? 1.0 : bladeKind < 1.5 ? 0.72 : bladeKind < 2.5 ? 1.34 : 0.86);\n" +
+            "float shapeWidth = iShape.z * (bladeKind < 0.5 ? 1.0 : bladeKind < 1.5 ? 0.68 : bladeKind < 2.5 ? 1.32 : 0.82);\n" +
             "float shapeHeight = iShape.y * (bladeKind < 2.5 ? 1.0 : 0.78);\n" +
-            "vec3 rel = normalize(vec3(-sy * shapeWidth, 1.0, cy * shapeWidth)) * shapeHeight;\n" +
-            "if (bladeKind > 2.5) rel.xz += vec2(cy, sy) * shapeHeight * 0.18;\n" +
-            "float ca = cos(bendAngle); float sa2 = sin(bendAngle);\n" +
+            "float shoulder = 1.0 - smoothstep(0.18, 1.0, tipF);\n" +
+            "float broad = bladeKind > 1.5 && bladeKind < 2.5 ? sin(tipF * 3.14159265) * 0.34 : 0.0;\n" +
+            "float halfW = shapeWidth * side * max(0.0, shoulder + broad);\n" +
+            "float curve = (bladeKind < 0.5 ? 0.08 : bladeKind < 1.5 ? 0.22 : bladeKind < 2.5 ? -0.10 : 0.30) * tipF * tipF + iShape.w * tipF * 0.45;\n" +
+            "vec3 rel = vec3(cy * halfW - sy * shapeHeight * curve, shapeHeight * tipF, sy * halfW + cy * shapeHeight * curve);\n" +
+            "float rootedAngle = bendAngle * pow(tipF, 1.55);\n" +
+            "float ca = cos(rootedAngle); float sa2 = sin(rootedAngle);\n" +
             "vec3 relBent = rel * ca + cross(bendAxis, rel) * sa2 + bendAxis * dot(bendAxis, rel) * (1.0 - ca);\n" +
-            "vec3 transformed = origin + vec3(cy, 0.0, sy) * (iShape.z * 0.5 * side) + relBent * tipF;\n" +
+            "vec3 transformed = origin + relBent;\n" +
             // Colors: kind palette, patch-lerped tip, ground-projected slow
             // "cloud light" noise so neighbouring blades share patches.
             "float isDry = iColor.x >= 4.0 ? 1.0 : 0.0;\n" +
@@ -6075,14 +6080,23 @@ export default function TinyWorld() {
             "#include <opaque_fragment>"
           );
       };
-      mat.customProgramCacheKey = () => "grassTriangleV4RichTufts";
+      mat.customProgramCacheKey = () => "grassBladeShapesV1";
       grassLodMaterials = [{ mat, uniforms }];
 
-      // Shared 3-vertex blade template (roles encoded in position, see shader).
-      const templatePos = new THREE.BufferAttribute(new Float32Array([-1, 0, 0, 1, 0, 0, 0, 1, 0]), 3);
-      const templateNrm = new THREE.BufferAttribute(new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]), 3);
+      // Shared indexed blade silhouette: 5 vertices / 3 triangles instead of a
+      // single triangle. The shoulder row gives every kind a readable taper and
+      // curve without multiplying instances or disturbing deterministic LOD.
+      const templatePos = new THREE.BufferAttribute(new Float32Array([
+        -1, 0, 0, 1, 0, 0,
+        -1, 0.58, 0, 1, 0.58, 0,
+        0, 1, 0,
+      ]), 3);
+      const templateNrm = new THREE.BufferAttribute(new Float32Array([
+        0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0,
+      ]), 3);
+      const templateIdx = new THREE.BufferAttribute(new Uint16Array([0, 1, 2, 1, 3, 2, 2, 3, 4]), 1);
 
-      grassParams = { perTop, floorY, highY, bladeH, minX, minZ, chunkW, chunkD, mat, uniforms, templatePos, templateNrm };
+      grassParams = { perTop, floorY, highY, bladeH, minX, minZ, chunkW, chunkD, mat, uniforms, templatePos, templateNrm, templateIdx };
 
       // Bucket grass voxels into chunks by top center, gen blades per top.
       const bucket: GrassBlade[][] = [];
