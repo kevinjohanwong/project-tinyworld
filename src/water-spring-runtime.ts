@@ -253,7 +253,7 @@ export function createSpring(ctx: SpringContext) {
   function persist() {
     if (!origin) return;
     meta.spring = {
-      version: 9, seed: theSeed,
+      version: 10, seed: theSeed,
       origin: { x: origin[0], y: origin[1], z: origin[2] },
       budget: state.budget, capacity: CAPACITY,
     } as SpringMeta;
@@ -400,47 +400,64 @@ export function createSpring(ctx: SpringContext) {
       return best;
     };
 
-    // CLIFF SHELF siting (KJ Aug 11: "make the water on one of the cliffs /
-    // shelf"): prefer a high ledge with a real drop off one side, so emitted
-    // water lands on the shelf, runs over the lip, and falls the cliff face
-    // into whatever terrain contains it below. Pool placement stays emergent —
-    // only the source's boundary condition moves (doctrine-safe). A qualifying
-    // shelf cell needs: open air above (emitter + fall clear), a thick solid
-    // column beneath it (filters floating canopies/roof shells), >=2 near-level
-    // 4-neighbours (a real ledge, not a spike), and a 4-neighbour column top
-    // >= SHELF_DROP cells lower. Missing neighbours = void edge and never count
-    // as a drop, so the spring can't pour off the world. ?springsite=basin
-    // restores the old basin-first order; ?springdrop=N tunes the cliff height.
+    // PLATEAU siting v10 (KJ Aug 11: "water should come from plateau or
+    // relatively flat surface (higher elevation) — not from the point of a
+    // wall"). v9's shelf test (>=2 near-level 4-neighbours, score = biggest
+    // drop) was satisfied along a 1-cell-wide wall ridge, so the tallest wall
+    // crest won and the fall plunged the whole world height — which also
+    // starves the sim: most of the fixed particle budget hangs in flight, so
+    // the stream thins and the pool never fills. Now a source cell must sit on
+    // a REAL flat patch: of the 24 neighbours in its 5x5 window, >= SPRING_FLAT
+    // (default 70%) must exist AND be within +-2 cells of its top. Missing
+    // columns count AGAINST flatness, so thin walls, spikes, and void edges
+    // all fail. The fall stays emergent: some column within SHELF_DROP_RAD
+    // (Chebyshev, default 6) must top out >= SHELF_DROP cells lower — the lip
+    // is a few cells away and water reaches it by flowing, instead of the
+    // source sitting ON the lip. Missing neighbours never count as a drop
+    // (can't pour off the world). Scoring: highest plateau first, then
+    // flattest, then central — drop size no longer scores, so extreme cliffs
+    // aren't preferred over broad high ground. ?springsite=basin restores the
+    // basin-first order; knobs ?springdrop, ?springdroprad, ?springflat (0-1).
     const SHELF_DROP = num("springdrop", 8);
+    const DROP_RAD = Math.max(1, Math.round(num("springdroprad", 6)));
+    const FLAT_MIN = Math.min(1, Math.max(0, num("springflat", 0.7)));
     const chooseShelf = (): Vec3 | null => {
       const Hall = new Map<string, number>();
       for (const [x, y, z] of tops) Hall.set(KEYXZ(x, z), y);
-      let best: Vec3 | null = null, bestDrop = 0, bestY = -Infinity, bestCentral = Infinity;
+      let best: Vec3 | null = null, bestY = -Infinity, bestFlat = 0, bestCentral = Infinity;
       for (const [x, y, z] of tops) {
         if (!isSolid(x, y - 1, z) || !isSolid(x, y - 2, z)) continue;
         let clear = true;
         for (let dy = 1; dy <= 6 && clear; dy++) if (isSolid(x, y + dy, z)) clear = false;
         if (!clear) continue;
-        let level = 0, drop = 0;
-        for (const [dx, dz] of HDIRS) {
+        let level = 0;
+        for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+          if (dx === 0 && dz === 0) continue;
           const nt = Hall.get(KEYXZ(x + dx, z + dz));
-          if (nt == null) continue;
-          if (Math.abs(nt - y) <= 2) level += 1;
-          else if (y - nt > drop) drop = y - nt;
+          if (nt != null && Math.abs(nt - y) <= 2) level += 1;
         }
-        if (level < 2 || drop < SHELF_DROP) continue;
+        const flat = level / 24;
+        if (flat < FLAT_MIN) continue;
+        let drop = 0;
+        for (let dz = -DROP_RAD; dz <= DROP_RAD && drop < SHELF_DROP; dz++) {
+          for (let dx = -DROP_RAD; dx <= DROP_RAD && drop < SHELF_DROP; dx++) {
+            const nt = Hall.get(KEYXZ(x + dx, z + dz));
+            if (nt != null && y - nt > drop) drop = y - nt;
+          }
+        }
+        if (drop < SHELF_DROP) continue;
         const central = Math.abs(x - cx) + Math.abs(z - cz);
-        if (drop > bestDrop || (drop === bestDrop && (y > bestY || (y === bestY && central < bestCentral)))) {
-          best = [x, y, z]; bestDrop = drop; bestY = y; bestCentral = central;
+        if (y > bestY || (y === bestY && (flat > bestFlat || (flat === bestFlat && central < bestCentral)))) {
+          best = [x, y, z]; bestY = y; bestFlat = flat; bestCentral = central;
         }
       }
-      if (best) console.log(`[spring] cliff shelf sited at (${best[0]},${best[1]},${best[2]}), drop ${bestDrop}`);
+      if (best) console.log(`[spring] plateau sited at (${best[0]},${best[1]},${best[2]}), flat ${(bestFlat * 100) | 0}%`);
       return best;
     };
 
-    // Re-site once for the cliff-shelf siting contract (version 9).
+    // Re-site once for the plateau siting contract (version 10).
     const savedVersion = (saved as any)?.version ?? 0;
-    const RESITE = params.get("springresite") === "1" || (saved != null && savedVersion < 9);
+    const RESITE = params.get("springresite") === "1" || (saved != null && savedVersion < 10);
     if (saved?.origin && !RESITE) {
       origin = [saved.origin.x, saved.origin.y, saved.origin.z];
     } else {

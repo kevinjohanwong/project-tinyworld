@@ -66,6 +66,7 @@ export function createParticleWater(ctx: PWaterCtx) {
   // ── Terrain crop around the spring ──────────────────────────────────────
   let half = Math.max(16, Math.round(num("pwbox", 48)));
   let minX = origin.x, maxX = origin.x, minZ = origin.z, maxZ = origin.z, maxY = origin.y;
+  let minSolidY = origin.y;
   for (const key of colMap.keys()) {
     const c = key.indexOf(",");
     const x = +key.slice(0, c);
@@ -73,7 +74,10 @@ export function createParticleWater(ctx: PWaterCtx) {
     if (x < minX) minX = x; else if (x > maxX) maxX = x;
     if (z < minZ) minZ = z; else if (z > maxZ) maxZ = z;
   }
-  for (const set of colMap.values()) for (const y of set) if (y > maxY) maxY = y;
+  for (const set of colMap.values()) for (const y of set) {
+    if (y > maxY) maxY = y;
+    if (y < minSolidY) minSolidY = y;
+  }
 
   // Ceiling mount: the emitter hangs just under the roof above the sited
   // basin, so water falls from height and pools in the basin below (the pool
@@ -107,8 +111,17 @@ export function createParticleWater(ctx: PWaterCtx) {
     const x1 = Math.min(maxX + 3, origin.x + half);
     const z0 = Math.max(minZ - 2, origin.z - half);
     const z1 = Math.min(maxZ + 3, origin.z + half);
+    // Floor the domain at the world's lowest solid, not absolute y=0: water
+    // always rests ON a solid, so cells below the lowest solid are pure void
+    // (an off-world fall drains at the open boundary a few cells under the
+    // island's underside instead of plunging to 0). On high scanned worlds
+    // this keeps ny = terrain relief rather than absolute altitude — without
+    // it, a high-sited spring blew the MAX_CELLS budget vertically and the
+    // while-loop squeezed the XZ footprint to a skinny column ("water height
+    // limitations").
+    const y0 = Math.max(0, minSolidY - 6);
     const y1 = Math.min(maxY + 4, Math.max(origin.y + 10, Math.ceil(emitYW) + 4));
-    return { x0, x1, z0, z1, y0: 0, y1 };
+    return { x0, x1, z0, z1, y0, y1 };
   };
   let box = clampBox();
   while ((box.x1 - box.x0) * (box.z1 - box.z0) * (box.y1 - box.y0) > MAX_CELLS && half > 16) {
