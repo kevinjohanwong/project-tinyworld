@@ -424,20 +424,17 @@ export function createSpring(ctx: SpringContext) {
     const chooseShelf = (): Vec3 | null => {
       const Hall = new Map<string, number>();
       for (const [x, y, z] of tops) Hall.set(KEYXZ(x, z), y);
-      let best: Vec3 | null = null, bestY = -Infinity, bestFlat = 0, bestCentral = Infinity;
-      for (const [x, y, z] of tops) {
-        if (!isSolid(x, y - 1, z) || !isSolid(x, y - 2, z)) continue;
-        let clear = true;
-        for (let dy = 1; dy <= 6 && clear; dy++) if (isSolid(x, y + dy, z)) clear = false;
-        if (!clear) continue;
-        let level = 0;
-        for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+      const flatFrac = (x: number, z: number, y: number, R: number) => {
+        let level = 0, cells = 0;
+        for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
           if (dx === 0 && dz === 0) continue;
+          cells += 1;
           const nt = Hall.get(KEYXZ(x + dx, z + dz));
           if (nt != null && Math.abs(nt - y) <= 2) level += 1;
         }
-        const flat = level / 24;
-        if (flat < FLAT_MIN) continue;
+        return level / cells;
+      };
+      const dropNear = (x: number, z: number, y: number) => {
         let drop = 0;
         for (let dz = -DROP_RAD; dz <= DROP_RAD && drop < SHELF_DROP; dz++) {
           for (let dx = -DROP_RAD; dx <= DROP_RAD && drop < SHELF_DROP; dx++) {
@@ -445,14 +442,34 @@ export function createSpring(ctx: SpringContext) {
             if (nt != null && y - nt > drop) drop = y - nt;
           }
         }
-        if (drop < SHELF_DROP) continue;
-        const central = Math.abs(x - cx) + Math.abs(z - cz);
-        if (y > bestY || (y === bestY && (flat > bestFlat || (flat === bestFlat && central < bestCentral)))) {
-          best = [x, y, z]; bestY = y; bestFlat = flat; bestCentral = central;
+        return drop;
+      };
+      const pass = (requireThick: boolean, R: number): Vec3 | null => {
+        let best: Vec3 | null = null, bestY = -Infinity, bestFlat = 0, bestCentral = Infinity;
+        for (const [x, y, z] of tops) {
+          if (requireThick && (!isSolid(x, y - 1, z) || !isSolid(x, y - 2, z))) continue;
+          let clear = true;
+          for (let dy = 1; dy <= 6 && clear; dy++) if (isSolid(x, y + dy, z)) clear = false;
+          if (!clear) continue;
+          const flat = flatFrac(x, z, y, R);
+          if (flat < FLAT_MIN) continue;
+          if (dropNear(x, z, y) < SHELF_DROP) continue;
+          const central = Math.abs(x - cx) + Math.abs(z - cz);
+          if (y > bestY || (y === bestY && (flat > bestFlat || (flat === bestFlat && central < bestCentral)))) {
+            best = [x, y, z]; bestY = y; bestFlat = flat; bestCentral = central;
+          }
         }
-      }
-      if (best) console.log(`[spring] plateau sited at (${best[0]},${best[1]},${best[2]}), flat ${(bestFlat * 100) | 0}%`);
-      return best;
+        if (best) console.log(`[spring] plateau sited at (${best[0]},${best[1]},${best[2]}), flat ${(bestFlat * 100) | 0}%${requireThick ? "" : " (thin sheet)"}`);
+        return best;
+      };
+      // Tier 1: thick ground plateau (solid y-1 and y-2 — real high ground).
+      // Tier 2: a thin elevated sheet, accepted only as a LARGE coherent flat
+      // surface — the wider 7x7 flatness window is what a lumpy tree canopy
+      // cannot satisfy, so a structural roof slab qualifies but leaves never
+      // host the spring. Without this tier a scan whose only elevated flat
+      // ground is a roof shell (e.g. the debug world's [0,1,9] slab columns)
+      // would skip plateau siting entirely and fall back to a floor basin.
+      return pass(true, 2) ?? pass(false, 3);
     };
 
     // Re-site once for the plateau siting contract (version 10).
