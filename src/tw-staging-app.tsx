@@ -5572,7 +5572,7 @@ export default function TinyWorld() {
       // load; keep the voxel ground, make the blade field opt-in.
       return !generatedMetricWorld;
     })();
-    type GrassChunk = { mesh: any; center: any; bladeCount: number; ci: number };
+    type GrassChunk = { mesh: any; center: any; bladeCount: number; ci: number; lodCount: number };
     type GrassBlade = {
       x: number; y: number; z: number;
       yaw: number; h: number; w: number; lean: number;
@@ -5921,7 +5921,7 @@ export default function TinyWorld() {
       mesh.userData = { isGrassBlades: true };
       scene.add(mesh);
       meshesRef.current.push(mesh);
-      return { mesh, center, bladeCount: n, ci };
+      return { mesh, center, bladeCount: n, ci, lodCount: n };
     };
 
     const buildBillboardGrass = (): boolean => {
@@ -6140,18 +6140,38 @@ export default function TinyWorld() {
       if (!grassRebuildTimer) grassRebuildTimer = setTimeout(flushGrassRebuild, 150);
     };
 
-    // Per-frame LOD: cut each chunk's rendered instanceCount by camera
-    // distance. Blade order is pre-shuffled, so the cut thins the chunk
-    // uniformly — no mesh swaps, no duplicate buffers.
-    const GRASS_LOD_NEAR = span * 0.2;
-    const GRASS_LOD_MID = span * 0.5;
-    const tickGrassLOD = () => {
+    // Camera-relative representation ladder. Full rooted, animated blades are
+    // only useful within a few dozen voxels; after that their individual
+    // triangles are sub-pixel. The voxel grass cap remains visible at every
+    // distance, while the pre-shuffled subset supplies meadow breakup in the
+    // middle distance. This deliberately does not scale with world extent:
+    // large scans must not keep their whole grass field expensive.
+    const _grassLodQ = new URLSearchParams(window.location.search);
+    const grassLodDistance = (name: string, fallbackVoxels: number) => {
+      const raw = Number(_grassLodQ.get(name));
+      return (Number.isFinite(raw) && raw > 0 ? raw : fallbackVoxels) * voxel;
+    };
+    const GRASS_LOD_NEAR = grassLodDistance("grasslodnear", 45);
+    const GRASS_LOD_MID = Math.max(GRASS_LOD_NEAR + voxel * 12, grassLodDistance("grasslodmid", 100));
+    const GRASS_LOD_FAR = Math.max(GRASS_LOD_MID + voxel * 12, grassLodDistance("grasslodfar", 180));
+    let grassLodLastMs = -Infinity;
+    let grassLodLastX = Infinity;
+    let grassLodLastZ = Infinity;
+    const tickGrassLOD = (now: number) => {
       const camX = camera.position.x;
       const camZ = camera.position.z;
+      const moved = Math.hypot(camX - grassLodLastX, camZ - grassLodLastZ) > voxel * 2;
+      if (!moved && now - grassLodLastMs < 180) return;
+      grassLodLastMs = now;
+      grassLodLastX = camX;
+      grassLodLastZ = camZ;
       for (const ch of grassChunks) {
         const d = Math.hypot(ch.center.x - camX, ch.center.z - camZ);
-        const frac = d <= GRASS_LOD_NEAR ? 1 : d <= GRASS_LOD_MID ? 0.55 : 0.3;
-        ch.mesh.geometry.instanceCount = Math.max(1, (ch.bladeCount * frac) | 0);
+        const frac = d <= GRASS_LOD_NEAR ? 1 : d <= GRASS_LOD_MID ? 0.42 : d <= GRASS_LOD_FAR ? 0.09 : 0;
+        const count = frac === 0 ? 0 : Math.max(1, (ch.bladeCount * frac) | 0);
+        if (count === ch.lodCount) continue;
+        ch.lodCount = count;
+        ch.mesh.geometry.instanceCount = count;
       }
     };
 
@@ -15663,8 +15683,15 @@ export default function TinyWorld() {
       },
       grassInfo: () => {
         let blades = 0;
-        for (const ch of grassChunks) blades += ch.bladeCount;
-        return { enabled: grassChunks.length > 0, density: grassDensityMult, blades };
+        let renderedBlades = 0;
+        for (const ch of grassChunks) { blades += ch.bladeCount; renderedBlades += ch.lodCount; }
+        return {
+          enabled: grassChunks.length > 0,
+          density: grassDensityMult,
+          blades,
+          renderedBlades,
+          lod: { near: GRASS_LOD_NEAR / voxel, mid: GRASS_LOD_MID / voxel, far: GRASS_LOD_FAR / voxel },
+        };
       },
       // Floating-block census (report only — deletes nothing).
       floaterReport: (cap?: number) => settleFloaters({ deleteMax: 0, cap: cap ?? 1024 }),
@@ -20752,7 +20779,7 @@ export default function TinyWorld() {
           // Live sky-half palette drives the water's grazing-angle reflection.
           if (wu.uSkyCol) wu.uSkyCol.value.copy(hemi.color).multiplyScalar(Math.max(hemi.intensity, 0.06) * 0.7 + 0.12);
         }
-        tickGrassLOD();
+        tickGrassLOD(now);
 
         if (revealRef.current && revealRef.current.active) {
           const rv = revealRef.current;
