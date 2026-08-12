@@ -40,9 +40,17 @@ export interface Terrain {
   basin: { x0: number; x1: number; z0: number; z1: number };
   rimY: number;
   // Which lateral bounds are open drains. Sandbox scenarios use "px" (+X edge
-  // only). TinyWorld crops use "all": water leaving the sim box on any side
-  // is culled (matches the CA's edge-cull), never piles on invisible walls.
+  // only); "all" opens every side. Legacy string form applies per whole wall.
   open?: "px" | "all";
+  // Per-column wall openness (overrides `open` when present). A wall column is
+  // OPEN (1 = drain) only where the WORLD genuinely ends beyond the sim box;
+  // where terrain continues past the crop, the wall is CLOSED (0 = no-flow)
+  // so water piles against the cut exactly as it would against the real
+  // terrain that is actually there. px/mx are indexed by z-column [0..nz),
+  // pz/mz by x-column [0..nx). This is a boundary condition, not a look rule:
+  // without it a plunge pool draining through an artificial mid-terrain cut
+  // can never fill.
+  wallOpen?: { px: Uint8Array; mx: Uint8Array; pz: Uint8Array; mz: Uint8Array };
 }
 
 // Base particle geometry at scale 1. Fine mode shrinks these uniformly via
@@ -321,6 +329,10 @@ export class Sim {
   private emitAcc = 0;
   private drainWindow = new Int16Array(60);
 
+  private wOpenPX!: Uint8Array;
+  private wOpenMX!: Uint8Array;
+  private wOpenPZ!: Uint8Array;
+  private wOpenMZ!: Uint8Array;
   private gnx: number;
   private gny: number;
   private gnz: number;
@@ -374,6 +386,19 @@ export class Sim {
     this.rho0 = rho;
 
     const t = this.terrain;
+    // Resolve per-column wall masks once. Without wallOpen, legacy behavior
+    // holds: +X is the open drain edge (historical hardcode — scenario
+    // terrains rely on it), the other three walls are closed unless
+    // open === "all".
+    {
+      const mk = (n: number, v: number) => new Uint8Array(n).fill(v);
+      const wo = t.wallOpen;
+      const allOpen = t.open === "all" ? 1 : 0;
+      this.wOpenPX = wo?.px ?? mk(t.nz, 1);
+      this.wOpenMX = wo?.mx ?? mk(t.nz, allOpen);
+      this.wOpenPZ = wo?.pz ?? mk(t.nx, allOpen);
+      this.wOpenMZ = wo?.mz ?? mk(t.nx, allOpen);
+    }
     this.gnx = Math.ceil((t.nx + 8) / H);
     this.gny = Math.ceil((t.ny + 14 - KILL_Y) / H);
     this.gnz = Math.ceil(t.nz / H);
@@ -570,19 +595,29 @@ export class Sim {
     let pz = this.pos[b + 2];
     const t = this.terrain;
 
-    if (px < R) {
-      px = R;
-      this.contact[i] = 1;
+    // Lateral walls: closed columns clamp (no-flow boundary), open columns
+    // let the particle pass and drain() culls it. Which is which comes from
+    // the terrain's wallOpen masks (world-derived) or the legacy open string.
+    {
+      const czi = pz < 0 ? 0 : pz >= t.nz ? t.nz - 1 : pz | 0;
+      const cxi = px < 0 ? 0 : px >= t.nx ? t.nx - 1 : px | 0;
+      if (px < R && !this.wOpenMX[czi]) {
+        px = R;
+        this.contact[i] = 1;
+      }
+      if (px > t.nx - R && !this.wOpenPX[czi]) {
+        px = t.nx - R;
+        this.contact[i] = 1;
+      }
+      if (pz < R && !this.wOpenMZ[cxi]) {
+        pz = R;
+        this.contact[i] = 1;
+      }
+      if (pz > t.nz - R && !this.wOpenPZ[cxi]) {
+        pz = t.nz - R;
+        this.contact[i] = 1;
+      }
     }
-    if (pz < R) {
-      pz = R;
-      this.contact[i] = 1;
-    }
-    if (pz > t.nz - R) {
-      pz = t.nz - R;
-      this.contact[i] = 1;
-    }
-    // +x face is OPEN (drain edge): no wall.
 
     const cx = Math.floor(px);
     const cy = Math.floor(py);
@@ -717,14 +752,15 @@ export class Sim {
 
   private drain() {
     const t = this.terrain;
-    const all = t.open === "all";
     let removed = 0;
     for (let i = this.count - 1; i >= 0; i--) {
       const b = i * 3;
       const px = this.pos[b];
       const py = this.pos[b + 1];
       const pz = this.pos[b + 2];
-      if (py > KILL_Y && px < t.nx + 6 && (!all || (px > -6 && pz > -6 && pz < t.nz + 6))) continue;
+      // Closed wall columns clamp in collide(), so only particles that left
+      // through a genuinely open column can reach the ±6 margins.
+      if (py > KILL_Y && px > -6 && px < t.nx + 6 && pz > -6 && pz < t.nz + 6) continue;
       this.removeAt(i);
       this.drained++;
       removed++;

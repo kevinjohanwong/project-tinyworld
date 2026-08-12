@@ -2221,7 +2221,10 @@ export default function TinyWorld() {
   }, [loadSavedBlocks]);
 
   const buildWorld = useCallback(async (source: File | { layers: Record<string, Int32Array>; meta: Record<string, unknown>; blockCount: number; resolution: number }) => {
-    const sentinelLaserPortEnabled = window.location.pathname.includes("tinyworld-staging");
+    // Aim mode (Sentinel laser port) was staging-gated during the Aug 9 port;
+    // KJ tests on prod now (Aug 12: "what happened to aim mode?") so it is
+    // enabled everywhere. ?aim=0 is the kill switch.
+    const sentinelLaserPortEnabled = new URLSearchParams(window.location.search).get("aim") !== "0";
     let aimSentinelCannon = (_deltaSeconds: number) => {};
     phaseRef.current = "loading";
     cancelAnimationFrame(rafRef.current);

@@ -62,6 +62,7 @@ export interface TerrainWire {
   basin: { x0: number; x1: number; z0: number; z1: number };
   rimY: number;
   open?: "px" | "all";
+  wallOpen?: { px: Uint8Array; mx: Uint8Array; pz: Uint8Array; mz: Uint8Array };
 }
 export interface ResetMsg { t: "reset"; scenario: ScenarioName; scale: number; terrain?: TerrainWire }
 export interface RecycleMsg { t: "recycle"; buf: ArrayBuffer }
@@ -77,6 +78,7 @@ export interface TerrainMsg {
   basin: { x0: number; x1: number; z0: number; z1: number };
   rimY: number;
   open?: "px" | "all";
+  wallOpen?: { px: Uint8Array; mx: Uint8Array; pz: Uint8Array; mz: Uint8Array };
   D: number;
   scale: number;
 }

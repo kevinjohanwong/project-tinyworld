@@ -54,6 +54,7 @@ function sendTerrain() {
     t: "terrain" as const,
     nx: t.nx, ny: t.ny, nz: t.nz, solid,
     source: t.source, basin: t.basin, rimY: t.rimY, open: t.open,
+    wallOpen: t.wallOpen,
     D: SIM_CONSTANTS.D, scale,
   };
   (self as unknown as Worker).postMessage(msg, [solid.buffer]);
@@ -161,6 +162,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
           nx: m.terrain.nx, ny: m.terrain.ny, nz: m.terrain.nz,
           solid: m.terrain.solid, source: m.terrain.source,
           basin: m.terrain.basin, rimY: m.terrain.rimY, open: m.terrain.open,
+          wallOpen: m.terrain.wallOpen,
         })
       : createSim(m.scenario);
     foam = new FoamSystem();

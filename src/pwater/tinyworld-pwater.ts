@@ -146,6 +146,45 @@ export function createParticleWater(ctx: PWaterCtx) {
       }
     }
   }
+  // ── Per-column wall openness ────────────────────────────────────────────
+  // The crop box is finite; its walls are honest boundaries only where the
+  // WORLD also ends there. A wall column is OPEN (drain) when the 4 cells
+  // beyond it hold no solid inside the box's y-range (true void — an island
+  // edge), and CLOSED (no-flow) where terrain continues past the cut, so a
+  // plunge pool or river backs up against the cut exactly as it would against
+  // the real terrain beyond it. Boundary condition only — the sim inside is
+  // untouched.
+  const outsideHasSolid = (wx: number, wz: number, dx: number, dz: number) => {
+    for (let s = 1; s <= 4; s++) {
+      const qx = wx + dx * s;
+      const qz = wz + dz * s;
+      const col = colMap.get(`${qx},${qz}`);
+      if (col) {
+        for (const y of col) if (y >= box.y0 && y <= box.y1) return true;
+      }
+      if (extraSolid) {
+        for (let y = box.y0; y <= box.y1; y++) if (extraSolid(qx, y, qz)) return true;
+      }
+    }
+    return false;
+  };
+  const wallOpen = {
+    px: new Uint8Array(nz),
+    mx: new Uint8Array(nz),
+    pz: new Uint8Array(nx),
+    mz: new Uint8Array(nx),
+  };
+  for (let z = 0; z < nz; z++) {
+    const wz = box.z0 + z;
+    wallOpen.px[z] = outsideHasSolid(box.x1 - 1, wz, 1, 0) ? 0 : 1;
+    wallOpen.mx[z] = outsideHasSolid(box.x0, wz, -1, 0) ? 0 : 1;
+  }
+  for (let x = 0; x < nx; x++) {
+    const wx = box.x0 + x;
+    wallOpen.pz[x] = outsideHasSolid(wx, box.z1 - 1, 0, 1) ? 0 : 1;
+    wallOpen.mz[x] = outsideHasSolid(wx, box.z0, 0, -1) ? 0 : 1;
+  }
+  const _openCount = (a: Uint8Array) => { let n = 0; for (const v of a) n += v; return n; };
   const sx = origin.x - box.x0 + 0.5;
   // Source height: ceiling-mounted when a roof hangs over the basin (water
   // falls from under the roof into the pool), else the sandbox's floor+2
@@ -161,12 +200,14 @@ export function createParticleWater(ctx: PWaterCtx) {
       z0: Math.max(0, Math.floor(sz) - 8), z1: Math.min(nz, Math.floor(sz) + 8),
     },
     rimY: Math.floor(origin.y - box.y0 + 2),
-    open: "all",
+    wallOpen,
   };
   console.log(
     `[pwater] terrain crop ${nx}x${ny}x${nz} (${((performance.now() - t0) | 0)}ms), ` +
     `basin cell (${origin.x},${origin.y},${origin.z}), source ${srcMode}` +
-    (srcMode === "ceiling" ? ` (roof y=${ceilY}, emit y=${emitYW.toFixed(1)})` : ` (emit y=${emitYW.toFixed(1)})`),
+    (srcMode === "ceiling" ? ` (roof y=${ceilY}, emit y=${emitYW.toFixed(1)})` : ` (emit y=${emitYW.toFixed(1)})`) +
+    `, walls open px ${_openCount(wallOpen.px)}/${nz} mx ${_openCount(wallOpen.mx)}/${nz}` +
+    ` pz ${_openCount(wallOpen.pz)}/${nx} mz ${_openCount(wallOpen.mz)}/${nx}`,
   );
 
   // ── Driver + renderer ───────────────────────────────────────────────────

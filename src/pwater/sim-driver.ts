@@ -187,7 +187,7 @@ class WorkerDriver implements SimDriver {
     this.worker.onmessage = (e: MessageEvent<FromWorker>) => {
       const m = e.data;
       if (m.t === "terrain") {
-        const t: Terrain = { nx: m.nx, ny: m.ny, nz: m.nz, solid: m.solid, source: m.source, basin: m.basin, rimY: m.rimY, open: m.open };
+        const t: Terrain = { nx: m.nx, ny: m.ny, nz: m.nz, solid: m.solid, source: m.source, basin: m.basin, rimY: m.rimY, open: m.open, wallOpen: m.wallOpen };
         this.terrainMsg = { t, D: m.D, scale: m.scale };
         this.terrainCb?.(t, m.D, m.scale);
       } else if (m.t === "snap") {
@@ -216,7 +216,7 @@ class WorkerDriver implements SimDriver {
       this.post(
         {
           t: "reset", scenario: "basin-spill", scale,
-          terrain: { nx: t.nx, ny: t.ny, nz: t.nz, solid, source: t.source, basin: t.basin, rimY: t.rimY, open: t.open },
+          terrain: { nx: t.nx, ny: t.ny, nz: t.nz, solid, source: t.source, basin: t.basin, rimY: t.rimY, open: t.open, wallOpen: t.wallOpen },
         },
         [solid.buffer],
       );
