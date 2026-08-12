@@ -4685,10 +4685,20 @@ export default function TinyWorld() {
 
       if (layerName !== "water") {
         const _prevCompile = material.onBeforeCompile;
+        // aFaceMask may only be declared when the geometry actually carries the
+        // buffer. A statically-used attribute counts against the GPU's 16-slot
+        // limit even with no buffer bound — the leaves geometry already sits at
+        // exactly 16 (pos/nrm/uv + instanceMatrix×4 + aoIdx + 6×aoF + treeShade
+        // + aSuper), so declaring aFaceMask there fails the program link and
+        // the whole canopy renders black. Leaves have ZERO spare attribute
+        // slots: any new per-instance data must ride in an existing vec4.
+        const _hasFaceMask = !!_faceMaskArr;
         material.onBeforeCompile = (shader: any) => {
           if (_prevCompile) _prevCompile.call(material, shader);
           shader.vertexShader =
-            "attribute vec4 aoF0;\nattribute vec4 aoF1;\nattribute vec4 aoF2;\nattribute vec4 aoF3;\nattribute vec4 aoF4;\nattribute vec4 aoF5;\nattribute float aoIdx;\nattribute float aFaceMask;\nvarying float vAoPerVert;\n"
+            "attribute vec4 aoF0;\nattribute vec4 aoF1;\nattribute vec4 aoF2;\nattribute vec4 aoF3;\nattribute vec4 aoF4;\nattribute vec4 aoF5;\nattribute float aoIdx;\n"
+            + (_hasFaceMask ? "attribute float aFaceMask;\n" : "")
+            + "varying float vAoPerVert;\n"
             + (_isTreeLayer ? "attribute float treeShade;\nvarying float vTreeShade;\n" : "")
             + (_isLeaves ? "attribute float aSuper;\nvarying float vSuper;\n" : "")
             + shader.vertexShader.replace(
@@ -4707,7 +4717,7 @@ export default function TinyWorld() {
                ${_isTreeLayer ? "vTreeShade = treeShade;" : ""}
                ${_isLeaves ? "vSuper = aSuper;" : ""}
                #include <begin_vertex>
-               if (((int(aFaceMask + 0.5) >> _face) & 1) != 0) transformed = vec3(0.0);`
+               ${_hasFaceMask ? "if (((int(aFaceMask + 0.5) >> _face) & 1) != 0) transformed = vec3(0.0);" : ""}`
             );
           shader.fragmentShader =
             "varying float vAoPerVert;\n"
@@ -5987,6 +5997,14 @@ export default function TinyWorld() {
         uBaseDry: { value: new THREE.Color(PAL.dryGrass).multiplyScalar(0.45) },
         uTipDryA: { value: new THREE.Color(0xc4b06a) },
         uTipDryB: { value: new THREE.Color(0xd9c987) },
+        // Distance-compensated blade width (KJ Aug 12: "far distance can still
+        // render grass but the fatter version"). As the LOD rings thin the
+        // instance count, surviving blades widen so ground coverage holds and
+        // the middle distance reads as meadow instead of bald green. Ramp runs
+        // NEAR→XFAR in world units; gain is the width multiplier at the far end.
+        uLodWidenNear: { value: 1 },
+        uLodWidenFar: { value: 2 },
+        uLodWidenGain: { value: 1 },
       };
       const mat = new THREE.MeshLambertMaterial({
         color: 0xffffff,
@@ -6001,6 +6019,7 @@ export default function TinyWorld() {
           "uniform vec3 uGrassSunDir;\nuniform float uGrassBacklight;\n" +
           "uniform vec3 uBaseGrass;\nuniform vec3 uTipGrassA;\nuniform vec3 uTipGrassB;\n" +
           "uniform vec3 uBaseDry;\nuniform vec3 uTipDryA;\nuniform vec3 uTipDryB;\n" +
+          "uniform float uLodWidenNear;\nuniform float uLodWidenFar;\nuniform float uLodWidenGain;\n" +
           "varying vec3 vGrassBase;\nvarying vec3 vGrassTip;\nvarying float vTipF;\nvarying float vGrassTipBack;\n" +
           shader.vertexShader.replace(
             "#include <beginnormal_vertex>",
@@ -6015,6 +6034,10 @@ export default function TinyWorld() {
             "float side = position.x;\n" +
             "float tipF = position.y;\n" +
             "vec3 origin = iOrigin;\n" +
+            // Distance-compensated width: thinned far rings keep coverage by
+            // fattening the blades that survive. Continuous ramp = no ring pop.
+            "float lodD = distance((modelMatrix * vec4(origin, 1.0)).xyz, cameraPosition);\n" +
+            "float lodWiden = mix(1.0, uLodWidenGain, smoothstep(uLodWidenNear, uLodWidenFar, lodD));\n" +
             "float sy = sin(iShape.x); float cy = cos(iShape.x);\n" +
             // Wind (article): scroll smooth noise along uWindDir; g/b channels
             // give bend axis + angle; per-blade phase adds micro-sway.
@@ -6032,13 +6055,13 @@ export default function TinyWorld() {
             // Tip = up + static lean, Rodrigues-rotated around bendAxis with
             // length preserved, so wind-bent blades visibly shorten.
             "float bladeKind = mod(iColor.x, 4.0);\n" +
-            "float shapeWidth = iShape.z * (bladeKind < 0.5 ? 1.0 : bladeKind < 1.5 ? 0.72 : bladeKind < 2.5 ? 1.34 : 0.86);\n" +
+            "float shapeWidth = iShape.z * lodWiden * (bladeKind < 0.5 ? 1.0 : bladeKind < 1.5 ? 0.72 : bladeKind < 2.5 ? 1.34 : 0.86);\n" +
             "float shapeHeight = iShape.y * (bladeKind < 2.5 ? 1.0 : 0.78);\n" +
             "vec3 rel = normalize(vec3(-sy * shapeWidth, 1.0, cy * shapeWidth)) * shapeHeight;\n" +
             "if (bladeKind > 2.5) rel.xz += vec2(cy, sy) * shapeHeight * 0.18;\n" +
             "float ca = cos(bendAngle); float sa2 = sin(bendAngle);\n" +
             "vec3 relBent = rel * ca + cross(bendAxis, rel) * sa2 + bendAxis * dot(bendAxis, rel) * (1.0 - ca);\n" +
-            "vec3 transformed = origin + vec3(cy, 0.0, sy) * (iShape.z * 0.5 * side) + relBent * tipF;\n" +
+            "vec3 transformed = origin + vec3(cy, 0.0, sy) * (iShape.z * lodWiden * 0.5 * side) + relBent * tipF;\n" +
             // Colors: kind palette, patch-lerped tip, ground-projected slow
             // "cloud light" noise so neighbouring blades share patches.
             "float isDry = iColor.x >= 4.0 ? 1.0 : 0.0;\n" +
@@ -6077,8 +6100,13 @@ export default function TinyWorld() {
             "#include <opaque_fragment>"
           );
       };
-      mat.customProgramCacheKey = () => "grassTriangleV4RichTufts";
+      mat.customProgramCacheKey = () => "grassTriangleV5LodWiden";
       grassLodMaterials = [{ mat, uniforms }];
+      // Wire the widen ramp to the live LOD distances (assigned at call time —
+      // the consts below are initialized before buildBillboardGrass ever runs).
+      uniforms.uLodWidenNear.value = GRASS_LOD_NEAR;
+      uniforms.uLodWidenFar.value = GRASS_LOD_XFAR;
+      uniforms.uLodWidenGain.value = GRASS_WIDEN_GAIN;
 
       // Shared 3-vertex blade template (roles encoded in position, see shader).
       const templatePos = new THREE.BufferAttribute(new Float32Array([-1, 0, 0, 1, 0, 0, 0, 1, 0]), 3);
@@ -6155,7 +6183,13 @@ export default function TinyWorld() {
     };
     const GRASS_LOD_NEAR = grassLodDistance("grasslodnear", 45);
     const GRASS_LOD_MID = Math.max(GRASS_LOD_NEAR + voxel * 12, grassLodDistance("grasslodmid", 100));
-    const GRASS_LOD_FAR = Math.max(GRASS_LOD_MID + voxel * 12, grassLodDistance("grasslodfar", 180));
+    const GRASS_LOD_FAR = Math.max(GRASS_LOD_MID + voxel * 12, grassLodDistance("grasslodfar", 200));
+    // KJ Aug 12: "far distance can still render grass, the fatter version —
+    // only at VERY long distance is there no grass." XFAR is an ultra-sparse
+    // ring of maximally-widened blades; past it the field finally cuts out.
+    const GRASS_LOD_XFAR = Math.max(GRASS_LOD_FAR + voxel * 12, grassLodDistance("grasslodxfar", 340));
+    const _grassWideRaw = Number(_grassLodQ.get("grasswide"));
+    const GRASS_WIDEN_GAIN = Number.isFinite(_grassWideRaw) && _grassWideRaw > 0 ? _grassWideRaw : 2.6;
     let grassLodLastMs = -Infinity;
     let grassLodLastX = Infinity;
     let grassLodLastZ = Infinity;
@@ -6169,7 +6203,7 @@ export default function TinyWorld() {
       grassLodLastZ = camZ;
       for (const ch of grassChunks) {
         const d = Math.hypot(ch.center.x - camX, ch.center.z - camZ);
-        const frac = d <= GRASS_LOD_NEAR ? 1 : d <= GRASS_LOD_MID ? 0.42 : d <= GRASS_LOD_FAR ? 0.09 : 0;
+        const frac = d <= GRASS_LOD_NEAR ? 1 : d <= GRASS_LOD_MID ? 0.42 : d <= GRASS_LOD_FAR ? 0.14 : d <= GRASS_LOD_XFAR ? 0.05 : 0;
         const count = frac === 0 ? 0 : Math.max(1, (ch.bladeCount * frac) | 0);
         if (count === ch.lodCount) continue;
         ch.lodCount = count;
@@ -15692,7 +15726,7 @@ export default function TinyWorld() {
           density: grassDensityMult,
           blades,
           renderedBlades,
-          lod: { near: GRASS_LOD_NEAR / voxel, mid: GRASS_LOD_MID / voxel, far: GRASS_LOD_FAR / voxel },
+          lod: { near: GRASS_LOD_NEAR / voxel, mid: GRASS_LOD_MID / voxel, far: GRASS_LOD_FAR / voxel, xfar: GRASS_LOD_XFAR / voxel, widen: GRASS_WIDEN_GAIN },
         };
       },
       // Floating-block census (report only — deletes nothing).
