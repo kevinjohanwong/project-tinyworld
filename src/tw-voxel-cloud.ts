@@ -110,7 +110,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     // more meshes. 0 disables.
     seaCount: opts.seaCount ?? 360,
     seaLevel: opts.seaLevel ?? -0.42, // sea band center (× span; negative = below the island)
-    seaInner: opts.seaInner ?? 0.3, // sea tucks in under the island edge (× span)
+    // KJ Aug 12: no clouds close to the landmass — the voxel resolution reads
+    // too low up close. The sea now STARTS well beyond the island footprint
+    // (was 0.3 = tucked under the edge); the scatter loop additionally pushes
+    // each piece out by its own half-footprint so no lobe pokes inside.
+    seaInner: opts.seaInner ?? 1.35, // sea clearance radius from center (× span)
     seaOuter: opts.seaOuter ?? 7.0, // sea reach toward the horizon (× span)
     seaFlat: 0.62, // y-scale of sea pieces (rounded rolling swells — billowing, not squashed)
     fuzz: 0.35, // fuzzy shading power (0 = flat faces)
@@ -557,9 +561,12 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     }
     for (let i = 0; i < state.seaCount; i++) {
       const angle = rnd() * Math.PI * 2;
-      const radius = seaInnerR + Math.sqrt(rnd()) * Math.max(0.001, seaOuterR - seaInnerR);
+      let radius = seaInnerR + Math.sqrt(rnd()) * Math.max(0.001, seaOuterR - seaInnerR);
       const rFrac = (radius - seaInnerR) / Math.max(0.001, seaOuterR - seaInnerR);
       const footprint = span * 0.34 * (1.75 + rnd() * 0.95) * (1 + rFrac * 1.3) * state.sizeScale;
+      // clearance is edge-to-edge: the piece's own half-footprint may not
+      // cross the seaInner circle, so no lobe ever hangs near the island.
+      radius = Math.max(radius, seaInnerR + footprint * 0.55);
       const pieceIdx = Math.floor(rnd() * pieces.length);
       const syFlat = footprint * state.seaFlat * (0.8 + rnd() * 0.5);
       const rotY = rnd() * Math.PI * 2;

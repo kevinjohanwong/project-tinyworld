@@ -3265,6 +3265,7 @@ export default function TinyWorld() {
     const _cloudSeaCountParam = __diagParams.has("seacount") ? Number(__diagParams.get("seacount")) : NaN;
     const _cloudSeaLevelParam = __diagParams.has("sealevel") ? Number(__diagParams.get("sealevel")) : NaN;
     const _cloudSeaOuterParam = __diagParams.has("seaouter") ? Number(__diagParams.get("seaouter")) : NaN;
+    const _cloudSeaInnerParam = __diagParams.has("seainner") ? Number(__diagParams.get("seainner")) : NaN;
     // Cloud mode: ?clouds=1 → VOXEL pack (default; cheap geometry lit by the
     // real sun, no raymarch, mobile-safe). ?clouds=vol → the volumetric
     // raymarch ring (heavier, desktop-oriented, kept for comparison).
@@ -3294,6 +3295,7 @@ export default function TinyWorld() {
           seaCount: Number.isFinite(_cloudSeaCountParam) && _cloudSeaCountParam >= 0 ? _cloudSeaCountParam : undefined,
           seaLevel: Number.isFinite(_cloudSeaLevelParam) ? _cloudSeaLevelParam : undefined,
           seaOuter: Number.isFinite(_cloudSeaOuterParam) && _cloudSeaOuterParam > 0 ? _cloudSeaOuterParam : undefined,
+          seaInner: Number.isFinite(_cloudSeaInnerParam) && _cloudSeaInnerParam > 0 ? _cloudSeaInnerParam : undefined,
         })
       : createVolumetricCloudRing({
           THREE,
