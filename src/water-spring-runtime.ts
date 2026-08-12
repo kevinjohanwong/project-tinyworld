@@ -253,7 +253,7 @@ export function createSpring(ctx: SpringContext) {
   function persist() {
     if (!origin) return;
     meta.spring = {
-      version: 10, seed: theSeed,
+      version: 11, seed: theSeed,
       origin: { x: origin[0], y: origin[1], z: origin[2] },
       budget: state.budget, capacity: CAPACITY,
     } as SpringMeta;
@@ -414,13 +414,18 @@ export function createSpring(ctx: SpringContext) {
     // (Chebyshev, default 6) must top out >= SHELF_DROP cells lower — the lip
     // is a few cells away and water reaches it by flowing, instead of the
     // source sitting ON the lip. Missing neighbours never count as a drop
-    // (can't pour off the world). Scoring: highest plateau first, then
-    // flattest, then central — drop size no longer scores, so extreme cliffs
-    // aren't preferred over broad high ground. ?springsite=basin restores the
-    // basin-first order; knobs ?springdrop, ?springdroprad, ?springflat (0-1).
+    // (can't pour off the world). Scoring v11 (KJ Aug 12: v10's highest-first
+    // rank always climbed to the tallest plateau — "too high up"): blended
+    // score = deviation from a MIDDLING target elevation (?springheight,
+    // fraction of the world top range, default 0.55) + weighted centroid
+    // distance (?springcent, default 1). Lowest score wins; flatness breaks
+    // ties. ?springsite=basin restores the basin-first order; knobs
+    // ?springdrop, ?springdroprad, ?springflat (0-1).
     const SHELF_DROP = num("springdrop", 8);
     const DROP_RAD = Math.max(1, Math.round(num("springdroprad", 6)));
     const FLAT_MIN = Math.min(1, Math.max(0, num("springflat", 0.7)));
+    const HEIGHT_FRAC = Math.min(1, Math.max(0, num("springheight", 0.55)));
+    const CENTRAL_W = Math.max(0, num("springcent", 1));
     const chooseShelf = (): Vec3 | null => {
       const Hall = new Map<string, number>();
       for (const [x, y, z] of tops) Hall.set(KEYXZ(x, z), y);
@@ -444,8 +449,15 @@ export function createSpring(ctx: SpringContext) {
         }
         return drop;
       };
+      const hSpan = Math.max(1, maxTop - minTop);
+      const targetY = minTop + hSpan * HEIGHT_FRAC;
+      let centralNorm = 1;
+      for (const [x, , z] of tops) {
+        const d = Math.abs(x - cx) + Math.abs(z - cz);
+        if (d > centralNorm) centralNorm = d;
+      }
       const pass = (requireThick: boolean, R: number): Vec3 | null => {
-        let best: Vec3 | null = null, bestY = -Infinity, bestFlat = 0, bestCentral = Infinity;
+        let best: Vec3 | null = null, bestScore = Infinity, bestFlat = 0;
         for (const [x, y, z] of tops) {
           if (requireThick && (!isSolid(x, y - 1, z) || !isSolid(x, y - 2, z))) continue;
           let clear = true;
@@ -455,11 +467,12 @@ export function createSpring(ctx: SpringContext) {
           if (flat < FLAT_MIN) continue;
           if (dropNear(x, z, y) < SHELF_DROP) continue;
           const central = Math.abs(x - cx) + Math.abs(z - cz);
-          if (y > bestY || (y === bestY && (flat > bestFlat || (flat === bestFlat && central < bestCentral)))) {
-            best = [x, y, z]; bestY = y; bestFlat = flat; bestCentral = central;
+          const score = Math.abs(y - targetY) / hSpan + CENTRAL_W * (central / centralNorm);
+          if (score < bestScore || (score === bestScore && flat > bestFlat)) {
+            best = [x, y, z]; bestScore = score; bestFlat = flat;
           }
         }
-        if (best) console.log(`[spring] plateau sited at (${best[0]},${best[1]},${best[2]}), flat ${(bestFlat * 100) | 0}%${requireThick ? "" : " (thin sheet)"}`);
+        if (best) console.log(`[spring] plateau sited at (${best[0]},${best[1]},${best[2]}), flat ${(bestFlat * 100) | 0}%, score ${bestScore.toFixed(3)} (targetY ${targetY.toFixed(1)})${requireThick ? "" : " (thin sheet)"}`);
         return best;
       };
       // Tier 1: thick ground plateau (solid y-1 and y-2 — real high ground).
@@ -472,9 +485,9 @@ export function createSpring(ctx: SpringContext) {
       return pass(true, 2) ?? pass(false, 3);
     };
 
-    // Re-site once for the plateau siting contract (version 10).
+    // Re-site once for the middling-plateau scoring contract (version 11).
     const savedVersion = (saved as any)?.version ?? 0;
-    const RESITE = params.get("springresite") === "1" || (saved != null && savedVersion < 10);
+    const RESITE = params.get("springresite") === "1" || (saved != null && savedVersion < 11);
     if (saved?.origin && !RESITE) {
       origin = [saved.origin.x, saved.origin.y, saved.origin.z];
     } else {
