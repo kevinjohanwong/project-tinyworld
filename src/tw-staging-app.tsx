@@ -2867,6 +2867,7 @@ export default function TinyWorld() {
       return _shadowSplitOn ? 600 : 30;
     })();
     const _shPrevCam = new THREE.Vector3(1e9, 1e9, 1e9); // camera pos at last repaint
+    let _shadowHadTransient = false; // debris/falls were alive → one clearing repaint when they end
     // Per-light static dirty counters (split mode). markStatic targets one
     // map — a world-box commit no longer repaints the moon map and vice versa.
     let _shDirtySun = 6;
@@ -21693,7 +21694,20 @@ export default function TinyWorld() {
           // map themselves). The long safety floor (~10s) backstops untracked
           // transient casters (falling blocks, debris FX).
           _shadowSinceUpdate++;
-          if (SHADOW_SAFETY_FRAMES > 0 && _shadowSinceUpdate >= SHADOW_SAFETY_FRAMES) {
+          // The safety floor exists ONLY for untracked transient casters
+          // (falling blocks, debris chips). Repainting the full static maps on
+          // a blind timer put a whole-world shadow redraw on a fixed period —
+          // KJ's "framerate drops every five seconds". Gate it on those
+          // casters actually existing; when the last one dies, one final
+          // repaint clears its baked shadow, then a still world repaints never.
+          const _transient = chips.length > 0 || fallingBlocks.length > 0;
+          if (_transient) {
+            _shadowHadTransient = true;
+            if (SHADOW_SAFETY_FRAMES > 0 && _shadowSinceUpdate >= SHADOW_SAFETY_FRAMES) {
+              markStatic("all", 1);
+            }
+          } else if (_shadowHadTransient) {
+            _shadowHadTransient = false;
             markStatic("all", 1);
           }
           let _shAny = false;
