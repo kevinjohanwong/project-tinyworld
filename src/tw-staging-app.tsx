@@ -678,16 +678,32 @@ function makeWaterTestWorldSource(): { layers: Record<string, Int32Array>; meta:
 // the crop wall and the intended lake never fills). Terrain continues past
 // every box wall, so walls read CLOSED like a real world cut.
 function makeMidPoolTestWorldSource(): { layers: Record<string, Int32Array>; meta: Record<string, unknown>; blockCount: number; resolution: number } {
+  // NOTE: every debug bed passes through the conquest-shapes 1.5× COARSEN
+  // before the spring siter / pwater crop see it (v2 of this bed proved it:
+  // loaded voxel 0.03375 = 0.0225 × 1.5, and 4-cell terrace cliffs coarsened
+  // to Δ2 = exactly the plateau-BFS join tolerance, fusing the plain into one
+  // huge component that out-area'd the mesa). All FINE dimensions below are
+  // chosen to survive ÷1.5: terrace steps 6 (→4 post-coarsen, still splits),
+  // and the far basin ~135 fine cells out (→~90 coarse, well past the ±48
+  // coarse crop box).
   const voxel = 0.0225;
-  const N = 176;
+  const N = 240;
   const FLOOR_Y = 2;
-  const BASE = 16;                 // plain height
-  const MESA = { x0: 34, x1: 78, z0: 34, z1: 78, top: 96 };
-  const MOAT = 14;                 // canyon width around the mesa, floor y6
+  const BASE = 18;                 // plain mid-terrace height
+  // Mesa west-of-center: the drop-qualifying ring nearest world center is its
+  // EAST edge, so the central tie-break sites the spring there deterministically
+  // (fall lands in the east moat, at the channel mouth).
+  const MESA = { x0: 40, x1: 100, z0: 90, z1: 150, top: 98 };
+  const MOAT = 15;                 // canyon moat around the mesa, floor y6
   const grass: number[] = [];
   const dirt: number[] = [];
   const ground: number[] = [];
-  const roll = (x: number, z: number) => Math.round(2 * Math.sin(x * 0.11) * Math.cos(z * 0.09));
+  // TERRACED plain — 6-cell step cliffs (4 post-coarsen): the spring siter's
+  // plateau BFS joins |Δtop|≤2 neighbours, so smooth slopes (or steps that
+  // coarsen to ≤2) connect the whole plain into one component that out-areas
+  // the mesa. Post-coarsen patches ~10×12 ≈ 120 columns vs the mesa's ~1600.
+  const terr = (x: number, z: number) =>
+    6 * Math.round(1.2 * Math.sin(x * 0.21 + 1.3) * Math.cos(z * 0.17));
   // Rect-distance outside the mesa footprint (0 on/inside the mesa).
   const mesaDist = (x: number, z: number) => {
     const dx = x < MESA.x0 ? MESA.x0 - x : x > MESA.x1 ? x - MESA.x1 : 0;
@@ -698,16 +714,25 @@ function makeMidPoolTestWorldSource(): { layers: Record<string, Int32Array>; met
   const heightAt = (x: number, z: number): number => {
     const md = mesaDist(x, z);
     let h: number;
-    if (md === 0) h = MESA.top;                       // dead-flat mesa top
+    // Mesa top tilts 98 → 95 west→east (≤1-step drift per 5×5 window keeps
+    // the BFS component whole and flatness intact) so emitted water runs east
+    // and spills over the spring edge instead of sheeting everywhere.
+    if (md === 0) h = MESA.top - Math.round((x - MESA.x0) * 0.05);
     else if (md <= MOAT) h = 6;                       // canyon moat floor
-    else h = BASE + roll(x, z);                       // rolling plain
-    // NEAR bowl — in the canyon's east arm, ~25 cells from the mesa edge.
-    if (dist(x, z, 96, 56) <= 7) h = Math.min(h, 3);
-    // Channel east from the near bowl, sloping 6 → 4 (cuts through the plain).
-    if (z >= 52 && z <= 60 && x >= 96 && x <= 150) h = Math.min(h, Math.round(6 - (x - 96) * 0.04));
-    // FAR basin + its low rim shelf (~80 cells from the mesa edge).
-    if (dist(x, z, 158, 56) <= 14) h = Math.min(h, 9);
-    if (dist(x, z, 158, 56) <= 10) h = Math.min(h, 3);
+    else h = BASE + terr(x, z);                       // terraced plain (12/18/24)
+    // Channel: moat mouth → through the NEAR bowl → east toward the far
+    // basin, floor 6 sloping to ~3. Starts INSIDE the moat ring (x≥114 is
+    // still moat) so the moat drains through it — no dam.
+    if (z >= 114 && z <= 126 && x >= 112 && x <= 228) h = Math.min(h, Math.round(6 - Math.max(0, x - 132) * 0.033));
+    // NEAR bowl on the channel path, ~32 fine (~21 coarse) cells east of the
+    // mesa edge — inside the ±48 coarse crop box: the control pool that MUST
+    // fill (floor 3, fills to the channel lip at 6, then overflows east).
+    if (dist(x, z, 132, 120) <= 9) h = Math.min(h, 3);
+    // FAR basin + low rim shelf ~118 fine (~79 coarse) cells from the mesa
+    // edge — OUTSIDE the box: the large-world failure case (water hits the
+    // crop wall first, the intended lake never fills).
+    if (dist(x, z, 218, 120) <= 21) h = Math.min(h, 9);
+    if (dist(x, z, 218, 120) <= 15) h = Math.min(h, 3);
     return Math.max(FLOOR_Y + 1, h);
   };
   for (let x = 0; x < N; x++) {
