@@ -3,11 +3,14 @@
 // fixed-offset regions sized for the finest drop tier, so the pool never
 // reallocates when the tier changes. Buffers are recycled (main posts them
 // back after adopting the next one) — steady state is zero allocation.
-import { maxParticlesAtScale, type ScenarioName } from "./particles";
+import { HARD_MAX_N, type ScenarioName } from "./particles";
 import { MAX_FOAM } from "./foam";
 
 export const FINEST_SCALE = 0.5;
-export const SNAP_MAX_P = maxParticlesAtScale(FINEST_SCALE);
+// Snapshot regions are sized to the solver's absolute particle ceiling, so
+// the runtime cap (?pwmax=) can move freely without renegotiating the wire
+// format between the worker and the render thread.
+export const SNAP_MAX_P = HARD_MAX_N;
 
 // Header slots (Float32)
 export const H_COUNT = 0;
@@ -31,6 +34,8 @@ export const H_TICKS_SEC = 17; // EMA sim ticks per second
 export const H_MASS_ERR = 18;
 export const H_SCALE = 19;
 export const H_D = 20;
+export const H_WARMUP = 21; // sim-seconds of load warm-up still pending
+export const H_MAXN = 22; // active particle cap for the current sim
 export const HDR = 32;
 
 export const OFF_POS = HDR;
@@ -64,7 +69,11 @@ export interface TerrainWire {
   open?: "px" | "all";
   wallOpen?: { px: Uint8Array; mx: Uint8Array; pz: Uint8Array; mz: Uint8Array };
 }
-export interface ResetMsg { t: "reset"; scenario: ScenarioName; scale: number; terrain?: TerrainWire }
+// warmup: sim-seconds to fast-forward at full CPU speed right after the
+// reset (the pool fills during load instead of over real minutes; same DT
+// ticks and rules — only the wall-clock throttle is bypassed). baseMax:
+// runtime particle cap in base-sized drops (clamped to HARD_MAX_N).
+export interface ResetMsg { t: "reset"; scenario: ScenarioName; scale: number; terrain?: TerrainWire; warmup?: number; baseMax?: number }
 export interface RecycleMsg { t: "recycle"; buf: ArrayBuffer }
 export type ToWorker = SimOptsMsg | StepMsg | ResetMsg | RecycleMsg;
 

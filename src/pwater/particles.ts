@@ -60,11 +60,16 @@ export interface Terrain {
 const BASE_D = 0.6;
 const BASE_H = 1.2;
 const BASE_R = 0.28;
-// 10000 (sandbox shipped 6000): TinyWorld basins are bigger than the sandbox
-// scenarios — the slope bed needs ~16k particles at the 70% tier just to
-// reach its lip, and a cap hit STOPS the source (reads as "water stopped
-// spawning"). Headroom lets the overtop river find equilibrium first.
-const BASE_MAX_N = 10000;
+// 20000 (was 10000; sandbox shipped 6000): TinyWorld basins are bigger than
+// the sandbox scenarios, and a cap hit STOPS the source (reads as "the pool
+// stopped rising" — an artificial pooling limit, not an emergent one). The
+// runtime base cap is adjustable per sim via setParticleScale's baseMax
+// (?pwmax= upstream); HARD_MAX_N is the absolute ceiling every buffer and the
+// snapshot protocol are sized to, so the cap can move without reallocating
+// the wire format.
+const BASE_MAX_N = 20000;
+export const HARD_MAX_N = 120000;
+let BASE_MAX = BASE_MAX_N;
 let D = BASE_D; // rest particle spacing (cells)
 let H = BASE_H; // kernel radius
 let R = BASE_R; // contact radius vs terrain
@@ -144,7 +149,7 @@ export let PARTICLE_SCALE = 1;
 // Particle cap a given scale would use — lets the page pre-size GPU buffers
 // for the finest mode it offers before any toggle happens.
 export function maxParticlesAtScale(scale: number): number {
-  return Math.round(BASE_MAX_N / (scale * scale * scale));
+  return Math.min(Math.round(BASE_MAX / (scale * scale * scale)), HARD_MAX_N);
 }
 
 // Uniform rescale of the particle geometry (drop size). All physics is
@@ -153,12 +158,15 @@ export function maxParticlesAtScale(scale: number): number {
 // 1/scale^3 so the same water VOLUME fits at any scale. Call only between
 // sims (the page's reset path); a live sim built at another scale would read
 // mismatched kernels.
-export function setParticleScale(scale: number): void {
+export function setParticleScale(scale: number, baseMax?: number): void {
   PARTICLE_SCALE = scale;
+  if (baseMax !== undefined && Number.isFinite(baseMax)) {
+    BASE_MAX = Math.max(1000, Math.min(Math.round(baseMax), HARD_MAX_N));
+  }
   D = BASE_D * scale;
   H = BASE_H * scale;
   R = BASE_R * scale;
-  MAX_N = Math.round(BASE_MAX_N / (scale * scale * scale));
+  MAX_N = Math.min(Math.round(BASE_MAX / (scale * scale * scale)), HARD_MAX_N);
   DP_MAX = 0.1 * H;
   STILL_R2 = Math.pow(0.15 * D, 2);
   WAKE_DP2 = Math.pow(0.03 * D, 2);

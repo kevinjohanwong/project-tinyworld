@@ -6,8 +6,8 @@ import { createSim, createSimFromTerrain, setParticleScale, SIM_CONSTANTS, type 
 import { FoamSystem } from "./foam";
 import {
   H_ASLEEP, H_BASINY, H_CALM, H_CAPPED, H_COUNT, H_D, H_DRAINED, H_EMITTED, H_EVAP, H_FOAM,
-  H_MASS_ERR, H_MAXSP, H_MEANSP, H_OUTFLOW, H_REMAINDER, H_SCALE, H_SOLVED, H_SOLVER_MS,
-  H_SPREAD, H_TICK, H_TICKS_SEC, OFF_FOAM_FADE, OFF_FOAM_POS, OFF_POS, OFF_SPEED, OFF_VEL,
+  H_MASS_ERR, H_MAXN, H_MAXSP, H_MEANSP, H_OUTFLOW, H_REMAINDER, H_SCALE, H_SOLVED, H_SOLVER_MS,
+  H_SPREAD, H_TICK, H_TICKS_SEC, H_WARMUP, OFF_FOAM_FADE, OFF_FOAM_POS, OFF_POS, OFF_SPEED, OFF_VEL,
   SNAP_BYTES, type ToWorker,
 } from "./sim-protocol";
 
@@ -40,6 +40,12 @@ let opts: SimOptions = { emitRate: 120, viscosity: 0.05, sleep: true, evaporatio
 
 let pending = 0;
 let lastNow = 0;
+// Load warm-up: sim-seconds still to fast-forward at full CPU speed. Burned
+// in bounded chunks (WARM_CHUNK_MS per pass, then yield) so opts/reset
+// messages keep flowing and snapshots stream the pool visibly filling.
+let warmupLeft = 0;
+let warmupTotal = 0;
+const WARM_CHUNK_MS = 24;
 let solverEma = 0;
 let ticksEma = 0;
 let lastSnapAt = 0;
@@ -97,6 +103,8 @@ function snapshot(force = false) {
   f[H_MASS_ERR] = r.error;
   f[H_SCALE] = scale;
   f[H_D] = SIM_CONSTANTS.D;
+  f[H_WARMUP] = warmupLeft;
+  f[H_MAXN] = SIM_CONSTANTS.MAX_N;
   const n3 = sim.count * 3;
   f.set(sim.pos.subarray(0, n3), OFF_POS);
   f.set(sim.vel.subarray(0, n3), OFF_VEL);
@@ -115,7 +123,24 @@ function pump() {
   let ticks = 0;
   if (sim) {
     const t0 = performance.now();
-    if (stepOnce) {
+    if (warmupLeft > 0 && running && !stepOnce) {
+      // Fast-forward: same fixed-step solver, at the max catch-up stride the
+      // real-time path already uses (CFL clamp keeps it stable) — just not
+      // throttled to wall-clock. Physics identical to having left the tab
+      // open; only load time changes.
+      const stepDt = DT * 4;
+      while (warmupLeft > 0 && performance.now() - t0 < WARM_CHUNK_MS) {
+        sim.step(stepDt, opts);
+        warmupLeft -= stepDt;
+        simmed += stepDt;
+        ticks++;
+      }
+      if (warmupLeft <= 1e-9) {
+        warmupLeft = 0;
+        console.log(`[pwater] warm-up complete: ${warmupTotal}s of sim fast-forwarded (count ${sim.count})`);
+      }
+      pending = 0;
+    } else if (stepOnce) {
       sim.step(DT, opts);
       stepOnce = false;
       pending = 0;
@@ -156,7 +181,9 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
     stepOnce = true;
   } else if (m.t === "reset") {
     scale = m.scale;
-    setParticleScale(m.scale);
+    setParticleScale(m.scale, m.baseMax);
+    warmupTotal = Math.max(0, m.warmup ?? 0);
+    warmupLeft = warmupTotal;
     sim = m.terrain
       ? createSimFromTerrain({
           nx: m.terrain.nx, ny: m.terrain.ny, nz: m.terrain.nz,

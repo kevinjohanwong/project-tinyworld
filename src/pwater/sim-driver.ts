@@ -8,8 +8,8 @@ import { createSim, createSimFromTerrain, setParticleScale, PARTICLE_SCALE, SIM_
 import { FoamSystem, MAX_FOAM } from "./foam";
 import {
   H_ASLEEP, H_BASINY, H_CALM, H_CAPPED, H_COUNT, H_D, H_DRAINED, H_EMITTED, H_EVAP, H_FOAM,
-  H_MASS_ERR, H_MAXSP, H_MEANSP, H_OUTFLOW, H_REMAINDER, H_SCALE, H_SOLVED, H_SOLVER_MS,
-  H_SPREAD, H_TICK, H_TICKS_SEC, OFF_FOAM_FADE, OFF_FOAM_POS, OFF_POS, OFF_SPEED, OFF_VEL,
+  H_MASS_ERR, H_MAXN, H_MAXSP, H_MEANSP, H_OUTFLOW, H_REMAINDER, H_SCALE, H_SOLVED, H_SOLVER_MS,
+  H_SPREAD, H_TICK, H_TICKS_SEC, H_WARMUP, OFF_FOAM_FADE, OFF_FOAM_POS, OFF_POS, OFF_SPEED, OFF_VEL,
   SNAP_MAX_P, type FromWorker, type ToWorker,
 } from "./sim-protocol";
 
@@ -64,6 +64,15 @@ export interface FrameState {
   extra: number; // seconds to extrapolate along vel for this render frame
   solverMs: number;
   ticksPerSec: number;
+  warmupLeft: number; // sim-seconds of load fast-forward still pending
+  maxN: number; // the sim's active particle cap
+}
+
+// Per-sim extras applied at construction AND on every reset (a drop-tier
+// change rebuilds the sim, so it re-warms and re-caps identically).
+export interface DriverExtras {
+  warmup?: number; // sim-seconds to fast-forward at load (unthrottled)
+  baseMax?: number; // particle cap in base-sized drops (clamped to HARD_MAX_N)
 }
 
 export interface SimDriver {
@@ -84,10 +93,14 @@ class InlineDriver implements SimDriver {
   private reportAt = -1;
   private solverEma = 0;
   private ticksEma = 0;
+  private warmupLeft = 0;
+  private extras: DriverExtras;
 
-  constructor(source: SimSource, scale: number) {
-    setParticleScale(scale);
+  constructor(source: SimSource, scale: number, extras: DriverExtras = {}) {
+    this.extras = extras;
+    setParticleScale(scale, extras.baseMax);
     this.simInst = makeSim(source);
+    this.warmupLeft = Math.max(0, extras.warmup ?? 0);
   }
 
   onTerrain(cb: (t: Terrain, D: number, scale: number) => void) {
@@ -101,12 +114,13 @@ class InlineDriver implements SimDriver {
 
   frame(dtReal: number, c: DriverCtl): FrameState {
     if (c.resetTo) {
-      if (PARTICLE_SCALE !== c.scale) setParticleScale(c.scale);
+      setParticleScale(c.scale, this.extras.baseMax);
       this.simInst = makeSim(c.resetTo);
       this.foam = new FoamSystem();
       c.resetTo = null;
       this.pending = 0;
       this.reportAt = -1;
+      this.warmupLeft = Math.max(0, this.extras.warmup ?? 0);
       this.terrainCb?.(this.simInst.terrain, SIM_CONSTANTS.D, PARTICLE_SCALE);
     }
     const sim = this.simInst;
@@ -114,7 +128,23 @@ class InlineDriver implements SimDriver {
     let simmed = 0;
     let ticks = 0;
     const t0 = performance.now();
-    if (c.stepOnce) {
+    if (this.warmupLeft > 0 && c.running && !c.stepOnce) {
+      // Inline fallback shares the render thread, so warm-up burns a small
+      // per-frame budget instead of the worker's big chunks — the pool still
+      // fast-forwards, just spread over the first seconds of frames.
+      const stepDt = DT * 4;
+      while (this.warmupLeft > 0 && performance.now() - t0 < 10) {
+        sim.step(stepDt, opts);
+        this.warmupLeft -= stepDt;
+        simmed += stepDt;
+        ticks++;
+      }
+      if (this.warmupLeft <= 1e-9) {
+        this.warmupLeft = 0;
+        console.log(`[pwater] inline warm-up complete (count ${sim.count})`);
+      }
+      this.pending = 0;
+    } else if (c.stepOnce) {
       sim.step(DT, opts);
       c.stepOnce = false;
       this.pending = 0;
@@ -161,6 +191,8 @@ class InlineDriver implements SimDriver {
       extra: Math.min(this.pending, DT),
       solverMs: this.solverEma,
       ticksPerSec: this.ticksEma,
+      warmupLeft: this.warmupLeft,
+      maxN: SIM_CONSTANTS.MAX_N,
     };
   }
 
@@ -182,7 +214,10 @@ class WorkerDriver implements SimDriver {
   };
   private reportTick = -1;
 
-  constructor(source: SimSource, scale: number) {
+  private extras: DriverExtras;
+
+  constructor(source: SimSource, scale: number, extras: DriverExtras = {}) {
+    this.extras = extras;
     this.worker = new Worker(new URL("./sim-worker.ts", import.meta.url), { type: "module" });
     this.worker.onmessage = (e: MessageEvent<FromWorker>) => {
       const m = e.data;
@@ -208,14 +243,16 @@ class WorkerDriver implements SimDriver {
   // Custom terrain travels as a TRANSFERRED copy of the solid buffer (the
   // caller keeps its own); scenario resets stay a tiny message.
   private postReset(source: SimSource, scale: number) {
+    const warmup = this.extras.warmup;
+    const baseMax = this.extras.baseMax;
     if (typeof source === "string") {
-      this.post({ t: "reset", scenario: source, scale });
+      this.post({ t: "reset", scenario: source, scale, warmup, baseMax });
     } else {
       const t = source.custom;
       const solid = t.solid.slice();
       this.post(
         {
-          t: "reset", scenario: "basin-spill", scale,
+          t: "reset", scenario: "basin-spill", scale, warmup, baseMax,
           terrain: { nx: t.nx, ny: t.ny, nz: t.nz, solid, source: t.source, basin: t.basin, rimY: t.rimY, open: t.open, wallOpen: t.wallOpen },
         },
         [solid.buffer],
@@ -278,6 +315,8 @@ class WorkerDriver implements SimDriver {
       extra,
       solverMs: f[H_SOLVER_MS],
       ticksPerSec: f[H_TICKS_SEC],
+      warmupLeft: f[H_WARMUP],
+      maxN: f[H_MAXN] | 0,
     };
   }
 
@@ -286,8 +325,8 @@ class WorkerDriver implements SimDriver {
   }
 }
 
-export function createDriver(useWorker: boolean, source: SimSource, scale: number): SimDriver {
-  return useWorker ? new WorkerDriver(source, scale) : new InlineDriver(source, scale);
+export function createDriver(useWorker: boolean, source: SimSource, scale: number, extras: DriverExtras = {}): SimDriver {
+  return useWorker ? new WorkerDriver(source, scale, extras) : new InlineDriver(source, scale, extras);
 }
 
 export { SNAP_MAX_P };

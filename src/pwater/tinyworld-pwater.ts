@@ -224,7 +224,17 @@ export function createParticleWater(ctx: PWaterCtx) {
   };
   const source: SimSource = { custom: terrain };
   const useWorker = params.get("pwworker") !== "0";
-  let driver: SimDriver = createDriver(useWorker, source, ctl.scale);
+  // Load warm-up + pooling cap. ?pwwarm= sim-seconds fast-forwarded at full
+  // CPU speed right after terrain injection (default 90 — the pool arrives
+  // filled instead of trickling for real minutes; 0 disables). ?pwmax= particle
+  // cap in base-sized drops (default 20000, 2x the old hard cap that silently
+  // stopped the source — the "pool stops rising" limit; hard ceiling 120k
+  // particles).
+  const driverExtras = {
+    warmup: Math.max(0, num("pwwarm", 90)),
+    baseMax: Math.max(1000, num("pwmax", 20000)),
+  };
+  let driver: SimDriver = createDriver(useWorker, source, ctl.scale, driverExtras);
   const createdAt = performance.now();
   let gotSnap = false;
   let snapWaitFrames = 0;
@@ -375,7 +385,7 @@ export function createParticleWater(ctx: PWaterCtx) {
     if (!gotSnap && driver.kind === "worker" && ++snapWaitFrames > 300 && now - createdAt > 8000) {
       console.warn(`[pwater] worker produced no snapshot after ${snapWaitFrames} frames / ${((now - createdAt) / 1000).toFixed(1)}s — falling back to inline solver`);
       driver.dispose();
-      driver = createDriver(false, source, ctl.scale);
+      driver = createDriver(false, source, ctl.scale, driverExtras);
       driver.onTerrain((_t, D) => {
         cellD = D;
         fluid.setParticleD(D * voxel);
@@ -477,7 +487,10 @@ export function createParticleWater(ctx: PWaterCtx) {
         emitRate: ctl.emitRate, viscosity: ctl.viscosity, timeScale: ctl.timeScale,
         sleep: ctl.sleep, evaporation: ctl.evaporation, scale: ctl.scale,
         relax: relaxAmt, relaxRad,
+        warmup: driverExtras.warmup, baseMax: driverExtras.baseMax,
       },
+      warmupLeft: st?.warmupLeft ?? 0,
+      maxN: st?.maxN ?? 0,
       renderMode,
       hifi: hifi ? hifi.state() : null,
       count: st?.count ?? 0,
