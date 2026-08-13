@@ -20493,9 +20493,16 @@ export default function TinyWorld() {
     const _pbEma: Record<string, number> = {};
     let _pbT = 0;
     let _pbCur = "";
+    // Per-frame bucket totals (reset at the top of each frame) so a spike
+    // frame can be attributed to a system instead of averaged away by the EMA.
+    let _pbFrame: Record<string, number> = {};
     const _pbM = (name: string) => {
       const t = performance.now();
-      if (_pbCur) _pbEma[_pbCur] = _pbEma[_pbCur] === undefined ? (t - _pbT) : _pbEma[_pbCur] * 0.95 + (t - _pbT) * 0.05;
+      if (_pbCur) {
+        const d = t - _pbT;
+        _pbEma[_pbCur] = _pbEma[_pbCur] === undefined ? d : _pbEma[_pbCur] * 0.95 + d * 0.05;
+        _pbFrame[_pbCur] = (_pbFrame[_pbCur] || 0) + d;
+      }
       _pbCur = name;
       _pbT = t;
     };
@@ -20516,7 +20523,29 @@ export default function TinyWorld() {
         {
           const _pnow = performance.now();
           const _pp: any = (window as any).__twPerf || ((window as any).__twPerf = { emaMs: 0 });
-          if (_pp._last) _pp.emaMs = _pp.emaMs ? _pp.emaMs * 0.95 + (_pnow - _pp._last) * 0.05 : (_pnow - _pp._last);
+          if (_pp._last) {
+            const _pd = _pnow - _pp._last;
+            _pp.emaMs = _pp.emaMs ? _pp.emaMs * 0.95 + _pd * 0.05 : _pd;
+            // Spike recorder: a frame well above the rolling average gets its
+            // bucket breakdown captured, with the gap since the previous spike
+            // so a periodic hitch (e.g. "every 5 seconds") shows its period.
+            // Bucket sums far below `ms` = the stall was OUTSIDE the marked
+            // loop (GC, compositor, worker message flood), which is itself
+            // the answer.
+            if (frameCount > 120 && _pd > Math.max(40, _pp.emaMs * 2.5)) {
+              const sp: any[] = _pp.spikes || (_pp.spikes = []);
+              sp.push({
+                at: Math.round(_pnow),
+                ms: +_pd.toFixed(1),
+                gap: sp.length ? Math.round(_pnow - sp[sp.length - 1].at) : 0,
+                buckets: Object.fromEntries(
+                  Object.entries(_pbFrame).filter(([, v]) => (v as number) >= 0.5).map(([k, v]) => [k, +(v as number).toFixed(1)])
+                ),
+              });
+              if (sp.length > 24) sp.shift();
+            }
+          }
+          _pbFrame = {};
           _pp._last = _pnow;
           renderer.info.autoReset = false;
           _pp.calls = renderer.info.render.calls;
@@ -20531,6 +20560,7 @@ export default function TinyWorld() {
             textures: renderer.info.memory.textures,
             programs: renderer.info.programs?.length,
             buckets: Object.fromEntries(Object.entries(_pbEma).map(([k, v]) => [k, +v.toFixed(3)])),
+            spikes: (_pp.spikes || []).slice(-12),
           });
         }
         _pbM("greedy");
