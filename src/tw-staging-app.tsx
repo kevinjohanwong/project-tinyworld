@@ -668,6 +668,87 @@ function makeWaterTestWorldSource(): { layers: Record<string, Int32Array>; meta:
   };
 }
 
+// Mid-sized pooling testbed (?debugWorld=1&terrain=mid). Sits between the tiny
+// debug scan and a real large world (~600k solids) to answer "is pooling
+// correct at scale" with a KNOWN geometry: a tall flat mesa (spring sites
+// high), a canyon moat at its base holding a NEAR bowl ~25 cells from the
+// mesa edge (inside the default ±48 pwater crop box — the control: this pool
+// MUST fill), and a sloped channel running to a FAR basin ~80 cells out
+// (outside the box — reproduces the large-world failure where water reaches
+// the crop wall and the intended lake never fills). Terrain continues past
+// every box wall, so walls read CLOSED like a real world cut.
+function makeMidPoolTestWorldSource(): { layers: Record<string, Int32Array>; meta: Record<string, unknown>; blockCount: number; resolution: number } {
+  const voxel = 0.0225;
+  const N = 176;
+  const FLOOR_Y = 2;
+  const BASE = 16;                 // plain height
+  const MESA = { x0: 34, x1: 78, z0: 34, z1: 78, top: 96 };
+  const MOAT = 14;                 // canyon width around the mesa, floor y6
+  const grass: number[] = [];
+  const dirt: number[] = [];
+  const ground: number[] = [];
+  const roll = (x: number, z: number) => Math.round(2 * Math.sin(x * 0.11) * Math.cos(z * 0.09));
+  // Rect-distance outside the mesa footprint (0 on/inside the mesa).
+  const mesaDist = (x: number, z: number) => {
+    const dx = x < MESA.x0 ? MESA.x0 - x : x > MESA.x1 ? x - MESA.x1 : 0;
+    const dz = z < MESA.z0 ? MESA.z0 - z : z > MESA.z1 ? z - MESA.z1 : 0;
+    return Math.max(dx, dz);
+  };
+  const dist = (x: number, z: number, cx: number, cz: number) => Math.hypot(x - cx, z - cz);
+  const heightAt = (x: number, z: number): number => {
+    const md = mesaDist(x, z);
+    let h: number;
+    if (md === 0) h = MESA.top;                       // dead-flat mesa top
+    else if (md <= MOAT) h = 6;                       // canyon moat floor
+    else h = BASE + roll(x, z);                       // rolling plain
+    // NEAR bowl — in the canyon's east arm, ~25 cells from the mesa edge.
+    if (dist(x, z, 96, 56) <= 7) h = Math.min(h, 3);
+    // Channel east from the near bowl, sloping 6 → 4 (cuts through the plain).
+    if (z >= 52 && z <= 60 && x >= 96 && x <= 150) h = Math.min(h, Math.round(6 - (x - 96) * 0.04));
+    // FAR basin + its low rim shelf (~80 cells from the mesa edge).
+    if (dist(x, z, 158, 56) <= 14) h = Math.min(h, 9);
+    if (dist(x, z, 158, 56) <= 10) h = Math.min(h, 3);
+    return Math.max(FLOOR_Y + 1, h);
+  };
+  for (let x = 0; x < N; x++) {
+    for (let z = 0; z < N; z++) {
+      const h = heightAt(x, z);
+      for (let y = FLOOR_Y; y < h; y++) dirt.push(x, y, z);
+      grass.push(x, h, z);
+      ground.push(x, z, h);
+    }
+  }
+  const layers: Record<string, Int32Array> = {
+    grass: new Int32Array(grass),
+    dirt: new Int32Array(dirt),
+    water: new Int32Array([]),
+    wall: new Int32Array([]),
+    trunks: new Int32Array([]),
+    leaves: new Int32Array([]),
+    ground: new Int32Array(ground),
+  };
+  const blockCount = Object.entries(layers).reduce(
+    (sum, [name, a]) => (name === "ground" ? sum : sum + a.length / 3),
+    0,
+  );
+  return {
+    layers,
+    meta: {
+      voxel,
+      span: N * voxel,
+      centerX: (N / 2) * voxel,
+      centerZ: (N / 2) * voxel,
+      worldName: "MID POOL TEST",
+      sourceName: "mid-pool-test",
+      capturedAt: Date.now(),
+      weatherSeason: "summer",
+      debugWorld: true,
+    },
+    blockCount,
+    resolution: voxel,
+  };
+}
+
 // Water-physics slope testbed (?debugWorld=1&terrain=slope). Phase 0 of the
 // water-physics plan (docs/water-physics-plan.md): a deterministic single-axis
 // flow bed for measuring momentum/rivers/weir behavior. Flow runs along +X:
@@ -1855,6 +1936,7 @@ export default function TinyWorld() {
     const _terrain = _dbgParams.get("terrain");
     const _scanUrl = _dbgParams.get("scan") || "/debug-scan.glb";
     const _mode = _terrain === "hydro" ? "hydro"
+      : _terrain === "mid" ? "mid"
       : _terrain === "slope" ? "slope"
       : _terrain === "spout" ? "spout"
       : _terrain === "canyon" ? "canyon"
@@ -1864,6 +1946,7 @@ export default function TinyWorld() {
       : "scan";
     setLoadNote(
       _mode === "hydro" ? "loading water test world…"
+      : _mode === "mid" ? "loading mid-sized pooling testbed…"
       : _mode === "slope" ? "loading water slope testbed…"
       : _mode === "spout" ? "loading water spout testbed…"
       : _mode === "canyon" ? "loading water canyon testbed…"
@@ -1875,6 +1958,7 @@ export default function TinyWorld() {
     const t = setTimeout(() => {
       (async () => {
         if (_mode === "hydro") return buildWorld(makeWaterTestWorldSource());
+        if (_mode === "mid") return buildWorld(makeMidPoolTestWorldSource());
         if (_mode === "slope") return buildWorld(makeSlopeWorldSource());
         if (_mode === "spout") return buildWorld(makeSpoutWorldSource());
         if (_mode === "canyon") return buildWorld(makeCanyonWorldSource());
