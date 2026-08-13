@@ -227,6 +227,7 @@ export function createParticleWater(ctx: PWaterCtx) {
   let driver: SimDriver = createDriver(useWorker, source, ctl.scale);
   const createdAt = performance.now();
   let gotSnap = false;
+  let snapWaitFrames = 0;
 
   const fluid: FluidRenderer = createFluidRenderer(THREE, renderer, SNAP_MAX_P, 0.6 * ctl.scale * voxel, voxel);
 
@@ -365,8 +366,14 @@ export function createParticleWater(ctx: PWaterCtx) {
     lastNow = now;
 
     // Worker never came up (bundler/CSP edge): fall back to the inline solver.
-    if (!gotSnap && driver.kind === "worker" && now - createdAt > 5000) {
-      console.warn("[pwater] worker produced no snapshot in 5s — falling back to inline solver");
+    // Patience is counted in RENDERED frames, not wall-clock: during the
+    // world-load stampede the main thread (and the worker's CPU slice) are
+    // pegged for many seconds, and a 5s wall-clock timeout here killed healthy
+    // workers on real devices — silently moving the whole sim onto the main
+    // thread forever. 300 interactive frames ≈ 5s at 60fps but 30s at 10fps,
+    // so the deadline scales with how starved the machine actually is.
+    if (!gotSnap && driver.kind === "worker" && ++snapWaitFrames > 300 && now - createdAt > 8000) {
+      console.warn(`[pwater] worker produced no snapshot after ${snapWaitFrames} frames / ${((now - createdAt) / 1000).toFixed(1)}s — falling back to inline solver`);
       driver.dispose();
       driver = createDriver(false, source, ctl.scale);
       driver.onTerrain((_t, D) => {

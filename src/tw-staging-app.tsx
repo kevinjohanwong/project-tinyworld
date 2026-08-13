@@ -156,6 +156,7 @@ const SETTLE_COMP_CAP = 8000;
 const SETTLE_MAX_SCAN = 160;
 
 function groundSavedLayers(layers: Record<string, Int32Array>): Record<string, Int32Array> {
+  const _lg0 = performance.now();
   const anchor = new Set<string>();
   for (const name of ANCHOR_LAYERS) {
     const a = layers[name];
@@ -246,7 +247,7 @@ function groundSavedLayers(layers: Record<string, Int32Array>): Record<string, I
   }
 
   if (settled === 0) {
-    console.log(`[tinyworld] load grounding: ${comps.length} comps, ${loose.length} floating, none settled (${left} left in place)`);
+    console.log(`[tinyworld] load grounding: ${comps.length} comps, ${loose.length} floating, none settled (${left} left in place) (${Math.round(performance.now() - _lg0)}ms)`);
     return layers;
   }
   const out: Record<string, Int32Array> = { ...layers };
@@ -264,7 +265,7 @@ function groundSavedLayers(layers: Record<string, Int32Array>): Record<string, I
     for (const c of list) { a[i++] = c.x; a[i++] = c.y; a[i++] = c.z; }
     out[name] = a;
   }
-  console.log(`[tinyworld] load grounding: ${comps.length} comps, ${loose.length} floating, ${settled} settled (${settledVox} vox), ${left} left in place`);
+  console.log(`[tinyworld] load grounding: ${comps.length} comps, ${loose.length} floating, ${settled} settled (${settledVox} vox), ${left} left in place (${Math.round(performance.now() - _lg0)}ms)`);
   return out;
 }
 
@@ -285,6 +286,7 @@ function gravitySettleLayers(layers: Record<string, any>): Record<string, any> {
   try {
     if (new URLSearchParams(window.location.search).get("gravsettle") === "0") return layers;
   } catch { /* no window (SSR) — proceed */ }
+  const _gs0 = performance.now();
   const toI32 = (b: any): Int32Array => !b ? new Int32Array(0) : (b instanceof Int32Array ? b : new Int32Array(b));
   const SETTLEABLE = ["dirt", "grass", "dryGrass", "wall", "ceiling", "snow", "wet"];
   const SUPPORT = ["hidden_dirt"];                                   // solid ground, in flood, never moves
@@ -380,7 +382,8 @@ function gravitySettleLayers(layers: Record<string, any>): Record<string, any> {
   const before = solid.size;
   for (const name of SETTLEABLE) layers[name] = rebuild(name);
   console.log("[tinyworld] gravity settle (pre-mesh): " + loose.length + " loose comps of " + before
-    + " solid -> voided " + voided + ", landed " + landedVox + ", finisher swept " + sweptIso + "; main " + main.length);
+    + " solid -> voided " + voided + ", landed " + landedVox + ", finisher swept " + sweptIso + "; main " + main.length
+    + " (" + Math.round(performance.now() - _gs0) + "ms)");
   return layers;
 }
 
@@ -4803,6 +4806,60 @@ export default function TinyWorld() {
     };
 
     // ════════════════════════════════════════════════════════════════════
+    // Compiled-world cache, keyed on the RAW decoded layers (KJ Aug 13: the
+    // old key was fingerprinted from the SETTLED layers, so every pre-pass had
+    // to run before it could even be computed — hit or miss). The span from
+    // here through gravitySettleLayers (divots → hole-fill/trees → settle) is
+    // a deterministic function of the layers plus the knobs below, so v2
+    // stores the settled layer set alongside the greedy chunks: a hit
+    // restores the settled layers directly and skips every pass in the span.
+    // The variant must name every knob that changes what the span or the
+    // meshers produce.
+    // ════════════════════════════════════════════════════════════════════
+    const _compiledCacheVariant = [
+      voxel,
+      cxRound,
+      czRound,
+      season,
+      PAL.wall,
+      PAL.dirt,
+      season === "fall" ? 0x7a6a2f : PAL.grass,
+      PAL.dryGrass,
+      __diagParams.get("aomerge") !== "0" ? 1 : 0,
+      // hybrid shapes: greedy chunks are built from the full-cube subset, so
+      // the cache must discriminate on the fit set (deterministic per world).
+      "sf" + shapeFitMap.size,
+      // pre-pass knobs: divot carve depth (0 = off), gravity settle, and the
+      // tree-upgrade state the hole-fill/tree pass branches on.
+      "dv" + (__diagParams.get("divot") !== "0" && __diagParams.get("scanwater") !== "1"
+        ? Math.max(1, Math.round(Number(__diagParams.get("divotdepth")) || 3)) : 0),
+      "gs" + (__diagParams.get("gravsettle") === "0" ? 0 : 1),
+      "tu" + ((source.meta as any)?.treesUpgraded === true
+        ? ((source.meta as any).treeUpgradeVersion || 1) : 0),
+    ].join(":");
+    const _cacheKeyT0 = performance.now();
+    const _compiledCacheKey = compiledWorldFingerprint(layers, _compiledCacheVariant);
+    const _compiledCache = await loadCompiledWorldCache(_compiledCacheKey);
+    const _precompiled = !!(_compiledCache?.settledLayers && Object.keys(_compiledCache.settledLayers).length);
+    console.log("[tinyworld] compiled cache:", _compiledCache ? (_precompiled ? "hit (pre-passes skipped)" : "hit") : "miss",
+      _compiledCacheKey, Math.round(performance.now() - _cacheKeyT0) + "ms");
+    if (_precompiled) {
+      // Restore the settled result of the skipped span. Assign every stored
+      // layer and clear any live layer the settled set dropped (e.g. water,
+      // zeroed by the divot carve) so the layers object matches the state the
+      // cached greedy chunks were built from exactly.
+      for (const name of Object.keys(layers)) {
+        if (!(name in _compiledCache!.settledLayers!)) layers[name] = new Int32Array(0);
+      }
+      for (const [name, arr] of Object.entries(_compiledCache!.settledLayers!)) layers[name] = arr;
+      const _mf = _compiledCache!.metaFlags;
+      if (_mf?.treesUpgraded && worldDataRef.current) {
+        (worldDataRef.current.meta as any).treesUpgraded = true;
+        (worldDataRef.current.meta as any).treeUpgradeVersion = _mf.treeUpgradeVersion;
+      }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
     // Scanned water → dry divots / channels (KJ Jul 25: "repopulate scans so
     // they don't include water — instead have divots and channels — they could
     // temporarily be filled with water during rain"). Scan water is an
@@ -4820,7 +4877,7 @@ export default function TinyWorld() {
     // (restore raw water) also skips this. Depth via ?divotdepth (default 3).
     // The runtime spring is untouched — its lake fills an EMPTY water buffer at
     // run time, so this build-time pass never sees spring water.
-    {
+    if (!_precompiled) {
       const _dq = new URLSearchParams(window.location.search);
       const _divotsOn = _dq.get("divot") !== "0" && _dq.get("scanwater") !== "1";
       const _divotDepth = Math.max(1, Math.round(Number(_dq.get("divotdepth")) || 3));
@@ -4891,7 +4948,8 @@ export default function TinyWorld() {
     // by the voxelizer and are never rebuilt here. A super tree may be appended
     // only on the first File import when its persisted record does not exist.
     // ════════════════════════════════════════════════════════════════════
-    {
+    if (!_precompiled) {
+      const _hf0 = performance.now();
       const _toI32 = (b: any): Int32Array =>
         !b ? new Int32Array(0) : (b instanceof Int32Array ? b : new Int32Array(b));
       const TREE_UPGRADE_VERSION = 3;
@@ -5029,7 +5087,8 @@ export default function TinyWorld() {
       // leaving it empty lets the column-rebuild (below) derive a full ground
       // map from colMap — appending here would shrink it to just the fills.
       if (hadGround) (layers as any).ground = concat((layers as any).ground, addGround);
-      console.log("[tinyworld] hole-fill: enclosed =", enclosedFilled, "dents =", dentFilled, "floorCols =", surfTop.size);
+      console.log("[tinyworld] hole-fill: enclosed =", enclosedFilled, "dents =", dentFilled, "floorCols =", surfTop.size,
+        "(" + Math.round(performance.now() - _hf0) + "ms)");
 
       // ── Procedural tree replacement (KJ 2026-06-29: "full replacement —
       //    sunset the old vegetation"). The scan bakes trees as raw trunk/leaf
@@ -5461,25 +5520,26 @@ export default function TinyWorld() {
 
     // Physics-settle every floater on the FINAL layers (veg + trees included)
     // before anything is meshed, so nothing floats even mid-load.
-    gravitySettleLayers(layers as any);
+    if (!_precompiled) gravitySettleLayers(layers as any);
 
-    const _compiledCacheVariant = [
-      voxel,
-      cxRound,
-      czRound,
-      season,
-      PAL.wall,
-      PAL.dirt,
-      season === "fall" ? 0x7a6a2f : PAL.grass,
-      PAL.dryGrass,
-      __diagParams.get("aomerge") !== "0" ? 1 : 0,
-      // hybrid shapes: greedy chunks are built from the full-cube subset, so
-      // the cache must discriminate on the fit set (deterministic per world).
-      "sf" + shapeFitMap.size,
-    ].join(":");
-    const _compiledCacheKey = compiledWorldFingerprint(layers, _compiledCacheVariant);
-    const _compiledCache = await loadCompiledWorldCache(_compiledCacheKey);
-    console.log("[tinyworld] compiled cache:", _compiledCache ? "hit" : "miss", _compiledCacheKey);
+    // Snapshot the settled layers NOW, on the miss path only — later passes
+    // (landing scar, floater sweep, live edits) mutate the same arrays, and
+    // the idle-time cache store must persist the exact state the greedy
+    // chunks were built from.
+    const _settledSnapshot: Record<string, Int32Array> | null = _compiledCache ? null : (() => {
+      const snap: Record<string, Int32Array> = {};
+      for (const [name, value] of Object.entries(layers)) {
+        const a = !value ? new Int32Array(0) : (value instanceof Int32Array ? value : new Int32Array(value as ArrayBuffer));
+        snap[name] = a.slice();
+      }
+      return snap;
+    })();
+    const _settledMetaFlags = (worldDataRef.current?.meta as any)?.treesUpgraded === true
+      ? {
+          treesUpgraded: true,
+          treeUpgradeVersion: (worldDataRef.current!.meta as any).treeUpgradeVersion as number,
+        }
+      : undefined;
 
     // ── Greedy-meshed ground (dirt/grass/dryGrass + hidden dirt). Shares one
     // occupancy grid so buried faces between the three layers — and behind the
@@ -7247,6 +7307,7 @@ export default function TinyWorld() {
       return { floaters, bigGrounded };
     };
     const settleFloaters = (opts: { deleteMax?: number; cap?: number; report?: boolean } = {}) => {
+      const _fs0 = performance.now();
       const deleteMax = opts.deleteMax ?? 4;
       const cap = opts.cap ?? SETTLE_COMP_CAP;
       const { floaters, bigGrounded } = surveyFloaters(cap);
@@ -7342,7 +7403,8 @@ export default function TinyWorld() {
         bigGrounded, skippedProtected, deleteMax, bySize, byLayer,
         vegGhostComps, vegGhostBlocks, vegDeleted,
       };
-      if (opts.report !== false) console.log("[tinyworld] floater sweep:", JSON.stringify(census));
+      if (opts.report !== false) console.log("[tinyworld] floater sweep:", JSON.stringify(census),
+        "(" + Math.round(performance.now() - _fs0) + "ms)");
       return census;
     };
 
@@ -21855,6 +21917,8 @@ export default function TinyWorld() {
           _compiledCacheKey,
           greedyWall!.exportChunks(),
           greedyGround!.exportChunks(),
+          _settledSnapshot || undefined,
+          _settledMetaFlags,
         ).then(() => console.log("[tinyworld] compiled cache: stored", _compiledCacheKey));
       };
       if (typeof requestIdleCallback === "function") requestIdleCallback(persistCompiled, { timeout: 2000 });
