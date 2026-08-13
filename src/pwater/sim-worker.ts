@@ -3,10 +3,11 @@
 // thread. Semantics match the old inline loop exactly (same DT, same backlog
 // guard, same foam cadence); only the thread changed.
 import { createSim, createSimFromTerrain, setParticleScale, SIM_CONSTANTS, type Sim, type SimOptions } from "./particles";
+import { GpuSim, requestGpuDevice } from "./gpu-sim";
 import { FoamSystem } from "./foam";
 import {
   H_ASLEEP, H_BASINY, H_CALM, H_CAPPED, H_COUNT, H_D, H_DRAINED, H_EMITTED, H_EVAP, H_FOAM,
-  H_MASS_ERR, H_MAXN, H_MAXSP, H_MEANSP, H_OUTFLOW, H_REMAINDER, H_SCALE, H_SOLVED, H_SOLVER_MS,
+  H_GPU, H_MASS_ERR, H_MAXN, H_MAXSP, H_MEANSP, H_OUTFLOW, H_REMAINDER, H_SCALE, H_SOLVED, H_SOLVER_MS,
   H_SPREAD, H_TICK, H_TICKS_SEC, H_WARMUP, OFF_FOAM_FADE, OFF_FOAM_POS, OFF_POS, OFF_SPEED, OFF_VEL,
   SNAP_BYTES, type ToWorker,
 } from "./sim-protocol";
@@ -46,6 +47,47 @@ let lastNow = 0;
 let warmupLeft = 0;
 let warmupTotal = 0;
 const WARM_CHUNK_MS = 24;
+
+// WebGPU compute home (?pwgpu): the mirror Sim stays authoritative for
+// emission/evaporation/drain/ledger; GpuSim runs the substep solve as compute
+// dispatches. The device is requested once and reused across resets. Adoption
+// is seamless mid-fill (GpuSim uploads the mirror's pos/vel every tick), so
+// the CPU path carries the sim until the device resolves. Any init failure
+// (no adapter in this worker, grid over the buffer limit, WGSL error) logs
+// and stays on the proven CPU path.
+let gpuSim: GpuSim | null = null;
+let gpuDevice: GPUDevice | null = null;
+let gpuDevicePending = false;
+let gpuWanted = false;
+function tryAdoptGpu() {
+  if (!gpuWanted || !sim || gpuSim) return;
+  if (!gpuDevice) {
+    if (gpuDevicePending) return;
+    gpuDevicePending = true;
+    void requestGpuDevice().then((dev) => {
+      gpuDevicePending = false;
+      if (!dev) {
+        console.warn("[pwater gpu] WebGPU unavailable in the sim worker — staying on the CPU solver");
+        gpuWanted = false;
+        return;
+      }
+      gpuDevice = dev;
+      tryAdoptGpu();
+    });
+    return;
+  }
+  try {
+    gpuSim = new GpuSim(gpuDevice, sim);
+    console.log(`[pwater gpu] compute solver adopted (count ${sim.count}, cap ${SIM_CONSTANTS.MAX_N})`);
+  } catch (e) {
+    console.warn("[pwater gpu] init failed — staying on the CPU solver:", e);
+    gpuWanted = false;
+  }
+}
+async function stepSim(stepDt: number) {
+  if (gpuSim) await gpuSim.step(stepDt, opts);
+  else sim!.step(stepDt, opts);
+}
 let solverEma = 0;
 let ticksEma = 0;
 let lastSnapAt = 0;
@@ -105,6 +147,7 @@ function snapshot(force = false) {
   f[H_D] = SIM_CONSTANTS.D;
   f[H_WARMUP] = warmupLeft;
   f[H_MAXN] = SIM_CONSTANTS.MAX_N;
+  f[H_GPU] = gpuSim ? 1 : 0;
   const n3 = sim.count * 3;
   f.set(sim.pos.subarray(0, n3), OFF_POS);
   f.set(sim.vel.subarray(0, n3), OFF_VEL);
@@ -114,7 +157,7 @@ function snapshot(force = false) {
   (self as unknown as Worker).postMessage({ t: "snap", buf }, [buf]);
 }
 
-function pump() {
+async function pump() {
   const now = performance.now();
   const rawDt = lastNow > 0 ? (now - lastNow) / 1000 : DT;
   const dtReal = Math.min(0.1, rawDt);
@@ -130,7 +173,7 @@ function pump() {
       // open; only load time changes.
       const stepDt = DT * 4;
       while (warmupLeft > 0 && performance.now() - t0 < WARM_CHUNK_MS) {
-        sim.step(stepDt, opts);
+        await stepSim(stepDt);
         warmupLeft -= stepDt;
         simmed += stepDt;
         ticks++;
@@ -141,7 +184,7 @@ function pump() {
       }
       pending = 0;
     } else if (stepOnce) {
-      sim.step(DT, opts);
+      await stepSim(DT);
       stepOnce = false;
       pending = 0;
       simmed = DT;
@@ -151,7 +194,7 @@ function pump() {
       let guard = MAX_TICKS_PER_PASS;
       while (pending >= DT && guard-- > 0) {
         const stepDt = catchupDt(pending);
-        sim.step(stepDt, opts);
+        await stepSim(stepDt);
         pending -= stepDt;
         simmed += stepDt;
         ticks++;
@@ -184,6 +227,11 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
     setParticleScale(m.scale, m.baseMax);
     warmupTotal = Math.max(0, m.warmup ?? 0);
     warmupLeft = warmupTotal;
+    if (gpuSim) {
+      gpuSim.dispose();
+      gpuSim = null;
+    }
+    gpuWanted = m.gpu === true;
     sim = m.terrain
       ? createSimFromTerrain({
           nx: m.terrain.nx, ny: m.terrain.ny, nz: m.terrain.nz,
@@ -198,6 +246,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
     ticksEma = 0;
     sendTerrain();
     snapshot(true);
+    tryAdoptGpu();
   } else if (m.t === "recycle") {
     pool.push(m.buf);
     if (snapDirty) snapshot();

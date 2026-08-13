@@ -8,7 +8,7 @@ import { createSim, createSimFromTerrain, setParticleScale, PARTICLE_SCALE, SIM_
 import { FoamSystem, MAX_FOAM } from "./foam";
 import {
   H_ASLEEP, H_BASINY, H_CALM, H_CAPPED, H_COUNT, H_D, H_DRAINED, H_EMITTED, H_EVAP, H_FOAM,
-  H_MASS_ERR, H_MAXN, H_MAXSP, H_MEANSP, H_OUTFLOW, H_REMAINDER, H_SCALE, H_SOLVED, H_SOLVER_MS,
+  H_GPU, H_MASS_ERR, H_MAXN, H_MAXSP, H_MEANSP, H_OUTFLOW, H_REMAINDER, H_SCALE, H_SOLVED, H_SOLVER_MS,
   H_SPREAD, H_TICK, H_TICKS_SEC, H_WARMUP, OFF_FOAM_FADE, OFF_FOAM_POS, OFF_POS, OFF_SPEED, OFF_VEL,
   SNAP_MAX_P, type FromWorker, type ToWorker,
 } from "./sim-protocol";
@@ -66,6 +66,7 @@ export interface FrameState {
   ticksPerSec: number;
   warmupLeft: number; // sim-seconds of load fast-forward still pending
   maxN: number; // the sim's active particle cap
+  gpuActive: boolean; // true when the worker's WebGPU compute solver is live
 }
 
 // Per-sim extras applied at construction AND on every reset (a drop-tier
@@ -73,6 +74,7 @@ export interface FrameState {
 export interface DriverExtras {
   warmup?: number; // sim-seconds to fast-forward at load (unthrottled)
   baseMax?: number; // particle cap in base-sized drops (clamped to HARD_MAX_N)
+  gpu?: boolean; // run the substep solve as WebGPU compute (worker path only)
 }
 
 export interface SimDriver {
@@ -193,6 +195,7 @@ class InlineDriver implements SimDriver {
       ticksPerSec: this.ticksEma,
       warmupLeft: this.warmupLeft,
       maxN: SIM_CONSTANTS.MAX_N,
+      gpuActive: false,
     };
   }
 
@@ -245,14 +248,15 @@ class WorkerDriver implements SimDriver {
   private postReset(source: SimSource, scale: number) {
     const warmup = this.extras.warmup;
     const baseMax = this.extras.baseMax;
+    const gpu = this.extras.gpu;
     if (typeof source === "string") {
-      this.post({ t: "reset", scenario: source, scale, warmup, baseMax });
+      this.post({ t: "reset", scenario: source, scale, warmup, baseMax, gpu });
     } else {
       const t = source.custom;
       const solid = t.solid.slice();
       this.post(
         {
-          t: "reset", scenario: "basin-spill", scale, warmup, baseMax,
+          t: "reset", scenario: "basin-spill", scale, warmup, baseMax, gpu,
           terrain: { nx: t.nx, ny: t.ny, nz: t.nz, solid, source: t.source, basin: t.basin, rimY: t.rimY, open: t.open, wallOpen: t.wallOpen },
         },
         [solid.buffer],
@@ -317,6 +321,7 @@ class WorkerDriver implements SimDriver {
       ticksPerSec: f[H_TICKS_SEC],
       warmupLeft: f[H_WARMUP],
       maxN: f[H_MAXN] | 0,
+      gpuActive: f[H_GPU] === 1,
     };
   }
 

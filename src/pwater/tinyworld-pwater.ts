@@ -230,9 +230,14 @@ export function createParticleWater(ctx: PWaterCtx) {
   // cap in base-sized drops (default 20000, 2x the old hard cap that silently
   // stopped the source — the "pool stops rising" limit; hard ceiling 120k
   // particles).
+  // ?pwgpu=1/0: run the substep solve as WebGPU compute in the worker
+  // (default ON — the worker falls back to the proven CPU solver when WebGPU
+  // is unavailable or init fails, so the only risk surface is a healthy
+  // WebGPU device; report.gpuActive says which path is live).
   const driverExtras = {
     warmup: Math.max(0, num("pwwarm", 90)),
     baseMax: Math.max(1000, num("pwmax", 20000)),
+    gpu: params.get("pwgpu") !== "0",
   };
   let driver: SimDriver = createDriver(useWorker, source, ctl.scale, driverExtras);
   const createdAt = performance.now();
@@ -487,10 +492,11 @@ export function createParticleWater(ctx: PWaterCtx) {
         emitRate: ctl.emitRate, viscosity: ctl.viscosity, timeScale: ctl.timeScale,
         sleep: ctl.sleep, evaporation: ctl.evaporation, scale: ctl.scale,
         relax: relaxAmt, relaxRad,
-        warmup: driverExtras.warmup, baseMax: driverExtras.baseMax,
+        warmup: driverExtras.warmup, baseMax: driverExtras.baseMax, gpu: driverExtras.gpu,
       },
       warmupLeft: st?.warmupLeft ?? 0,
       maxN: st?.maxN ?? 0,
+      gpuActive: st?.gpuActive ?? false,
       renderMode,
       hifi: hifi ? hifi.state() : null,
       count: st?.count ?? 0,

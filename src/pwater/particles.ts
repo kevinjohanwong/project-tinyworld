@@ -1086,6 +1086,40 @@ export class Sim {
     this.tick++;
   }
 
+  // ---- GPU-host hooks -------------------------------------------------------
+  // The WebGPU solver (gpu-sim.ts) keeps this CPU sim as its authoritative
+  // bookkeeping mirror: the GPU runs the substep pressure solve; these expose
+  // the exact emit/evaporate/drain rules so the ledger and back-pressure gate
+  // stay identical. hostPre runs before the GPU solve (emission against last
+  // frame's readback grid — same staleness class as the CPU path's
+  // last-substep grid). hostPost runs after pos/vel/nbCount are mirrored back.
+  hostRho0(): number {
+    return this.rho0;
+  }
+  hostRefreshGrid() {
+    this.rebuildGrid();
+  }
+  hostPre(dt: number, opts: SimOptions) {
+    this.emit(dt, Math.max(0, opts.emitRate));
+  }
+  hostPost(dt: number, opts: SimOptions) {
+    for (let i = 0; i < this.count; i++) {
+      const b = i * 3;
+      this.speed[i] = Math.sqrt(
+        this.vel[b] * this.vel[b] + this.vel[b + 1] * this.vel[b + 1] + this.vel[b + 2] * this.vel[b + 2],
+      );
+    }
+    if (opts.evaporation !== false) this.evaporate(dt);
+    this.drain();
+    this.tick++;
+  }
+  // Resolved per-column wall-openness masks (wallOpen input or legacy `open`
+  // defaults) — the GPU collide kernel needs the same boundary conditions the
+  // CPU collide applies, or plunge pools leak through artificial crop cuts.
+  hostWallMasks(): { px: Uint8Array; mx: Uint8Array; pz: Uint8Array; mz: Uint8Array } {
+    return { px: this.wOpenPX, mx: this.wOpenMX, pz: this.wOpenPZ, mz: this.wOpenMZ };
+  }
+
   report(): Report {
     let meanSpeed = 0;
     let maxSpeed = 0;
@@ -1165,4 +1199,4 @@ export function createSimFromTerrain(terrain: Terrain, seed?: number): Sim {
   return new Sim("basin-spill", seed, terrain);
 }
 
-export const SIM_CONSTANTS = { D, H, R, MAX_N, SUBSTEPS, ITERS };
+export const SIM_CONSTANTS = { D, H, R, MAX_N, SUBSTEPS, ITERS, GRAV, KILL_Y, SCORR_K, CFM_EPS, BOUND_FRICTION };

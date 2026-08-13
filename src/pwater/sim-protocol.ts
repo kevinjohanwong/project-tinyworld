@@ -36,6 +36,7 @@ export const H_SCALE = 19;
 export const H_D = 20;
 export const H_WARMUP = 21; // sim-seconds of load warm-up still pending
 export const H_MAXN = 22; // active particle cap for the current sim
+export const H_GPU = 23; // 1 when the WebGPU compute solver is active
 export const HDR = 32;
 
 export const OFF_POS = HDR;
@@ -72,8 +73,10 @@ export interface TerrainWire {
 // warmup: sim-seconds to fast-forward at full CPU speed right after the
 // reset (the pool fills during load instead of over real minutes; same DT
 // ticks and rules — only the wall-clock throttle is bypassed). baseMax:
-// runtime particle cap in base-sized drops (clamped to HARD_MAX_N).
-export interface ResetMsg { t: "reset"; scenario: ScenarioName; scale: number; terrain?: TerrainWire; warmup?: number; baseMax?: number }
+// runtime particle cap in base-sized drops (clamped to HARD_MAX_N). gpu:
+// run the substep solve as WebGPU compute in the worker (falls back to the
+// CPU solver when unavailable).
+export interface ResetMsg { t: "reset"; scenario: ScenarioName; scale: number; terrain?: TerrainWire; warmup?: number; baseMax?: number; gpu?: boolean }
 export interface RecycleMsg { t: "recycle"; buf: ArrayBuffer }
 export type ToWorker = SimOptsMsg | StepMsg | ResetMsg | RecycleMsg;
 

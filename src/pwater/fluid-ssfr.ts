@@ -78,7 +78,11 @@ const THICK_FRAG = /* glsl */ `
   void main() {
     float r2 = dot(vUv, vUv);
     if (r2 > 1.0) discard;
-    vec4 clip = uProj * vec4(vViewCenter, 1.0);
+    // Depth-test the ball's FRONT POLE, not its center: a ball half-buried
+    // in terrain (grazing view of a pond in a depression) has its center
+    // behind the terrain surface and gets culled — the water sheet pops out
+    // at exactly the angles you're most likely to view it from.
+    vec4 clip = uProj * vec4(vViewCenter + vec3(0.0, 0.0, uRadius), 1.0);
     float winZ = (clip.z / clip.w) * 0.5 + 0.5;
     float sceneZ = texture2D(uSceneDepth, gl_FragCoord.xy * uInvRes).x;
     if (winZ > sceneZ) discard;
@@ -97,13 +101,14 @@ const FOAM_FRAG = /* glsl */ `
   uniform mat4 uProj;
   uniform sampler2D uSceneDepth;
   uniform vec2 uInvRes;
+  uniform float uRadius;
   varying vec2 vUv;
   varying vec3 vViewCenter;
   varying float vSpeed;
   void main() {
     float r2 = dot(vUv, vUv);
     if (r2 > 1.0) discard;
-    vec4 clip = uProj * vec4(vViewCenter, 1.0);
+    vec4 clip = uProj * vec4(vViewCenter + vec3(0.0, 0.0, uRadius), 1.0);
     float winZ = (clip.z / clip.w) * 0.5 + 0.5;
     float sceneZ = texture2D(uSceneDepth, gl_FragCoord.xy * uInvRes).x;
     if (winZ > sceneZ) discard;
@@ -573,7 +578,14 @@ const COMPOSITE_FRAG = /* glsl */ `
     // any scale — at fine scales a real one-drop sheet reads ~scale x the
     // coarse thickness and would otherwise vanish. Depth COLOR bands above
     // stay absolute: physical depth keeps one meaning across scales.
-    float bodyCov = smoothstep(0.06 * uCovScale, 0.3 * uCovScale, thick + foam * 0.3) * max(surfConf, (1.0 - airborne) * smoothstep(0.65 * uCovScale, 1.2 * uCovScale, thick));
+    // Fast water KEEPS its body: a waterfall sheet viewed face-on is thin
+    // (the ray crosses it perpendicular) AND fast, so gating body on
+    // (1-airborne) erased whole falls at head-on angles — only foam sprites
+    // survived. Instead, airborne water gets a LOWER thickness bar (falls are
+    // naturally thin) and spray paints on top of the body, not instead of it.
+    float bodyBarLo = mix(0.35, 0.14, airborne) * uCovScale;
+    float bodyBarHi = mix(0.9, 0.42, airborne) * uCovScale;
+    float bodyCov = smoothstep(0.06 * uCovScale, 0.3 * uCovScale, thick + foam * 0.3) * max(surfConf, smoothstep(bodyBarLo, bodyBarHi, thick));
     outCol = mix(sceneCol, water, bodyCov);
     // spray = SOLID painted droplet clusters: hash-scalloped hard edge, near
     // fully opaque, paint-white two-tone — never a translucent gray mist.
@@ -662,7 +674,10 @@ export function createFluidRenderer(
   // the construction particleD — so s in setParticleD equals the drop tier at
   // any world scale (sandbox behavior unchanged at unitScale 1, scale 1).
   const baseD = 0.6 * unitScale;
-  const RADIUS = particleD * 0.85;
+  // 0.65x spacing (sandbox retune, was 0.85): the surface hugs the ball tops
+  // instead of riding ~half a ball high; overlap at rest density still closes
+  // the sheet. This is the 70%-ball-size retune KJ asked for.
+  const RADIUS = particleD * 0.65;
   const depthMat = new THREE.ShaderMaterial({
     vertexShader: QUAD_VERT,
     fragmentShader: DEPTH_FRAG,
@@ -677,7 +692,10 @@ export function createFluidRenderer(
     vertexShader: QUAD_VERT,
     fragmentShader: THICK_FRAG,
     uniforms: {
-      uRadius: { value: RADIUS * 1.4 },
+      // thickness MEASURES water amount — the depth-color bands and coverage
+      // floors are calibrated in these units, so it keeps the pre-retune
+      // footprint; the (smaller) depth splat alone owns the visible silhouette
+      uRadius: { value: particleD * 0.85 * 1.4 },
       uProj: { value: new THREE.Matrix4() },
       uSceneDepth: { value: sceneRT.depthTexture },
       uInvRes: { value: new THREE.Vector2() },
@@ -740,7 +758,7 @@ export function createFluidRenderer(
       uDepth: { value: null as THREE.Texture | null },
       uDir: { value: new THREE.Vector2(1, 0) },
       uInvRes: { value: new THREE.Vector2() },
-      uThresh: { value: particleD * 1.6 },
+      uThresh: { value: particleD * 1.25 },
       uWorldK: { value: 0 },
     },
     depthTest: false,
@@ -754,7 +772,7 @@ export function createFluidRenderer(
       uInvRes: { value: new THREE.Vector2() },
       uCxy: { value: new THREE.Vector2() },
       uDtFrac: { value: 0.6 },
-      uThresh: { value: particleD * 1.6 },
+      uThresh: { value: particleD * 1.25 },
     },
     depthTest: false,
     depthWrite: false,
@@ -784,7 +802,7 @@ export function createFluidRenderer(
     uniforms: {
       uRaw: { value: null as THREE.Texture | null },
       uPrev: { value: histRT.texture },
-      uThresh: { value: particleD * 1.6 },
+      uThresh: { value: particleD * 1.25 },
       uBlend: { value: smoothCfg.warmBlend },
       uProjXY: { value: new THREE.Vector2(1, 1) },
       uPrevProjXY: { value: new THREE.Vector2(1, 1) },
@@ -1141,11 +1159,11 @@ export function createFluidRenderer(
   function setParticleD(d: number) {
     particleD = d;
     const s = d / baseD;
-    depthMat.uniforms.uRadius.value = d * 0.85;
+    depthMat.uniforms.uRadius.value = d * 0.65;
     thickMat.uniforms.uRadius.value = d * 0.85 * 1.4;
-    blurMat.uniforms.uThresh.value = d * 1.6;
-    curvMat.uniforms.uThresh.value = d * 1.6;
-    warmMat.uniforms.uThresh.value = d * 1.6;
+    blurMat.uniforms.uThresh.value = d * 1.25;
+    curvMat.uniforms.uThresh.value = d * 1.25;
+    warmMat.uniforms.uThresh.value = d * 1.25;
     histValid = false;
     sceneDirty = true;
     compMat.uniforms.uThinLo.value = 0.9 * s;
