@@ -398,6 +398,11 @@ export function createParticleWater(ctx: PWaterCtx) {
       });
     }
 
+    if (editQueue.length) {
+      driver.solidEdit(Int32Array.from(editQueue));
+      editQueue.length = 0;
+    }
+
     const st = driver.frame(dtReal, ctl);
     lastState = st;
     if (!st) return false; // worker warm-up: caller presents via the classic path
@@ -557,5 +562,23 @@ export function createParticleWater(ctx: PWaterCtx) {
     if (hifi) hifi.dispose();
   }
 
-  return { renderFrame, report, knob, waterCells, dispose, fluid: () => fluid, terrain: () => terrain };
+  // ── Live terrain edits (mining/building) ────────────────────────────────
+  // The crop was a load-time snapshot; without this, water rests on phantom
+  // solid where the player dug — a mined cavity can never fill. World-voxel
+  // edits map into box cells, update the caller-owned solid copy (so a driver
+  // rebuild — e.g. the worker→inline fallback — carries them), and flow to
+  // whichever solver is live on the next frame. Edits outside the crop box
+  // are ignored: the sim only exists around the spring.
+  const editQueue: number[] = [];
+  function onSolidEdit(vx: number, vy: number, vz: number, solidNow: boolean) {
+    const gx = vx - box.x0, gy = vy - box.y0, gz = vz - box.z0;
+    if (gx < 0 || gx >= nx || gy < 0 || gy >= ny || gz < 0 || gz >= nz) return;
+    const idx = (gy * nz + gz) * nx + gx;
+    const v = solidNow ? 1 : 0;
+    if (terrain.solid[idx] === v) return;
+    terrain.solid[idx] = v;
+    editQueue.push(gx, gy, gz, v);
+  }
+
+  return { renderFrame, report, knob, waterCells, onSolidEdit, dispose, fluid: () => fluid, terrain: () => terrain };
 }

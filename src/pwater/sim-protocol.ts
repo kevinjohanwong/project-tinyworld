@@ -78,7 +78,11 @@ export interface TerrainWire {
 // CPU solver when unavailable).
 export interface ResetMsg { t: "reset"; scenario: ScenarioName; scale: number; terrain?: TerrainWire; warmup?: number; baseMax?: number; gpu?: boolean }
 export interface RecycleMsg { t: "recycle"; buf: ArrayBuffer }
-export type ToWorker = SimOptsMsg | StepMsg | ResetMsg | RecycleMsg;
+// Live terrain edits (player mining/building inside the crop box): flat
+// [gx, gy, gz, solid(0|1), ...] quads in BOX cell coords. The buffer is
+// TRANSFERRED with the message.
+export interface SolidEditMsg { t: "solidEdit"; edits: Int32Array }
+export type ToWorker = SimOptsMsg | StepMsg | ResetMsg | RecycleMsg | SolidEditMsg;
 
 export interface TerrainMsg {
   t: "terrain";

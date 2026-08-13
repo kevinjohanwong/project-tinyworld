@@ -1120,6 +1120,36 @@ export class Sim {
     return { px: this.wOpenPX, mx: this.wOpenMX, pz: this.wOpenPZ, mz: this.wOpenMZ };
   }
 
+  // Live terrain edits (player mining/building). The crop-time terrain was a
+  // snapshot; this keeps the boundary condition tracking the real world —
+  // water rests on real ground, and a mined cavity becomes fillable. Sleeping
+  // particles near a change wake (a pool sitting on removed ground must start
+  // flowing); the solver rules themselves are untouched.
+  applySolidEdits(edits: Int32Array) {
+    const t = this.terrain;
+    const WAKE_R = 2.5; // cells — contact shell + one neighbor ring
+    const r2 = WAKE_R * WAKE_R;
+    for (let e = 0; e + 3 < edits.length; e += 4) {
+      const x = edits[e], y = edits[e + 1], z = edits[e + 2];
+      const v = edits[e + 3] ? 1 : 0;
+      if (x < 0 || x >= t.nx || y < 0 || y >= t.ny || z < 0 || z >= t.nz) continue;
+      const idx = (y * t.nz + z) * t.nx + x;
+      if (t.solid[idx] === v) continue;
+      t.solid[idx] = v;
+      const cx = x + 0.5, cy = y + 0.5, cz = z + 0.5;
+      for (let i = 0; i < this.count; i++) {
+        if (!this.asleep[i]) continue;
+        const b = i * 3;
+        const dx = this.pos[b] - cx, dy = this.pos[b + 1] - cy, dz = this.pos[b + 2] - cz;
+        if (dx * dx + dy * dy + dz * dz <= r2) {
+          this.asleep[i] = 0;
+          this.stillTicks[i] = 0;
+          this.shove[i] = 0;
+        }
+      }
+    }
+  }
+
   report(): Report {
     let meanSpeed = 0;
     let maxSpeed = 0;

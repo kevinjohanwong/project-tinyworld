@@ -247,6 +247,11 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
     sendTerrain();
     snapshot(true);
     tryAdoptGpu();
+  } else if (m.t === "solidEdit") {
+    if (sim) {
+      sim.applySolidEdits(m.edits);
+      gpuSim?.updateSolid(m.edits);
+    }
   } else if (m.t === "recycle") {
     pool.push(m.buf);
     if (snapDirty) snapshot();

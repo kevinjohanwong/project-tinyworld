@@ -81,6 +81,9 @@ export interface SimDriver {
   readonly kind: "inline" | "worker";
   frame(dtReal: number, ctl: DriverCtl): FrameState | null;
   onTerrain(cb: (t: Terrain, D: number, scale: number) => void): void;
+  // Live terrain edits: flat [gx, gy, gz, solid, ...] quads in box cells.
+  // The buffer is consumed (transferred in worker mode) — don't reuse it.
+  solidEdit(edits: Int32Array): void;
   sim(): Sim | null; // inline only; null in worker mode
   dispose(): void;
 }
@@ -112,6 +115,10 @@ class InlineDriver implements SimDriver {
 
   sim() {
     return this.simInst;
+  }
+
+  solidEdit(edits: Int32Array) {
+    this.simInst.applySolidEdits(edits);
   }
 
   frame(dtReal: number, c: DriverCtl): FrameState {
@@ -271,6 +278,10 @@ class WorkerDriver implements SimDriver {
 
   sim() {
     return null;
+  }
+
+  solidEdit(edits: Int32Array) {
+    this.post({ t: "solidEdit", edits }, [edits.buffer]);
   }
 
   frame(_dtReal: number, c: DriverCtl): FrameState | null {

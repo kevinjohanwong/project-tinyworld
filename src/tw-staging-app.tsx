@@ -2970,6 +2970,11 @@ export default function TinyWorld() {
     raygiPass.enabled = false;
     composer.addPass(raygiPass);
     const raygiEditHooks: { add: ((x: number, y: number, z: number, color: number, strength?: number) => void) | null; remove: ((x: number, y: number, z: number) => void) | null } = { add: null, remove: null };
+    // Water-sim edit hook: forwards block place/remove into the particle
+    // water's crop box (assigned once pwater is up), so a mined cavity
+    // becomes fillable and placed blocks displace water. Same seam pattern
+    // as raygiEditHooks.
+    const pwaterEditHook: { edit: ((x: number, y: number, z: number, solid: boolean) => void) | null } = { edit: null };
     // Terrain edit version — bumped alongside the RayGI edit hooks on every
     // block place/remove; lets steady-state systems (irrigation) skip work
     // when nothing has changed since their last pass.
@@ -6987,6 +6992,7 @@ export default function TinyWorld() {
       structuralGrassRef.current.delete(k);
       if (rmLayer === "grass" || rmLayer === "dryGrass") markGrassDirty(vx, vz);
       raygiEditHooks.remove?.(vx, vy, vz);
+      pwaterEditHook.edit?.(vx, vy, vz, false);
       markShadowDirty(2); // carved block → repaint the static shadow maps
       terrainEdits.ver++;
       return true;
@@ -12390,6 +12396,7 @@ export default function TinyWorld() {
       (carryState.mesh.userData.slotMap as Map<string, number>).set(vx + "," + vy + "," + vz, slot);
       addCol(vx, vy, vz);
       raygiEditHooks.add?.(vx, vy, vz, (PAL as any)[carryState.layer] ?? 0x8a8a8a, RAYGI_BOUNCE_STRENGTH[carryState.layer] ?? 0.5);
+      pwaterEditHook.edit?.(vx, vy, vz, true);
       markShadowDirty(2); // placed block → repaint the static shadow maps
       terrainEdits.ver++;
       protAdd(vx, vz, carryState.layer, 1);
@@ -20161,6 +20168,7 @@ export default function TinyWorld() {
                 params: new URLSearchParams(window.location.search),
               });
               (window as any).__tw.pwater = (o: any = {}) => pwCtrl ? (Object.keys(o).length ? pwCtrl.knob(o) : pwCtrl.report()) : { error: "no pwater" };
+              pwaterEditHook.edit = (x, y, z, s) => pwCtrl?.onSolidEdit(x, y, z, s);
               (window as any).__twPWater = pwCtrl;
               (renderer as any).__twPWaterDispose = () => { try { pwCtrl?.dispose(); } catch { /* already down */ } };
               console.log("[tw] particle water active:", pwCtrl.report().box);

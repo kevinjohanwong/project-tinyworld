@@ -58,6 +58,7 @@ export class GpuSim {
   private posStage!: GPUBuffer;
   private velStage!: GPUBuffer;
   private nbStage!: GPUBuffer;
+  private solidBuf!: GPUBuffer;
   private bindSolve!: GPUBindGroup;
   private bindGrid!: GPUBindGroup;
   private pl!: Record<string, GPUComputePipeline>;
@@ -468,7 +469,7 @@ fn viscApply(@builtin(global_invocation_id) gid: vec3<u32>) {
     const lambdaBuf = mk(n * 4, S);
     this.nbBuf = mk(n * 4, S | GPUBufferUsage.COPY_SRC); // flags: nb | contact<<16
     const gridBuf = mk(gridBytes, S);
-    const solidBuf = mk((solidN + 2 * t.nz + 2 * t.nx) * 4, S | GPUBufferUsage.COPY_DST);
+    const solidBuf = (this.solidBuf = mk((solidN + 2 * t.nz + 2 * t.nx) * 4, S | GPUBufferUsage.COPY_DST));
     this.paramBuf = mk(16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     this.posStage = mk(n * 12, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
     this.velStage = mk(n * 12, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
@@ -599,6 +600,21 @@ fn viscApply(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     m.hostPost(dt, opts);
     m.hostRefreshGrid();
+  }
+
+  // Live terrain edits: keep the GPU's solid copy in lockstep with the mirror
+  // sim's (the wall masks in the buffer tail stay untouched — wall openness is
+  // a load-time world-edge property, not an edit surface).
+  updateSolid(edits: Int32Array) {
+    if (this.disposed) return;
+    const t = this.mirror.terrain;
+    const one = new Uint32Array(1);
+    for (let e = 0; e + 3 < edits.length; e += 4) {
+      const x = edits[e], y = edits[e + 1], z = edits[e + 2];
+      if (x < 0 || x >= t.nx || y < 0 || y >= t.ny || z < 0 || z >= t.nz) continue;
+      one[0] = edits[e + 3] ? 1 : 0;
+      this.dev.queue.writeBuffer(this.solidBuf, ((y * t.nz + z) * t.nx + x) * 4, one);
+    }
   }
 
   dispose() {

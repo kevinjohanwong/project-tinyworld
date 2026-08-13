@@ -253,7 +253,7 @@ export function createSpring(ctx: SpringContext) {
   function persist() {
     if (!origin) return;
     meta.spring = {
-      version: 11, seed: theSeed,
+      version: 12, seed: theSeed,
       origin: { x: origin[0], y: origin[1], z: origin[2] },
       budget: state.budget, capacity: CAPACITY,
     } as SpringMeta;
@@ -419,16 +419,57 @@ export function createSpring(ctx: SpringContext) {
     // score = deviation from a MIDDLING target elevation (?springheight,
     // fraction of the world top range, default 0.55) + weighted centroid
     // distance (?springcent, default 1). Lowest score wins; flatness breaks
-    // ties. ?springsite=basin restores the basin-first order; knobs
+    // ties. Scoring v12 (KJ Aug 13: "bigger plateau if there is one"): a
+    // plateau-AREA term (?springarea, default 1.5) prefers candidates on
+    // larger connected near-level regions — see the component pass below.
+    // ?springsite=basin restores the basin-first order; knobs
     // ?springdrop, ?springdroprad, ?springflat (0-1).
     const SHELF_DROP = num("springdrop", 8);
     const DROP_RAD = Math.max(1, Math.round(num("springdroprad", 6)));
     const FLAT_MIN = Math.min(1, Math.max(0, num("springflat", 0.7)));
     const HEIGHT_FRAC = Math.min(1, Math.max(0, num("springheight", 0.55)));
     const CENTRAL_W = Math.max(0, num("springcent", 1));
+    const AREA_W = Math.max(0, num("springarea", 1.5));
     const chooseShelf = (): Vec3 | null => {
       const Hall = new Map<string, number>();
       for (const [x, y, z] of tops) Hall.set(KEYXZ(x, z), y);
+      // Plateau AREA (v12, KJ Aug 13: "bigger plateau if there is one"):
+      // segment all columns into near-level connected components (4-neighbour,
+      // |Δtop| <= 2 — the same tolerance the flatness window uses) and prefer
+      // candidates on LARGER plateaus. Chained tolerance means a gentle slope
+      // can read as one component; the local flatness + nearby-drop gates
+      // still decide eligibility — area only ranks eligible candidates, so a
+      // 5x5 terrace next to a wall no longer ties a whole field.
+      const compOf = new Map<string, number>();
+      const compSize: number[] = [];
+      {
+        const stack: string[] = [];
+        for (const [x0c, , z0c] of tops) {
+          const k0 = KEYXZ(x0c, z0c);
+          if (compOf.has(k0)) continue;
+          const id = compSize.length;
+          compSize.push(0);
+          compOf.set(k0, id);
+          stack.push(k0);
+          while (stack.length) {
+            const k = stack.pop()!;
+            compSize[id]++;
+            const ci = k.indexOf(",");
+            const x = +k.slice(0, ci), z = +k.slice(ci + 1);
+            const y = Hall.get(k)!;
+            for (let n = 0; n < 4; n++) {
+              const nk = KEYXZ(x + (n === 0 ? 1 : n === 1 ? -1 : 0), z + (n === 2 ? 1 : n === 3 ? -1 : 0));
+              if (compOf.has(nk)) continue;
+              const nt = Hall.get(nk);
+              if (nt == null || Math.abs(nt - y) > 2) continue;
+              compOf.set(nk, id);
+              stack.push(nk);
+            }
+          }
+        }
+      }
+      let maxArea = 1;
+      for (const s of compSize) if (s > maxArea) maxArea = s;
       const flatFrac = (x: number, z: number, y: number, R: number) => {
         let level = 0, cells = 0;
         for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -457,7 +498,7 @@ export function createSpring(ctx: SpringContext) {
         if (d > centralNorm) centralNorm = d;
       }
       const pass = (requireThick: boolean, R: number): Vec3 | null => {
-        let best: Vec3 | null = null, bestScore = Infinity, bestFlat = 0;
+        let best: Vec3 | null = null, bestScore = Infinity, bestFlat = 0, bestArea = 0;
         for (const [x, y, z] of tops) {
           if (requireThick && (!isSolid(x, y - 1, z) || !isSolid(x, y - 2, z))) continue;
           let clear = true;
@@ -467,12 +508,14 @@ export function createSpring(ctx: SpringContext) {
           if (flat < FLAT_MIN) continue;
           if (dropNear(x, z, y) < SHELF_DROP) continue;
           const central = Math.abs(x - cx) + Math.abs(z - cz);
-          const score = Math.abs(y - targetY) / hSpan + CENTRAL_W * (central / centralNorm);
+          const compId = compOf.get(KEYXZ(x, z));
+          const area = compId != null ? compSize[compId] : 1;
+          const score = Math.abs(y - targetY) / hSpan + CENTRAL_W * (central / centralNorm) + AREA_W * (1 - area / maxArea);
           if (score < bestScore || (score === bestScore && flat > bestFlat)) {
-            best = [x, y, z]; bestScore = score; bestFlat = flat;
+            best = [x, y, z]; bestScore = score; bestFlat = flat; bestArea = area;
           }
         }
-        if (best) console.log(`[spring] plateau sited at (${best[0]},${best[1]},${best[2]}), flat ${(bestFlat * 100) | 0}%, score ${bestScore.toFixed(3)} (targetY ${targetY.toFixed(1)})${requireThick ? "" : " (thin sheet)"}`);
+        if (best) console.log(`[spring] plateau sited at (${best[0]},${best[1]},${best[2]}), flat ${(bestFlat * 100) | 0}%, area ${bestArea}/${maxArea}, score ${bestScore.toFixed(3)} (targetY ${targetY.toFixed(1)})${requireThick ? "" : " (thin sheet)"}`);
         return best;
       };
       // Tier 1: thick ground plateau (solid y-1 and y-2 — real high ground).
@@ -485,9 +528,9 @@ export function createSpring(ctx: SpringContext) {
       return pass(true, 2) ?? pass(false, 3);
     };
 
-    // Re-site once for the middling-plateau scoring contract (version 11).
+    // Re-site once for the plateau-area scoring contract (version 12).
     const savedVersion = (saved as any)?.version ?? 0;
-    const RESITE = params.get("springresite") === "1" || (saved != null && savedVersion < 11);
+    const RESITE = params.get("springresite") === "1" || (saved != null && savedVersion < 12);
     if (saved?.origin && !RESITE) {
       origin = [saved.origin.x, saved.origin.y, saved.origin.z];
     } else {
