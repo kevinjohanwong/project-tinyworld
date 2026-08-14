@@ -20476,7 +20476,7 @@ export default function TinyWorld() {
     // the saved world so the hold survives reloads. -Infinity = never rained.
     let lastGrassRainMs = Number((worldDataRef.current?.meta as any)?.grassLastRainMs) || -Infinity;
     const recordRain = () => { const t = Date.now(); lastGrassRainMs = t; const md = worldDataRef.current?.meta as any; if (md) md.grassLastRainMs = t; };
-    const distDry = new Map<string, number>();             // cached distance dryness (heavy)
+    let distDry = new Map<string, number>();               // cached distance dryness (swapped in by the budgeted job)
     const soilSlotCache = new Map<string, { mesh: any; slot: number }>();
     let _lastIrrigMs = 0;
     let _lastEaseMs = 0;
@@ -20495,9 +20495,29 @@ export default function TinyWorld() {
       return (window as any).__tw.waterlogReport();
     };
 
-    // HEAVY: recompute distance-to-water dryness field, irrigation set, and the
-    // top soil block (mesh+slot) per column, all cached for the light pass.
-    const recomputeMoisture = (_nowMs: number) => {
+    // HEAVY pass, restructured (Aug 14 — KJ: "still stuttering every ~5s"):
+    // the old pass rebuilt the soil map (a full slotMap walk with string
+    // parses) AND ran an O(soil cols x water cols) nearest-water scan every
+    // IRRIG_MS on the main thread. Once the waterCells detached-buffer fix
+    // landed, the water signature changed every tick (real water genuinely
+    // moves), so the Aug 5 steady-state skip NEVER fired — big worlds paid a
+    // multi-hundred-ms stall every 8s. Split by what actually changed:
+    //   - soil snapshot (slotMap walk -> keys + typed coord arrays + soilTop
+    //     + soilSlotCache): rebuilt ONLY on terrain edits / grass-count
+    //     changes / the periodic force — never for moving water;
+    //   - water-facing state (irrigation set, waterlog): every pass, but
+    //     O(water cols + tracked shore cols) — a col with no water above and
+    //     no history was a no-op in the old full sweep, so skipping it is
+    //     behavior-identical;
+    //   - distance-dryness field: recomputed only when the CLUSTERED water
+    //     footprint moves (DIST_CLUSTER-cell clusters, tops quantized to 2
+    //     cells — slosh and particle churn hash out), and then as a BUDGETED
+    //     per-frame job (DIST_BUDGET_MS against the cached arrays) whose
+    //     result swaps in atomically on completion. Steady state -> sig check
+    //     only, ~0 ms; a real footprint change -> a few ms/frame for a couple
+    //     of seconds, never a single-frame stall.
+    let _soilSnap: { keys: string[]; xs: Float64Array; zs: Float64Array; ys: Float64Array; top: Map<string, number> } | null = null;
+    const _rebuildSoilSnap = () => {
       const soilTop = new Map<string, number>();
       soilSlotCache.clear();
       for (const m of meshesRef.current) {
@@ -20511,22 +20531,83 @@ export default function TinyWorld() {
           if (prev2 === undefined || yy > prev2) { soilTop.set(kk, yy); soilSlotCache.set(kk, { mesh: m, slot }); }
         }
       }
-      const waterCells: Array<[number, number, number]> = [];
+      const n = soilTop.size;
+      const keys = new Array<string>(n);
+      const xs = new Float64Array(n), zs = new Float64Array(n), ys = new Float64Array(n);
+      let i = 0;
+      for (const [kk, yy] of soilTop) {
+        const c = kk.indexOf(",");
+        keys[i] = kk; xs[i] = +kk.slice(0, c); zs[i] = +kk.slice(c + 1); ys[i] = yy; i++;
+      }
+      _soilSnap = { keys, xs, zs, ys, top: soilTop };
+    };
+    const DIST_BUDGET_MS = 3;
+    const DIST_CLUSTER = 4;
+    let _distClusterSig: number | null = null;
+    let _distJob: { cx: number[]; cz: number[]; lo: number[]; hi: number[]; i: number; next: Map<string, number> } | null = null;
+    const _pumpDistJob = () => {
+      const job = _distJob, snap = _soilSnap;
+      if (!job || !snap) return;
+      const t0 = performance.now();
+      const { keys, xs, zs, ys } = snap;
+      const n = keys.length, cn = job.cx.length;
+      const span = Math.max(1, ARID_FAR - ARID_NEAR);
+      let i = job.i;
+      while (i < n) {
+        if ((i & 511) === 0 && performance.now() - t0 > DIST_BUDGET_MS) break;
+        const sx = xs[i], sz = zs[i], sy = ys[i];
+        let best = Infinity;
+        for (let c = 0; c < cn; c++) {
+          if (sy < job.lo[c] || sy > job.hi[c]) continue;
+          const dx = sx - job.cx[c]; const adx = dx < 0 ? -dx : dx;
+          const dz = sz - job.cz[c]; const adz = dz < 0 ? -dz : dz;
+          const cheb = adx > adz ? adx : adz;
+          if (cheb < best) best = cheb;
+        }
+        let dv: number;
+        if (best === Infinity || best >= ARID_FAR) dv = 1;
+        else if (best <= ARID_NEAR) dv = 0;
+        else { const t = (best - ARID_NEAR) / span; dv = t * t * (3 - 2 * t); }
+        job.next.set(keys[i], dv);
+        i++;
+      }
+      job.i = i;
+      if (i >= n) {
+        distDry = job.next;
+        _distJob = null;
+        // Prune displayed columns that no longer exist (blocks removed/rebuilt).
+        for (const kk of aridCols.keys()) if (!distDry.has(kk)) aridCols.delete(kk);
+        for (const kk of soilWetMs.keys()) if (!distDry.has(kk)) soilWetMs.delete(kk);
+        _irrigStats.full++;
+      }
+    };
+    const recomputeMoisture = (_nowMs: number, rebuildSoil = true) => {
+      if (rebuildSoil || !_soilSnap) { _rebuildSoilSnap(); _distClusterSig = null; }
+      const soilTop = _soilSnap!.top;
+      // Water COLUMNS "x,z" -> occupied span [lo,hi] (top = hi). Sources
+      // unchanged: mesh water layer, CA spring, particle sim.
+      const waterCols = new Map<string, { lo: number; hi: number }>();
+      const addW = (wx: number, wy: number, wz: number) => {
+        const wk = wx + "," + wz;
+        const e = waterCols.get(wk);
+        if (!e) waterCols.set(wk, { lo: wy, hi: wy });
+        else { if (wy < e.lo) e.lo = wy; if (wy > e.hi) e.hi = wy; }
+      };
       const wm = meshesRef.current.find((m: any) => m.userData?.layer === "water");
       const wsm = wm?.userData?.slotMap as Map<string, number> | undefined;
-      if (wsm) for (const key of wsm.keys()) { const pp = key.split(","); waterCells.push([+pp[0], +pp[1], +pp[2]]); }
-      if (springCtrl) for (const c of springCtrl.waterCells()) waterCells.push(c);
-      // Particle water owns the pool when active (the CA spring never ticks,
-      // so its cell list is empty) — without this the moisture field sees NO
-      // water and the whole field dries to arid tan (KJ Jul 28 screenshot).
-      if (pwCtrl) for (const c of pwCtrl.waterCells()) waterCells.push(c);
-      // Irrigation set (greens dryGrass near water) — dilate by IRRIG_R.
+      if (wsm) for (const key of wsm.keys()) { const pp = key.split(","); addW(+pp[0], +pp[1], +pp[2]); }
+      if (springCtrl) for (const c of springCtrl.waterCells()) addW(c[0], c[1], c[2]);
+      if (pwCtrl) for (const c of pwCtrl.waterCells()) addW(c[0], c[1], c[2]);
+      // Irrigation set (greens dryGrass near water) — dilate by IRRIG_R around
+      // each water COLUMN; the span test replaces the per-cell test (soil top
+      // within IRRIG_V of the column's occupied span).
       const next = new Set<string>();
-      for (const [wx, wy, wz] of waterCells) {
+      for (const [wk, e] of waterCols) {
+        const wc = wk.indexOf(","); const wx = +wk.slice(0, wc), wz = +wk.slice(wc + 1);
         for (let dx = -IRRIG_R; dx <= IRRIG_R; dx++) for (let dz = -IRRIG_R; dz <= IRRIG_R; dz++) {
           const kk = (wx + dx) + "," + (wz + dz);
           const sy = soilTop.get(kk);
-          if (sy !== undefined && Math.abs(sy - wy) <= IRRIG_V) next.add(kk);
+          if (sy !== undefined && sy >= e.lo - IRRIG_V && sy <= e.hi + IRRIG_V) next.add(kk);
         }
       }
       // Soil memory holds irrigation membership too: a column leaving the
@@ -20542,37 +20623,41 @@ export default function TinyWorld() {
       for (const kk of irrigatedCols) if (!next.has(kk)) { const c = kk.split(","); markGrassDirty(+c[0], +c[1]); }
       irrigatedCols.clear();
       for (const kk of next) irrigatedCols.add(kk);
-      // Distance dryness field (soil × unique-water column; cost independent of
-      // ARID_FAR, so a world-spanning ramp costs nothing extra per frame).
-      const waterTopMap = new Map<string, number>();
-      for (const [wx, wy, wz] of waterCells) { const wk = wx + "," + wz; const pv = waterTopMap.get(wk); if (pv === undefined || wy > pv) waterTopMap.set(wk, wy); }
-      // Waterlogged detection: a column is submerged when a water cell sits ABOVE
-      // its top grass block (wtop > soilTop). Time continuous submersion; flip to
-      // waterlogged past WATERLOG_HOLD_MS, recover the instant the water recedes.
-      // Re-blade only the columns that changed state (markGrassDirty).
+      // Waterlogged detection, water-driven: only columns with water above
+      // (submerged now) or with tracked history (submergeSince /
+      // lastSubmergedMs / waterloggedCols) can change state; every other
+      // column hit only no-op branches in the old full sweep.
       if (waterlogOn) {
         const nowW = Date.now();
-        for (const [kk, sy] of soilTop) {
-          const wtop = waterTopMap.get(kk);
-          if (wtop !== undefined && wtop > sy) {           // submerged
+        const submergedNow = new Set<string>();
+        for (const [kk, e] of waterCols) {
+          const sy = soilTop.get(kk);
+          if (sy !== undefined && e.hi > sy) {              // submerged
+            submergedNow.add(kk);
             lastSubmergedMs.set(kk, nowW);
             const since = submergeSince.get(kk);
             if (since === undefined) submergeSince.set(kk, nowW);
             else if (nowW - since >= WATERLOG_HOLD_MS && !waterloggedCols.has(kk)) {
               waterloggedCols.add(kk); const c = kk.split(","); markGrassDirty(+c[0], +c[1]);
             }
-          } else {                                          // dry READ this pass
-            const lw = lastSubmergedMs.get(kk);
-            const dryFor = lw === undefined ? Infinity : nowW - lw;
-            if (dryFor > WATERLOG_GAP_MS) submergeSince.delete(kk); // streak truly broken (not a sampling blink)
-            if (waterloggedCols.has(kk)) {
-              if (dryFor >= WATERLOG_DRY_MS) {
-                waterloggedCols.delete(kk); lastSubmergedMs.delete(kk);
-                const c = kk.split(","); markGrassDirty(+c[0], +c[1]);
-              }
-            } else if (dryFor > Math.max(WATERLOG_GAP_MS, WATERLOG_DRY_MS)) {
-              lastSubmergedMs.delete(kk);                   // stale stamp cleanup
+          }
+        }
+        const tracked = new Set<string>();
+        for (const kk of submergeSince.keys()) tracked.add(kk);
+        for (const kk of lastSubmergedMs.keys()) tracked.add(kk);
+        for (const kk of waterloggedCols) tracked.add(kk);
+        for (const kk of tracked) {
+          if (submergedNow.has(kk)) continue;               // dry READ this pass
+          const lw = lastSubmergedMs.get(kk);
+          const dryFor = lw === undefined ? Infinity : nowW - lw;
+          if (dryFor > WATERLOG_GAP_MS) submergeSince.delete(kk); // streak truly broken (not a sampling blink)
+          if (waterloggedCols.has(kk)) {
+            if (dryFor >= WATERLOG_DRY_MS) {
+              waterloggedCols.delete(kk); lastSubmergedMs.delete(kk);
+              const c = kk.split(","); markGrassDirty(+c[0], +c[1]);
             }
+          } else if (dryFor > Math.max(WATERLOG_GAP_MS, WATERLOG_DRY_MS)) {
+            lastSubmergedMs.delete(kk);                     // stale stamp cleanup
           }
         }
         // Prune columns whose grass block no longer exists.
@@ -20580,23 +20665,39 @@ export default function TinyWorld() {
         for (const kk of submergeSince.keys()) if (!soilTop.has(kk)) submergeSince.delete(kk);
         for (const kk of lastSubmergedMs.keys()) if (!soilTop.has(kk)) lastSubmergedMs.delete(kk);
       }
-      const waters: Array<[number, number, number]> = [];
-      for (const [wk, wy] of waterTopMap) { const wp = wk.split(","); waters.push([+wp[0], +wp[1], wy]); }
-      const span = Math.max(1, ARID_FAR - ARID_NEAR);
-      distDry.clear();
-      for (const [kk, sy] of soilTop) {
-        const sp = kk.split(","); const sx = +sp[0], sz = +sp[1];
-        let best = Infinity;
-        for (let i = 0; i < waters.length; i++) { const w = waters[i]; if (Math.abs(sy - w[2]) > IRRIG_V) continue; const cheb = Math.max(Math.abs(sx - w[0]), Math.abs(sz - w[1])); if (cheb < best) best = cheb; }
-        let dv: number;
-        if (best === Infinity || best >= ARID_FAR) dv = 1;
-        else if (best <= ARID_NEAR) dv = 0;
-        else { const t = (best - ARID_NEAR) / span; dv = t * t * (3 - 2 * t); }
-        distDry.set(kk, dv);
+      // Distance-dryness: cluster the water footprint and hash it. Unchanged
+      // footprint -> the cached field is already right, skip everything.
+      // Changed -> start (or replace) the budgeted job.
+      const clusters = new Map<string, { qlo: number; qhi: number; cx: number; cz: number }>();
+      for (const [wk, e] of waterCols) {
+        const wc = wk.indexOf(","); const wx = +wk.slice(0, wc), wz = +wk.slice(wc + 1);
+        const gx = Math.floor(wx / DIST_CLUSTER), gz = Math.floor(wz / DIST_CLUSTER);
+        const qt = Math.round(e.hi / 2);
+        const ck = gx + "," + gz;
+        const cl = clusters.get(ck);
+        if (!cl) clusters.set(ck, { qlo: qt, qhi: qt, cx: (gx + 0.5) * DIST_CLUSTER, cz: (gz + 0.5) * DIST_CLUSTER });
+        else { if (qt < cl.qlo) cl.qlo = qt; if (qt > cl.qhi) cl.qhi = qt; }
       }
-      // Prune displayed columns that no longer exist (blocks removed/rebuilt).
-      for (const kk of aridCols.keys()) if (!distDry.has(kk)) aridCols.delete(kk);
-      for (const kk of soilWetMs.keys()) if (!distDry.has(kk)) soilWetMs.delete(kk);
+      let sig = Math.imul(clusters.size + 1, 2654435761) | 0;
+      for (const [ck, cl] of clusters) {
+        let s = 0;
+        for (let ii = 0; ii < ck.length; ii++) s = (s * 31 + ck.charCodeAt(ii)) | 0;
+        s = (s ^ Math.imul(cl.qlo, 19349663) ^ Math.imul(cl.qhi, 83492791)) | 0;
+        sig = (sig + (s ^ (s >>> 15))) | 0;
+      }
+      if (sig !== _distClusterSig) {
+        _distClusterSig = sig;
+        const cxA: number[] = [], czA: number[] = [], loA: number[] = [], hiA: number[] = [];
+        for (const cl of clusters.values()) {
+          cxA.push(cl.cx); czA.push(cl.cz);
+          // Widen the vertical gate by the quantization error (1 cell) so no
+          // column the exact test accepted can be rejected.
+          loA.push(cl.qlo * 2 - IRRIG_V - 1); hiA.push(cl.qhi * 2 + IRRIG_V + 1);
+        }
+        _distJob = { cx: cxA, cz: czA, lo: loA, hi: hiA, i: 0, next: new Map() };
+      } else {
+        _irrigStats.skipped++;
+      }
     };
 
     // LIGHT: ease displayed dryness toward target; re-tint block (cheap) always,
@@ -20643,40 +20744,17 @@ export default function TinyWorld() {
       }
       for (const m of touched) if (m.instanceColor) m.instanceColor.needsUpdate = true;
     };
-    // Dirty-gate for the HEAVY pass (Aug 5): recomputeMoisture is a pure
-    // function of (grass/dryGrass slotMaps, water cell set) — when neither has
-    // changed since the last full pass, the rebuild is redundant and is
-    // skipped (steady state → signature check only, ~0 ms vs the full ~15 ms
-    // soil-map rebuild). Change detection: terrainEdits.ver (bumped on every
-    // block place/remove), an order-independent hash of all water cells
-    // (catches water MOVING at constant count — mass conservation), and the
-    // total grass slot count (catches wholesale mesh rebuilds). Safety net: a
-    // forced full pass every IRRIG_FORCE_MS bounds staleness from any edit
-    // path that doesn't bump the counter (e.g. worker builds). While skipping,
-    // pending waterlog holds still flip on time via a tiny timer-only loop —
-    // submersion state can't change without a water/terrain change, but the
-    // hold expiring can. Incremental (per-edit region) update is the deeper
-    // follow-up; this is the skip tier.
-    let _moistWaterSig = -1;
+    // Dirty-gate (Aug 5, restructured Aug 14 — see the HEAVY-pass comment):
+    // terrainEdits.ver + grass slot count gate the SOIL rebuild only; the
+    // water-facing pass is cheap enough to run every IRRIG_MS, and the
+    // distance field self-gates on the clustered-footprint signature inside
+    // recomputeMoisture. IRRIG_FORCE_MS still bounds staleness from any edit
+    // path that doesn't bump the counter (e.g. worker builds).
     let _moistEditVer = -1;
     let _moistGrassCount = -1;
     let _lastFullIrrigMs = 0;
     const IRRIG_FORCE_MS = IRRIG_MS * 8;
     const _irrigStats = { full: 0, skipped: 0, lastSigMs: 0 };
-    const _waterSig = () => {
-      let h = 0, n = 0;
-      const wm = meshesRef.current.find((m: any) => m.userData?.layer === "water");
-      const wsm = wm?.userData?.slotMap as Map<string, number> | undefined;
-      if (wsm) for (const key of wsm.keys()) {
-        let s = 0;
-        for (let i = 0; i < key.length; i++) s = (s * 31 + key.charCodeAt(i)) | 0;
-        h = (h + (s ^ (s >>> 15))) | 0; n++;
-      }
-      const cellH = (c: [number, number, number]) => { const v = ((c[0] * 73856093) ^ (c[1] * 19349663) ^ (c[2] * 83492791)) | 0; return v ^ (v >>> 13); };
-      if (springCtrl) for (const c of springCtrl.waterCells()) { h = (h + cellH(c)) | 0; n++; }
-      if (pwCtrl) for (const c of pwCtrl.waterCells()) { h = (h + cellH(c)) | 0; n++; }
-      return (h ^ Math.imul(n, 2654435761)) | 0;
-    };
     const _grassSlotCount = () => {
       let n = 0;
       for (const m of meshesRef.current) {
@@ -20687,32 +20765,20 @@ export default function TinyWorld() {
       }
       return n;
     };
-    (window as any).__tw.irrigStats = () => ({ ..._irrigStats, editVer: terrainEdits.ver, forceMs: IRRIG_FORCE_MS });
+    (window as any).__tw.irrigStats = () => ({ ..._irrigStats, editVer: terrainEdits.ver, forceMs: IRRIG_FORCE_MS, distJob: _distJob ? { at: _distJob.i, of: _soilSnap?.keys.length ?? 0 } : null });
     const runIrrigation = (nowMs: number) => {
       if (!irrigationOn) return;
       if (weatherData?.modifiers?.isRaining) recordRain();   // live weather wets the field (wall-clock)
+      _pumpDistJob();                                        // budgeted distance-field slices, every frame
       if (nowMs - _lastIrrigMs >= IRRIG_MS) {
         _lastIrrigMs = nowMs;
         const t0 = performance.now();
-        const ever = terrainEdits.ver, wsig = _waterSig(), gcnt = _grassSlotCount();
-        _irrigStats.lastSigMs = performance.now() - t0;
-        const dirty = ever !== _moistEditVer || wsig !== _moistWaterSig || gcnt !== _moistGrassCount
+        const ever = terrainEdits.ver, gcnt = _grassSlotCount();
+        const rebuildSoil = ever !== _moistEditVer || gcnt !== _moistGrassCount || !_soilSnap
           || (nowMs - _lastFullIrrigMs >= IRRIG_FORCE_MS);
-        if (dirty) {
-          _moistEditVer = ever; _moistWaterSig = wsig; _moistGrassCount = gcnt; _lastFullIrrigMs = nowMs;
-          _irrigStats.full++;
-          recomputeMoisture(nowMs);
-        } else {
-          _irrigStats.skipped++;
-          if (waterlogOn && submergeSince.size) {
-            const nowW = Date.now();
-            for (const [kk, since] of submergeSince) {
-              if (nowW - since >= WATERLOG_HOLD_MS && !waterloggedCols.has(kk)) {
-                waterloggedCols.add(kk); const c = kk.split(","); markGrassDirty(+c[0], +c[1]);
-              }
-            }
-          }
-        }
+        if (rebuildSoil) { _moistEditVer = ever; _moistGrassCount = gcnt; _lastFullIrrigMs = nowMs; }
+        recomputeMoisture(nowMs, rebuildSoil);
+        _irrigStats.lastSigMs = performance.now() - t0;
       }
       if (nowMs - _lastEaseMs >= EASE_MS) { const dt = _lastEaseMs === 0 ? EASE_MS : (nowMs - _lastEaseMs); _lastEaseMs = nowMs; easeMoisture(nowMs, dt); }
     };
