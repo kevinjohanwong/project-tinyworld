@@ -635,20 +635,39 @@ export function createParticleWater(ctx: PWaterCtx) {
   // feeds recomputeMoisture so irrigation/aridity/waterlogging see the
   // particle water exactly like they saw the CA spring's cells. Called on the
   // moisture cadence (~8s), so a linear pass over <=29k particles is free.
+  // CAUTION: worker snapshot buffers are TRANSFERRED back for recycling
+  // between frames, so lastState's views are usually detached by the time a
+  // separate task (the moisture cadence, page evals) reads them — every
+  // Math.floor(NaN) collapsed to one bogus cell and the moisture field saw no
+  // particle water at all. Prefer the live views when still attached; else
+  // derive column spans from the persistent binFields copies (gHas/gMin/gTop),
+  // which renderFrame refreshes synchronously while the buffer is valid.
   function waterCells(): Array<[number, number, number]> {
     const st = lastState;
     if (!st) return [];
     const out: Array<[number, number, number]> = [];
-    const seen = new Set<number>();
-    const n3 = st.count * 3;
-    for (let i = 0; i < n3; i += 3) {
-      const cx = Math.floor(st.pos[i]);
-      const cy = Math.floor(st.pos[i + 1]);
-      const cz = Math.floor(st.pos[i + 2]);
-      const key = ((cx & 1023) << 20) | ((cy & 1023) << 10) | (cz & 1023);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push([box.x0 + cx, box.y0 + cy, box.z0 + cz]);
+    if (st.pos.length > 0) {
+      const seen = new Set<number>();
+      const n3 = st.count * 3;
+      for (let i = 0; i < n3; i += 3) {
+        const cx = Math.floor(st.pos[i]);
+        const cy = Math.floor(st.pos[i + 1]);
+        const cz = Math.floor(st.pos[i + 2]);
+        const key = ((cx & 1023) << 20) | ((cy & 1023) << 10) | (cz & 1023);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push([box.x0 + cx, box.y0 + cy, box.z0 + cz]);
+      }
+      return out;
+    }
+    const nb = nx * nz;
+    for (let b = 0; b < nb; b++) {
+      if (!gHas[b]) continue;
+      const wx = box.x0 + (b % nx);
+      const wz = box.z0 + ((b / nx) | 0);
+      const yLo = Math.floor(gMin[b]);
+      const yHi = Math.floor(gTop[b]);
+      for (let y = yLo; y <= yHi; y++) out.push([wx, box.y0 + y, wz]);
     }
     return out;
   }

@@ -880,6 +880,96 @@ function makeSlopeWorldSource(): { layers: Record<string, Int32Array>; meta: Rec
   };
 }
 
+// Two-tier waterfall verification bed (?debugWorld=1&terrain=steps, KJ Aug 13:
+// "verification tests in a significantly simpler environment"). Pair with
+// ?bare=1 to strip clouds/workers. Geometry (FINE cells; everything passes the
+// 1.5× conquest coarsen, so all drops are ≥12 fine = ≥8 coarse and the lip is
+// 6 fine deep = 4 coarse):
+//   plateau (top y40, x 6..36, biggest flat component → spring sites here)
+//   → cliff 1 (18-cell fall) → mid ledge (floor y22) whose +X LIP (y28) must
+//   pool 6 cells of water before overtopping → cliff 2 (20-cell fall) →
+//   bottom plain (y8) with a 3-deep bowl (never qualifies as a spring: all
+//   its drops are <8 coarse). Grass shore everywhere for the moisture test.
+function makeStepsWorldSource(): { layers: Record<string, Int32Array>; meta: Record<string, unknown>; blockCount: number; resolution: number } {
+  const voxel = 0.05;
+  const NX = 120, NZ = 80;
+  const FLOOR_Y = 2;
+  const MID = NZ / 2;
+  const PLATEAU_X0 = 6, PLATEAU_X1 = 36;   // top tier, y40
+  const LEDGE_X1 = 60;                     // mid ledge floor y22, x 36..60
+  const LIP_X1 = 66;                       // lip strip y28, x 60..66
+  const BOTTOM_X1 = 104;                   // plain y8 (+bowl), x 66..104
+                                           // shore y5, x 104..120 → cull edge
+
+  const grass: number[] = [];
+  const dirt: number[] = [];
+  const ground: number[] = [];
+
+  const heightAt = (x: number, z: number): number => {
+    let h: number;
+    if (x < PLATEAU_X0) h = 42;                       // back rim behind the spring
+    else if (x < PLATEAU_X1) h = 40;                  // top plateau
+    else if (x < LEDGE_X1) h = 22;                    // mid ledge floor
+    else if (x < LIP_X1) h = 28;                      // pool lip (6 above ledge floor)
+    else if (x < BOTTOM_X1) h = 8;                    // bottom plain
+    else h = 5;                                       // low shore → open cull edge
+    // Bottom bowl: 3 deep, drops all <8 coarse so it can't win the spring.
+    if (x >= 72 && x < 92 && Math.abs(z - MID) < 12 && h === 8) h = 5;
+    // Side walls flanking the ledge + lip keep the tier-1 pool in the bowl.
+    if (x >= PLATEAU_X1 && x < LIP_X1 && Math.abs(z - MID) > 14) h = 34;
+    // Banks along the bottom plain keep fall-2 water in the strip.
+    if (x >= LIP_X1 && x < BOTTOM_X1 && Math.abs(z - MID) > 24) h = 12;
+    return Math.max(FLOOR_Y + 1, h);
+  };
+
+  for (let x = 0; x < NX; x++) {
+    for (let z = 0; z < NZ; z++) {
+      const h = heightAt(x, z);
+      for (let y = FLOOR_Y; y < h; y++) dirt.push(x, y, z);
+      grass.push(x, h, z);
+      ground.push(x, z, h);
+    }
+  }
+
+  const layers: Record<string, Int32Array> = {
+    grass: new Int32Array(grass),
+    dirt: new Int32Array(dirt),
+    water: new Int32Array([]),
+    wall: new Int32Array([]),
+    trunks: new Int32Array([]),
+    leaves: new Int32Array([]),
+    ground: new Int32Array(ground),
+  };
+  const blockCount = Object.entries(layers).reduce(
+    (sum, [name, a]) => (name === "ground" ? sum : sum + a.length / 3),
+    0,
+  );
+  return {
+    layers,
+    meta: {
+      voxel,
+      span: NX * voxel,
+      centerX: (NX / 2) * voxel,
+      centerZ: (NZ / 2) * voxel,
+      worldName: "TWO-TIER FALL TESTBED",
+      sourceName: "two-tier-fall-testbed",
+      capturedAt: Date.now(),
+      weatherSeason: "summer",
+      debugWorld: true,
+      hydroRegions: {
+        axis: "x",
+        plateau: [PLATEAU_X0, PLATEAU_X1],
+        ledge: [PLATEAU_X1, LEDGE_X1],
+        lip: [LEDGE_X1, LIP_X1],
+        bottom: [LIP_X1, BOTTOM_X1],
+        edge: [BOTTOM_X1, NX],
+      },
+    },
+    blockCount,
+    resolution: voxel,
+  };
+}
+
 // Deep-slot canyon outlet testbed (KJ: "build a deeper channel outlet… see if the
 // river flows deeper"). SAME basin + lip + inflow as the slope bed, but the outlet
 // is one tapered incised channel cut into a tall mesa: exactly 4 voxels wide at the
@@ -1967,6 +2057,7 @@ export default function TinyWorld() {
       : _terrain === "canyon" ? "canyon"
       : _terrain === "breach" ? "breach"
       : _terrain === "breachflat" ? "breachflat"
+      : _terrain === "steps" ? "steps"
       : _terrain === "synthetic" ? "synthetic"
       : "scan";
     setLoadNote(
@@ -1977,11 +2068,13 @@ export default function TinyWorld() {
       : _mode === "canyon" ? "loading water canyon testbed…"
       : _mode === "breach" ? "loading breached-lake gorge testbed…"
       : _mode === "breachflat" ? "loading flat breached-lake gorge testbed…"
+      : _mode === "steps" ? "loading two-tier waterfall testbed…"
       : _mode === "synthetic" ? "loading synthetic debug world…"
       : "loading debug scan…",
     );
     const t = setTimeout(() => {
       (async () => {
+        if (_mode === "steps") return buildWorld(makeStepsWorldSource());
         if (_mode === "hydro") return buildWorld(makeWaterTestWorldSource());
         if (_mode === "mid") return buildWorld(makeMidPoolTestWorldSource());
         if (_mode === "slope") return buildWorld(makeSlopeWorldSource());
@@ -2891,6 +2984,13 @@ export default function TinyWorld() {
     cameraRef.current = camera;
 
     const __diagParams = new URLSearchParams(location.search);
+    // BARE VERIFICATION MODE (?bare=1, KJ Aug 13): strip everything that isn't
+    // terrain + water + grass + the plain sun/shadow rig, so water pooling,
+    // second-fall visibility, grass moisture, and frame timing can be judged
+    // in a minimal environment. Kills the voxel cloud ring/heroes/cloud sea
+    // and the worker colony spawn. RayGI is already default-off.
+    const BARE = __diagParams.get("bare") === "1";
+    if (BARE) console.log("[tinyworld] BARE mode: clouds + workers stripped");
     // MOBILE MATCHES DESKTOP (KJ Jul 31: "mobile needs to match desktop — just
     // resolution lower"). Unify the pipeline on mobile: run the same composer
     // path (RayGI + GTAO + bloom) that desktop uses, INCLUDING while walking,
@@ -3394,7 +3494,7 @@ export default function TinyWorld() {
     // DEFAULT ON (KJ Aug 5 "implement all the changes into main"): voxel
     // clouds + heroes + cloud sea on every world. ?clouds=0 kills, ?clouds=vol
     // routes to the legacy volumetric raymarch for comparison.
-    const _cloudsEnabled = _cloudMode !== "0";
+    const _cloudsEnabled = !BARE && _cloudMode !== "0";
     const _useVoxelClouds = _cloudMode !== "vol";
     const volumetricClouds = _useVoxelClouds
       ? createVoxelCloudRing({
@@ -10117,7 +10217,7 @@ export default function TinyWorld() {
           const d2 = dx * dx + dz * dz;
           if (!best || d2 < best.d2) best = { x, z, y: top, d2 };
         }
-        if (best) {
+        if (best && !BARE) {
           createWorker("worker-1", best.x, best.y, best.z);
           console.log("[tinyworld] worker spawned on open ground", best.x, best.y, best.z);
           // Restore the rest of a saved colony: dawn arrivals accumulate over
@@ -10132,7 +10232,7 @@ export default function TinyWorld() {
       }
     }
     // Fallback (worlds without a ground map): old colMap-centroid pick.
-    if (workers.length === 0 && colMap.size > 0) {
+    if (!BARE && workers.length === 0 && colMap.size > 0) {
       let sumX = 0, sumZ = 0, nCol = 0;
       for (const k of colMap.keys()) {
         const cs = k.split(",");
