@@ -64,6 +64,10 @@ export function createParticleWater(ctx: PWaterCtx) {
   };
 
   // ── Terrain crop around the spring ──────────────────────────────────────
+  // A circular spring-centred crop can cut a real downstream basin out of the
+  // simulation on large worlds. Route the domain along the actual terrain
+  // surface first, then pad that route. This only chooses the finite solver
+  // boundary; water motion inside remains entirely solver-driven.
   let half = Math.max(16, Math.round(num("pwbox", 48)));
   let minX = origin.x, maxX = origin.x, minZ = origin.z, maxZ = origin.z, maxY = origin.y;
   let minSolidY = origin.y;
@@ -77,6 +81,78 @@ export function createParticleWater(ctx: PWaterCtx) {
   for (const set of colMap.values()) for (const y of set) {
     if (y > maxY) maxY = y;
     if (y < minSolidY) minSolidY = y;
+  }
+
+  const tops = new Map<string, number>();
+  for (const [key, set] of colMap) {
+    let top = -Infinity;
+    for (const y of set) if (y > top) top = y;
+    if (Number.isFinite(top)) tops.set(key, top);
+  }
+  const routeEnabled = params.get("pwroute") !== "0";
+  const routeLimit = Math.max(0, Math.min(160, Math.round(num("pwroutesteps", 96))));
+  const routePad = Math.max(6, Math.min(32, Math.round(num("pwroutepad", 14))));
+  const route: Array<[number, number]> = [[origin.x, origin.z]];
+  if (routeEnabled && routeLimit > 0) {
+    let x = origin.x, z = origin.z;
+    const visited = new Set([`${x},${z}`]);
+    const FLAT_MAX = 20000, ROUTE_MAX = 8000;
+    for (let step = 0; step < routeLimit && route.length < ROUTE_MAX; step++) {
+      const here = tops.get(`${x},${z}`);
+      if (here == null) break;
+      let next: { x: number; z: number; y: number; d2: number } | null = null;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dz) continue;
+        const nx = x + dx, nz = z + dz;
+        const key = `${nx},${nz}`;
+        if (visited.has(key)) continue;
+        const y = tops.get(key);
+        if (y == null || y >= here) continue;
+        const candidate = { x: nx, z: nz, y, d2: dx * dx + dz * dz };
+        if (!next || y < next.y || (y === next.y && candidate.d2 < next.d2)) next = candidate;
+      }
+      if (!next) {
+        // Flat cell: real water spreads level until it reaches the flat's
+        // spill edge, so the route must cross the flat, not stop on it. BFS
+        // over equal-height cells for a strictly lower neighbour; a flat with
+        // no spill anywhere is a true terminal basin and ends the route. This
+        // still only chooses the solver boundary — level spreading itself
+        // remains sim-driven.
+        const start = `${x},${z}`;
+        const parent = new Map<string, string>([[start, ""]]);
+        const queue: string[] = [start];
+        let spillKey: string | null = null;
+        let spillNext: { x: number; z: number } | null = null;
+        for (let qi = 0; qi < queue.length && qi < FLAT_MAX && !spillKey; qi++) {
+          const [cx, cz] = queue[qi].split(",").map(Number);
+          for (let dz = -1; dz <= 1 && !spillKey; dz++) for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dz) continue;
+            const nx = cx + dx, nz = cz + dz;
+            const nk = `${nx},${nz}`;
+            const y = tops.get(nk);
+            if (y == null) continue;
+            if (y < here) { spillKey = queue[qi]; spillNext = { x: nx, z: nz }; break; }
+            if (y === here && !parent.has(nk) && !visited.has(nk)) { parent.set(nk, queue[qi]); queue.push(nk); }
+          }
+        }
+        if (!spillKey || !spillNext) break;
+        for (let k: string | undefined = spillKey; k && k !== start; k = parent.get(k)) {
+          const [px, pz] = k.split(",").map(Number);
+          visited.add(k);
+          route.push([px, pz]);
+          if (route.length >= ROUTE_MAX) break;
+        }
+        next = { x: spillNext.x, z: spillNext.z, y: tops.get(`${spillNext.x},${spillNext.z}`)!, d2: 0 };
+      }
+      x = next.x; z = next.z;
+      visited.add(`${x},${z}`);
+      route.push([x, z]);
+    }
+  }
+  let routeMinX = origin.x, routeMaxX = origin.x, routeMinZ = origin.z, routeMaxZ = origin.z;
+  for (const [x, z] of route) {
+    routeMinX = Math.min(routeMinX, x); routeMaxX = Math.max(routeMaxX, x);
+    routeMinZ = Math.min(routeMinZ, z); routeMaxZ = Math.max(routeMaxZ, z);
   }
 
   // Ceiling mount: the emitter hangs just under the roof above the sited
@@ -107,10 +183,10 @@ export function createParticleWater(ctx: PWaterCtx) {
     ? origin.y + srcH
     : srcMode === "ceiling" ? ceilY - 1.7 : origin.y + 2.0;
   const clampBox = () => {
-    const x0 = Math.max(minX - 2, origin.x - half);
-    const x1 = Math.min(maxX + 3, origin.x + half);
-    const z0 = Math.max(minZ - 2, origin.z - half);
-    const z1 = Math.min(maxZ + 3, origin.z + half);
+    const x0 = Math.max(minX - 2, Math.min(origin.x - half, routeMinX - routePad));
+    const x1 = Math.min(maxX + 3, Math.max(origin.x + half, routeMaxX + routePad));
+    const z0 = Math.max(minZ - 2, Math.min(origin.z - half, routeMinZ - routePad));
+    const z1 = Math.min(maxZ + 3, Math.max(origin.z + half, routeMaxZ + routePad));
     // Floor the domain at the world's lowest solid, not absolute y=0: water
     // always rests ON a solid, so cells below the lowest solid are pure void
     // (an off-world fall drains at the open boundary a few cells under the
@@ -204,7 +280,8 @@ export function createParticleWater(ctx: PWaterCtx) {
   };
   console.log(
     `[pwater] terrain crop ${nx}x${ny}x${nz} (${((performance.now() - t0) | 0)}ms), ` +
-    `basin cell (${origin.x},${origin.y},${origin.z}), source ${srcMode}` +
+    `basin cell (${origin.x},${origin.y},${origin.z}), route ${route.length} cells ` +
+    `(${route[route.length - 1][0]},${route[route.length - 1][1]}), source ${srcMode}` +
     (srcMode === "ceiling" ? ` (roof y=${ceilY}, emit y=${emitYW.toFixed(1)})` : ` (emit y=${emitYW.toFixed(1)})`) +
     `, walls open px ${_openCount(wallOpen.px)}/${nz} mx ${_openCount(wallOpen.mx)}/${nz}` +
     ` pz ${_openCount(wallOpen.pz)}/${nx} mz ${_openCount(wallOpen.mz)}/${nx}`,
