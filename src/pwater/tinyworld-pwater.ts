@@ -30,6 +30,12 @@ export type PWaterCtx = {
   // Solid oracle: drawn voxels per column ("x,z" -> Set<y>) + latent fill.
   colMap: Map<string, Set<number>>;
   extraSolid?: (x: number, y: number, z: number) => boolean;
+  // Latent column tops ("x,z" -> highest un-spent latent y). Latent mass is
+  // real terrain for the water (KJ ruling, Aug 13): the route march and box
+  // bounds must see a latent-only mass (mesa, building fill) as high ground,
+  // not a void the route could march straight through. Cell solidity inside
+  // the box already comes from extraSolid; this is the ROUTING view.
+  extraColTops?: Map<string, number>;
   voxel: number;
   cxRound: number;
   czRound: number;
@@ -56,7 +62,7 @@ const DEFAULTS = {
 const MAX_CELLS = 3_500_000;
 
 export function createParticleWater(ctx: PWaterCtx) {
-  const { THREE, renderer, scene, colMap, extraSolid, voxel, cxRound, czRound, origin, params } = ctx;
+  const { THREE, renderer, scene, colMap, extraSolid, extraColTops, voxel, cxRound, czRound, origin, params } = ctx;
   const num = (name: string, dflt: number) => {
     const v = params.get(name);
     const n = v == null ? NaN : Number(v);
@@ -88,6 +94,20 @@ export function createParticleWater(ctx: PWaterCtx) {
     let top = -Infinity;
     for (const y of set) if (y > top) top = y;
     if (Number.isFinite(top)) tops.set(key, top);
+  }
+  let latentTops = 0;
+  if (extraColTops) for (const [key, t] of extraColTops) {
+    const prev = tops.get(key);
+    if (prev == null || t > prev) {
+      tops.set(key, t);
+      latentTops++;
+      const c = key.indexOf(",");
+      const x = +key.slice(0, c);
+      const z = +key.slice(c + 1);
+      if (x < minX) minX = x; else if (x > maxX) maxX = x;
+      if (z < minZ) minZ = z; else if (z > maxZ) maxZ = z;
+      if (t > maxY) maxY = t;
+    }
   }
   const routeEnabled = params.get("pwroute") !== "0";
   const routeLimit = Math.max(0, Math.min(160, Math.round(num("pwroutesteps", 96))));
@@ -280,7 +300,7 @@ export function createParticleWater(ctx: PWaterCtx) {
   };
   console.log(
     `[pwater] terrain crop ${nx}x${ny}x${nz} (${((performance.now() - t0) | 0)}ms), ` +
-    `basin cell (${origin.x},${origin.y},${origin.z}), route ${route.length} cells ` +
+    `basin cell (${origin.x},${origin.y},${origin.z}), latent tops ${latentTops}, route ${route.length} cells ` +
     `(${route[route.length - 1][0]},${route[route.length - 1][1]}), source ${srcMode}` +
     (srcMode === "ceiling" ? ` (roof y=${ceilY}, emit y=${emitYW.toFixed(1)})` : ` (emit y=${emitYW.toFixed(1)})`) +
     `, walls open px ${_openCount(wallOpen.px)}/${nz} mx ${_openCount(wallOpen.mx)}/${nz}` +

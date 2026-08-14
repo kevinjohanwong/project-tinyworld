@@ -8370,6 +8370,24 @@ export default function TinyWorld() {
       }
       return false;
     };
+    // Latent column tops ("x,z" -> highest un-spent latent y) for the water
+    // system's terrain view — latent mass is real terrain (KJ ruling, Aug 13):
+    // spring siting and the pwater route march must see a latent-only mass as
+    // high ground, not a void. Built once at water init; digs after that reach
+    // the sim through the solidEdit channel, not this map.
+    const latentColTops = (): Map<string, number> => {
+      const out = new Map<string, number>();
+      const lat = latentRef.current;
+      if (!lat) return out;
+      for (const [k, r] of lat.cols) {
+        const c = k.indexOf(",");
+        const xs = k.slice(0, c), zs = k.slice(c + 1);
+        for (let y = r[1]; y >= r[0]; y--) {
+          if (!lat.spent.has(xs + "," + y + "," + zs)) { out.set(k, y); break; }
+        }
+      }
+      return out;
+    };
     // Covered-overhead test for the interior lighting state: any block above
     // in the column (colMap — scan AND placed blocks), or un-spent latent
     // mass above. Same "covered = indoor" definition measureEnclosure uses,
@@ -20152,9 +20170,11 @@ export default function TinyWorld() {
     try {
       const _springMeta = (worldDataRef.current?.meta as Record<string, any>) || {};
       const _sid = savedWorldRef.current?.id || "tinyworld";
+      const _latTops = latentColTops();
       springCtrl = createSpring({
         THREE, scene, colMap, addCol,
         extraSolid: latentSolidAt,
+        extraColTops: _latTops,
         voxel, cellSize: voxel * BLOCK_SCALE, cxRound, czRound,
         waterColor: PAL.water, meta: _springMeta,
         worldSeed: _sid.split("").reduce((a, c) => (Math.imul(a, 31) + c.charCodeAt(0)) | 0, 7),
@@ -20272,6 +20292,7 @@ export default function TinyWorld() {
               pwCtrl = createParticleWater({
                 THREE, renderer, scene, colMap,
                 extraSolid: latentSolidAt,
+                extraColTops: _latTops,
                 voxel, cxRound, czRound,
                 origin: _sOrigin,
                 sun, moon, hemi,

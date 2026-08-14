@@ -45,6 +45,10 @@ export type SpringContext = {
   // visible-crust gaps (colMap holds only drawn voxels; the latent fill is
   // solid ground the sim must respect).
   extraSolid?: (x: number, y: number, z: number) => boolean;
+  // Latent column tops ("x,z" -> highest un-spent latent y). Latent mass is
+  // real terrain (KJ ruling, Aug 13): siting must see a latent-only mass
+  // (mesa, building fill) as ground, same view the pwater route march gets.
+  extraColTops?: Map<string, number>;
 };
 
 const KEY = (x: number, y: number, z: number) => `${x},${y},${z}`;
@@ -62,7 +66,7 @@ function mix32(n: number): number {
 export function createSpring(ctx: SpringContext) {
   const {
     THREE, scene, colMap, voxel, cellSize,
-    cxRound, czRound, waterColor, meta, params, extraSolid,
+    cxRound, czRound, waterColor, meta, params, extraSolid, extraColTops,
   } = ctx;
 
   const num = (name: string, dflt: number) => {
@@ -253,7 +257,7 @@ export function createSpring(ctx: SpringContext) {
   function persist() {
     if (!origin) return;
     meta.spring = {
-      version: 12, seed: theSeed,
+      version: 13, seed: theSeed,
       origin: { x: origin[0], y: origin[1], z: origin[2] },
       budget: state.budget, capacity: CAPACITY,
     } as SpringMeta;
@@ -270,11 +274,23 @@ export function createSpring(ctx: SpringContext) {
 
     // 1) Per-column top solid height, then the high band = the "surface".
     let maxTop = -Infinity, minSolid = Infinity, minTop = Infinity;
-    const tops: Vec3[] = [];
+    const topByKey = new Map<string, number>();
     for (const [k, ys] of colMap) {
       let t = -Infinity;
       for (const y of ys) { if (y > t) t = y; if (y < minSolid) minSolid = y; }
       if (t === -Infinity) continue;
+      topByKey.set(k, t);
+    }
+    // Latent-interior mass is real terrain (KJ ruling, Aug 13): fold latent
+    // column tops in so the plateau/basin passes see a latent-only mass as
+    // ground. The flatness/thickness gates already test cell solidity through
+    // extraSolid, so a latent top that qualifies is genuinely load-bearing.
+    if (extraColTops) for (const [k, t] of extraColTops) {
+      const prev = topByKey.get(k);
+      if (prev == null || t > prev) topByKey.set(k, t);
+    }
+    const tops: Vec3[] = [];
+    for (const [k, t] of topByKey) {
       const [x, z] = k.split(",").map(Number);
       tops.push([x, t, z]);
       if (t > maxTop) maxTop = t;
@@ -528,9 +544,9 @@ export function createSpring(ctx: SpringContext) {
       return pass(true, 2) ?? pass(false, 3);
     };
 
-    // Re-site once for the plateau-area scoring contract (version 12).
+    // Re-site once for the latent-tops terrain view (version 13).
     const savedVersion = (saved as any)?.version ?? 0;
-    const RESITE = params.get("springresite") === "1" || (saved != null && savedVersion < 12);
+    const RESITE = params.get("springresite") === "1" || (saved != null && savedVersion < 13);
     if (saved?.origin && !RESITE) {
       origin = [saved.origin.x, saved.origin.y, saved.origin.z];
     } else {
