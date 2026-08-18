@@ -20738,11 +20738,31 @@ export default function TinyWorld() {
 
     // LIGHT: ease displayed dryness toward target; re-tint block (cheap) always,
     // re-blade only when the column crosses a coarse 1/4 bucket (bounds rebuilds).
-    const easeMoisture = (nowMs: number, dt: number) => {
-      const nowW = Date.now();
-      const rainMoist = (nowW - lastGrassRainMs) < GREEN_HOLD_MS ? 1 : 0;   // wall-clock hold
+    // PERF round 3 (fidelity-neutral): easeMoisture was a FULL distDry sweep in
+    // ONE frame every EASE_MS — the known 1Hz CPU spike candidate on big worlds
+    // (~100k+ entries on leslielab). Same per-entry math, now sliced as a
+    // budgeted job (EASE_BUDGET_MS/frame, _pumpDistJob pattern): dt + rain/wall
+    // clock are captured at cycle start so ease speed is unchanged; slice-order
+    // skew is invisible under the linear ramp + 1/48 quantization. distDry can
+    // be atomically swapped mid-cycle by _pumpDistJob — stale keys just skip.
+    const EASE_BUDGET_MS = 2.5;
+    let _easeJob: { keys: string[]; i: number; dt: number; nowW: number; rainMoist: number } | null = null;
+    const _pumpEaseJob = () => {
+      const j = _easeJob;
+      if (!j) return;
+      const t0 = performance.now();
       const touched = new Set<any>();
-      for (const [kk, dd] of distDry) {
+      while (j.i < j.keys.length) {
+        const kk = j.keys[j.i++];
+        const dd = distDry.get(kk);
+        if (dd !== undefined) _easeEntry(kk, dd, j.dt, j.nowW, j.rainMoist, touched);
+        if ((j.i & 255) === 0 && performance.now() - t0 > EASE_BUDGET_MS) break;
+      }
+      for (const m of touched) if (m.instanceColor) m.instanceColor.needsUpdate = true;
+      if (j.i >= j.keys.length) _easeJob = null;
+    };
+    const _easeEntry = (kk: string, dd: number, dt: number, nowW: number, rainMoist: number, touched: Set<any>) => {
+      {
         const waterMoist = 1 - dd;
         // Soil memory: refresh the last-wet stamp while the column is in the
         // green half of the water gradient; after the water recedes the soil
@@ -20762,7 +20782,7 @@ export default function TinyWorld() {
         const target = aridEnabled ? Math.max(0, 1 - Math.max(waterMoist, rainMoist, soilMoist)) : 0;
         const has = aridCols.has(kk);
         const cur = has ? (aridCols.get(kk) as number) : dd;   // new columns seed at their distance dryness
-        if (has && Math.abs(target - cur) < 0.004) continue;   // settled
+        if (has && Math.abs(target - cur) < 0.004) return;   // settled
         let nv: number;
         if (!has) { nv = Math.round(dd * 48) / 48; }            // first display = seed (no ease jump)
         else {
@@ -20771,14 +20791,13 @@ export default function TinyWorld() {
           nv = drying ? Math.min(target, cur + step) : Math.max(target, cur - step);
           nv = Math.round(nv * 48) / 48;
         }
-        if (has && nv === cur) continue;
+        if (has && nv === cur) return;
         const s = soilSlotCache.get(kk);
         if (s) { setBlockArid(s.mesh, s.slot, nv); touched.add(s.mesh); }
         const prevB = has ? Math.round(cur * 4) : -999, newB = Math.round(nv * 4);
         if (prevB !== newB) { const c = kk.split(","); markGrassDirty(+c[0], +c[1]); }
         aridCols.set(kk, nv);
       }
-      for (const m of touched) if (m.instanceColor) m.instanceColor.needsUpdate = true;
     };
     // Dirty-gate (Aug 5, restructured Aug 14 — see the HEAVY-pass comment):
     // terrainEdits.ver + grass slot count gate the SOIL rebuild only; the
@@ -20801,7 +20820,7 @@ export default function TinyWorld() {
       }
       return n;
     };
-    (window as any).__tw.irrigStats = () => ({ ..._irrigStats, editVer: terrainEdits.ver, forceMs: IRRIG_FORCE_MS, distJob: _distJob ? { at: _distJob.i, of: _soilSnap?.keys.length ?? 0 } : null });
+    (window as any).__tw.irrigStats = () => ({ ..._irrigStats, editVer: terrainEdits.ver, forceMs: IRRIG_FORCE_MS, distJob: _distJob ? { at: _distJob.i, of: _soilSnap?.keys.length ?? 0 } : null, easeJob: _easeJob ? { at: _easeJob.i, of: _easeJob.keys.length } : null, easeMapSize: distDry.size });
     const runIrrigation = (nowMs: number) => {
       if (!irrigationOn) return;
       if (weatherData?.modifiers?.isRaining) recordRain();   // live weather wets the field (wall-clock)
@@ -20816,7 +20835,13 @@ export default function TinyWorld() {
         recomputeMoisture(nowMs, rebuildSoil);
         _irrigStats.lastSigMs = performance.now() - t0;
       }
-      if (nowMs - _lastEaseMs >= EASE_MS) { const dt = _lastEaseMs === 0 ? EASE_MS : (nowMs - _lastEaseMs); _lastEaseMs = nowMs; easeMoisture(nowMs, dt); }
+      if (!_easeJob && nowMs - _lastEaseMs >= EASE_MS) {
+        const dt = _lastEaseMs === 0 ? EASE_MS : (nowMs - _lastEaseMs);
+        _lastEaseMs = nowMs;
+        const nowW = Date.now();
+        _easeJob = { keys: Array.from(distDry.keys()), i: 0, dt, nowW, rainMoist: (nowW - lastGrassRainMs) < GREEN_HOLD_MS ? 1 : 0 };
+      }
+      _pumpEaseJob();
     };
 
     // __twPerf.buckets — MEASUREMENT-ONLY per-system CPU timers (fidelity-
