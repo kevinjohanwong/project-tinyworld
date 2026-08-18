@@ -2984,6 +2984,30 @@ export default function TinyWorld() {
     cameraRef.current = camera;
 
     const __diagParams = new URLSearchParams(location.search);
+    // ?perf=1|2 quality presets (Aug 18 — KJ explicitly approved trading
+    // fidelity for framerate this round). Each preset only INJECTS a knob
+    // when that knob isn't already in the URL, so single levers stay
+    // individually priceable with the perf beacon (?rscale, ?shadowmaps,
+    // ?grassdensity, ?gtaosamples, ?ssao, ?bloom all override).
+    //   perf=1 balanced: 0.85 render scale, smaller shadow maps, grass 6x, GTAO 8 samples
+    //   perf=2 aggressive: 0.7 render scale, small shadow maps, grass 4x, GTAO off, bloom off
+    const _perfTier = Math.max(0, Math.min(2, Number(__diagParams.get("perf")) || 0));
+    {
+      const def = (k: string, v: string) => { if (!__diagParams.has(k)) __diagParams.set(k, v); };
+      if (_perfTier === 1) {
+        def("rscale", "0.85"); def("shadowmaps", "5120,4608,2048"); def("gtaosamples", "8");
+      } else if (_perfTier === 2) {
+        def("rscale", "0.7"); def("shadowmaps", "4096,3072,1536"); def("ssao", "0"); def("bloom", "0");
+      }
+    }
+    const _rscale = Math.max(0.5, Math.min(1, Number(__diagParams.get("rscale")) || 1));
+    const _shadowSizes = (() => {
+      const raw = __diagParams.get("shadowmaps");
+      if (!raw) return null;
+      const p = raw.split(",").map((s) => Math.max(512, Math.min(8192, Math.round(Number(s) || 0))));
+      return { world: p[0] || 7168, hero: p[1] || 6656, moon: p[2] || 3072 };
+    })();
+    const _gtaoSamples = Math.max(4, Math.min(24, Math.round(Number(__diagParams.get("gtaosamples")) || 12)));
     // BARE VERIFICATION MODE (?bare=1, KJ Aug 13): strip everything that isn't
     // terrain + water + grass + the plain sun/shadow rig, so water pooling,
     // second-fall visibility, grass moisture, and frame timing can be judged
@@ -3025,7 +3049,7 @@ export default function TinyWorld() {
     // Lower internal resolution on mobile in match-desktop mode to pay for the
     // full composer pipeline; everything else (composer/normalTarget) reads
     // renderer.getPixelRatio(), so this cascades. Desktop + prod-mobile = 1.
-    renderer.setPixelRatio(isMobileRef.current && _mobileMatchDesktop ? _mobileRes : 1);
+    renderer.setPixelRatio((isMobileRef.current && _mobileMatchDesktop ? _mobileRes : 1) * _rscale);
     renderer.setSize(W, H);
     // Soft voxel shadows, matching the voxel-spike reference. BasicShadowMap
     // (a hard single tap) snapped the shadow boundary to the coarse overview
@@ -3122,7 +3146,7 @@ export default function TinyWorld() {
       distanceExponent: 1,
       thickness: Math.max(0.02, voxel * 1.5),
       scale: 1,
-      samples: 12,
+      samples: _gtaoSamples,
       distanceFallOff: 1,
       screenSpaceRadius: false,
     });
@@ -3391,7 +3415,7 @@ export default function TinyWorld() {
     // is wide enough to cover everything on screen near the mech. Single 7168 map
     // = ~51M texels — LOWER than the old split (4096 world + 6656 hero ≈ 61M), and
     // well under the single-8192 67M baseline that loaded fine, so no iOS crash risk.
-    sun.shadow.mapSize.set(7168, 7168);
+    sun.shadow.mapSize.set(_shadowSizes?.world ?? 7168, _shadowSizes?.world ?? 7168);
     // Initial overview bounds; updateSunShadow() overwrites these per-frame.
     sun.shadow.camera.left = -span * 1.4;
     sun.shadow.camera.right = span * 1.4;
@@ -3439,7 +3463,7 @@ export default function TinyWorld() {
     moon.position.copy(moonDir).multiplyScalar(span * 3);
     moon.castShadow = false; // enabled at night by the day/night-edge handoff
     if (_shadowSplitOn) moon.shadow.autoUpdate = false; // static-only, like the sun map
-    moon.shadow.mapSize.set(3072, 3072);
+    moon.shadow.mapSize.set(_shadowSizes?.moon ?? 3072, _shadowSizes?.moon ?? 3072);
     moon.shadow.camera.left = -span * 1.4;
     moon.shadow.camera.right = span * 1.4;
     moon.shadow.camera.top = span * 1.4;
@@ -3562,7 +3586,7 @@ export default function TinyWorld() {
     // VRAM went to the world map); the mech's far shadow tip past the box is
     // still carried by the world light, so it degrades gracefully instead of
     // clipping. If it crashes on device, dial down via __tw.setShadowMap(5120).
-    sunNear.shadow.mapSize.set(6656, 6656);
+    sunNear.shadow.mapSize.set(_shadowSizes?.hero ?? 6656, _shadowSizes?.hero ?? 6656);
     sunNear.shadow.camera.left = -nearHalf;
     sunNear.shadow.camera.right = nearHalf;
     sunNear.shadow.camera.top = nearHalf;
@@ -5888,8 +5912,14 @@ export default function TinyWorld() {
     // frustum culling keep the per-frame cost bounded to visible chunks.
     const GRASS_DENSITY_DEFAULT = (() => {
       try {
-        const v = new URLSearchParams(window.location.search).get("grassdensity");
+        const sp = new URLSearchParams(window.location.search);
+        const v = sp.get("grassdensity");
         if (v !== null) return Math.max(1, Math.min(40, parseInt(v, 10) || 1));
+        // ?perf preset fallback (module scope runs before the component's
+        // __diagParams injection, so the tier is read directly here).
+        const pf = Number(sp.get("perf")) || 0;
+        if (pf === 2) return 4;
+        if (pf === 1) return 6;
       } catch { /* ignore */ }
       return 10;
     })();
