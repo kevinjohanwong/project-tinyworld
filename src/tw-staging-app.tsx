@@ -2996,8 +2996,10 @@ export default function TinyWorld() {
       const def = (k: string, v: string) => { if (!__diagParams.has(k)) __diagParams.set(k, v); };
       if (_perfTier === 1) {
         def("rscale", "0.85"); def("shadowmaps", "5120,4608,2048"); def("gtaosamples", "8");
+        def("cloudcount", "20"); def("seacount", "220");
       } else if (_perfTier === 2) {
         def("rscale", "0.7"); def("shadowmaps", "4096,3072,1536"); def("ssao", "0"); def("bloom", "0");
+        def("cloudcount", "14"); def("seacount", "120");
       }
     }
     const _rscale = Math.max(0.5, Math.min(1, Number(__diagParams.get("rscale")) || 1));
@@ -6485,17 +6487,21 @@ export default function TinyWorld() {
     // middle distance. This deliberately does not scale with world extent:
     // large scans must not keep their whole grass field expensive.
     const _grassLodQ = new URLSearchParams(window.location.search);
-    const grassLodDistance = (name: string, fallbackVoxels: number) => {
+    // ?perf tier shortens the LOD rings (fewer live blades at distance);
+    // explicit ?grasslod* params always win over the tier fallbacks.
+    const _grassPerfTier = Math.max(0, Math.min(2, Number(_grassLodQ.get("perf")) || 0));
+    const grassLodDistance = (name: string, fallbackVoxels: number, perfVoxels?: [number, number]) => {
       const raw = Number(_grassLodQ.get(name));
-      return (Number.isFinite(raw) && raw > 0 ? raw : fallbackVoxels) * voxel;
+      const fb = _grassPerfTier > 0 && perfVoxels ? perfVoxels[_grassPerfTier - 1] : fallbackVoxels;
+      return (Number.isFinite(raw) && raw > 0 ? raw : fb) * voxel;
     };
-    const GRASS_LOD_NEAR = grassLodDistance("grasslodnear", 45);
-    const GRASS_LOD_MID = Math.max(GRASS_LOD_NEAR + voxel * 12, grassLodDistance("grasslodmid", 100));
-    const GRASS_LOD_FAR = Math.max(GRASS_LOD_MID + voxel * 12, grassLodDistance("grasslodfar", 200));
+    const GRASS_LOD_NEAR = grassLodDistance("grasslodnear", 45, [45, 36]);
+    const GRASS_LOD_MID = Math.max(GRASS_LOD_NEAR + voxel * 12, grassLodDistance("grasslodmid", 100, [85, 70]));
+    const GRASS_LOD_FAR = Math.max(GRASS_LOD_MID + voxel * 12, grassLodDistance("grasslodfar", 200, [160, 120]));
     // KJ Aug 12: "far distance can still render grass, the fatter version —
     // only at VERY long distance is there no grass." XFAR is an ultra-sparse
     // ring of maximally-widened blades; past it the field finally cuts out.
-    const GRASS_LOD_XFAR = Math.max(GRASS_LOD_FAR + voxel * 12, grassLodDistance("grasslodxfar", 340));
+    const GRASS_LOD_XFAR = Math.max(GRASS_LOD_FAR + voxel * 12, grassLodDistance("grasslodxfar", 340, [250, 180]));
     const _grassWideRaw = Number(_grassLodQ.get("grasswide"));
     const GRASS_WIDEN_GAIN = Number.isFinite(_grassWideRaw) && _grassWideRaw > 0 ? _grassWideRaw : 2.6;
     let grassLodLastMs = -Infinity;
