@@ -20803,6 +20803,74 @@ export default function TinyWorld() {
       _pbCur = name;
       _pbT = t;
     };
+    // __twBeacon — MEASUREMENT-ONLY perf beacon (`?perfbeacon=1` or `?perfbeacon=<seconds>`):
+    // after the load stampede settles, records every real frame time on the
+    // device for a fixed window, then POSTs the summary (fps avg, 1% lows,
+    // frame-time percentiles, hitch histogram, spike gaps, bucket blame) to
+    // /api/tinyworld-perflog → data/perflog.jsonl, so perf rounds are judged
+    // from definitive device data. Zero behavior change; also `__twBeacon.start(s)`.
+    const _bcnParam = new URLSearchParams(location.search).get("perfbeacon");
+    const _bcn: any = { active: false, done: false, dts: [], t0: 0, dur: 0, first: 0, el: null };
+    const _bcnUi = (txt: string) => {
+      if (!_bcn.el) {
+        const d = document.createElement("div");
+        d.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:9999;background:rgba(0,0,0,.55);color:#9fe8a9;font:11px monospace;padding:4px 8px;border-radius:6px;pointer-events:none";
+        document.body.appendChild(d); _bcn.el = d;
+      }
+      _bcn.el.textContent = txt;
+    };
+    const _bcnStart = (seconds: number) => {
+      _bcn.active = true; _bcn.done = false; _bcn.dts = []; _bcn.t0 = performance.now();
+      _bcn.dur = Math.min(600, Math.max(10, seconds)) * 1000;
+      _bcnUi(`perf rec 0/${Math.round(_bcn.dur / 1000)}s`);
+    };
+    const _bcnFinish = (pp: any) => {
+      _bcn.done = true; _bcn.active = false;
+      const dts: number[] = _bcn.dts;
+      const sorted = [...dts].sort((a, b) => a - b);
+      const q = (p: number) => sorted.length ? +sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))].toFixed(2) : 0;
+      const total = dts.reduce((a, b) => a + b, 0);
+      const hist: Record<string, number> = {};
+      for (const d of dts) {
+        const e = [8, 12, 16, 20, 33, 50, 100].find((x) => d <= x);
+        const k = e ? `<=${e}ms` : ">100ms";
+        hist[k] = (hist[k] || 0) + 1;
+      }
+      const worst = sorted.slice(Math.max(0, sorted.length - Math.max(1, Math.round(sorted.length * 0.01))));
+      const low1 = worst.length ? 1000 / (worst.reduce((a, b) => a + b, 0) / worst.length) : 0;
+      let gpuWater = false;
+      try { gpuWater = !!(window as any).__tw?.pwater?.()?.gpuActive; } catch {}
+      const payload = {
+        t: new Date().toISOString(),
+        url: location.pathname + location.search,
+        world: new URLSearchParams(location.search).get("world") || "debug",
+        ua: navigator.userAgent,
+        dpr: devicePixelRatio,
+        screen: `${screen.width}x${screen.height}`,
+        cores: (navigator as any).hardwareConcurrency || 0,
+        seconds: +(total / 1000).toFixed(1),
+        frames: dts.length,
+        fpsAvg: dts.length ? +(1000 / (total / dts.length)).toFixed(1) : 0,
+        fpsLow1: +low1.toFixed(1),
+        ms: { p50: q(0.5), p90: q(0.9), p99: q(0.99), max: sorted.length ? +sorted[sorted.length - 1].toFixed(1) : 0 },
+        hist,
+        over25ms: dts.filter((d) => d > 25).length,
+        over50ms: dts.filter((d) => d > 50).length,
+        spikes: (pp.spikes || []).slice(-12),
+        buckets: Object.fromEntries(Object.entries(_pbEma).map(([k, v]) => [k, +(v as number).toFixed(2)])),
+        calls: pp.calls,
+        triangles: pp.triangles,
+        gpuWater,
+      };
+      (window as any).__twBeacon.last = payload;
+      console.log("[perfbeacon]", payload);
+      fetch("/api/tinyworld-perflog", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) })
+        .then((r) => _bcnUi(r.ok
+          ? `perf sent — avg ${payload.fpsAvg} fps, 1% low ${payload.fpsLow1}, p99 ${payload.ms.p99}ms`
+          : "perf send failed (data in __twBeacon.last)"))
+        .catch(() => _bcnUi("perf send failed (data in __twBeacon.last)"));
+    };
+    (window as any).__twBeacon = { start: (s = 60) => _bcnStart(s), last: null };
     let prev = performance.now();
     let frameCount = 0;
     let _lastTodApplyMs = 0;   // wall-clock cadence for the TOD palette apply
@@ -20840,6 +20908,18 @@ export default function TinyWorld() {
                 ),
               });
               if (sp.length > 24) sp.shift();
+            }
+            // __twBeacon frame hook — dt > 2s means a hidden/backgrounded tab,
+            // not a rendered frame; excluded so the stats stay honest.
+            if (_bcn.active) {
+              if (_pd < 2000) _bcn.dts.push(_pd);
+              const el = _pnow - _bcn.t0;
+              if ((_bcn.dts.length & 63) === 0) _bcnUi(`perf rec ${Math.round(el / 1000)}/${Math.round(_bcn.dur / 1000)}s`);
+              if (el >= _bcn.dur) _bcnFinish(_pp);
+            } else if (_bcnParam && !_bcn.done) {
+              if (!_bcn.first) _bcn.first = _pnow;
+              if (frameCount >= 240 && _pnow - _bcn.first >= 8000) _bcnStart(parseFloat(_bcnParam) > 1 ? parseFloat(_bcnParam) : 60);
+              else _bcnUi("perf armed — waiting for load to settle");
             }
           }
           _pbFrame = {};
