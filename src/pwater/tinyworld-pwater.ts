@@ -2,8 +2,9 @@
 // water-sim-sandbox, KJ-approved settings baked as defaults).
 //
 // Division of labor:
-//  - The SOLVER runs untouched in voxel-CELL space (1 cell = 1 world voxel):
-//    identical dynamics to the sandbox KJ tuned, at any world scale.
+//  - The SOLVER runs untouched in CELL space (1 cell = K^3 world voxels,
+//    K=1 on coarse worlds): identical dynamics to the sandbox KJ tuned, at
+//    any world scale. See the K section below for the fixed-metric fix.
 //  - This module owns the world bridge: crop the live voxel occupancy into a
 //    solver Terrain, site the source at the spring's cell, transform particle
 //    positions cell->world for the SSFR renderer, and drive per-frame
@@ -62,12 +63,72 @@ const DEFAULTS = {
 const MAX_CELLS = 3_500_000;
 
 export function createParticleWater(ctx: PWaterCtx) {
-  const { THREE, renderer, scene, colMap, extraSolid, extraColTops, voxel, cxRound, czRound, origin, params } = ctx;
+  const { THREE, renderer, scene, voxel, cxRound, czRound, params } = ctx;
+  const { colMap: colMapF, extraSolid: extraSolidF, extraColTops: extraColTopsF, origin: originF } = ctx;
   const num = (name: string, dflt: number) => {
     const v = params.get(name);
     const n = v == null ? NaN : Number(v);
     return Number.isFinite(n) ? n : dflt;
   };
+
+  // ── Sim-cell scale K (1 sim cell = K^3 world voxels) ────────────────────
+  // The solver is scale-similar in CELL space: every constant (gravity, D, H,
+  // R, speeds, MAX_N) is a cell count. On fixed-metric scan worlds the voxel
+  // is 0.015 m, so 1 cell = 1 voxel made the whole water budget ~15 litres of
+  // sub-centimetre film — invisible. Decouple: pick K so a sim cell lands
+  // near 6 cm on fine-voxel worlds (leslielab 0.015 -> K=4) and keep K=1 on
+  // every coarse world/bed (voxel >= 0.02) so verified behavior is untouched.
+  // ?pwk= overrides. Only the world bridge changes — solver dynamics, worker
+  // and GPU paths see an ordinary (coarser) grid.
+  const kDefault = voxel < 0.02 ? Math.max(1, Math.min(8, Math.round(0.06 / voxel))) : 1;
+  const K = Math.max(1, Math.min(16, Math.round(num("pwk", kDefault))));
+  const cellV = voxel * K; // world metres per sim cell
+  const fineSolidAt = (x: number, y: number, z: number) =>
+    (colMapF.get(`${x},${z}`)?.has(y) ?? false) || (extraSolidF ? extraSolidF(x, y, z) : false);
+
+  // Coarse solid-oracle views. A sim cell is solid when ANY of its K^3 fine
+  // voxels is solid (conservative: a 1-voxel crust floor stays watertight).
+  // Latent fill is probed along the block's centre column (latent mass is
+  // bulk column fill; edges thin by < 1 cell and the drawn crust skins them).
+  let colMap = colMapF;
+  let extraSolid = extraSolidF;
+  let extraColTops = extraColTopsF;
+  let origin = originF;
+  if (K > 1) {
+    const t0k = performance.now();
+    const m = new Map<string, Set<number>>();
+    for (const [key, set] of colMapF) {
+      const c = key.indexOf(",");
+      const ck = Math.floor(+key.slice(0, c) / K) + "," + Math.floor(+key.slice(c + 1) / K);
+      let s = m.get(ck);
+      if (!s) m.set(ck, (s = new Set()));
+      for (const y of set) s.add(Math.floor(y / K));
+    }
+    colMap = m;
+    extraSolid = extraSolidF
+      ? (x: number, y: number, z: number) => {
+          const fx = x * K + (K >> 1), fz = z * K + (K >> 1);
+          for (let fy = y * K; fy < y * K + K; fy++) if (extraSolidF(fx, fy, fz)) return true;
+          return false;
+        }
+      : undefined;
+    if (extraColTopsF) {
+      const t = new Map<string, number>();
+      for (const [key, v] of extraColTopsF) {
+        const c = key.indexOf(",");
+        const ck = Math.floor(+key.slice(0, c) / K) + "," + Math.floor(+key.slice(c + 1) / K);
+        const cv = Math.floor(v / K);
+        const prev = t.get(ck);
+        if (prev == null || cv > prev) t.set(ck, cv);
+      }
+      extraColTops = t;
+    }
+    origin = { x: Math.floor(originF.x / K), y: Math.floor(originF.y / K), z: Math.floor(originF.z / K) };
+    console.log(
+      `[pwater] sim cell = ${K}x voxel (${(cellV * 100).toFixed(1)} cm): ` +
+      `coarsened ${colMapF.size} -> ${colMap.size} cols in ${((performance.now() - t0k) | 0)}ms`,
+    );
+  }
 
   // ── Terrain crop around the spring ──────────────────────────────────────
   // A circular spring-centred crop can cut a real downstream basin out of the
@@ -341,17 +402,20 @@ export function createParticleWater(ctx: PWaterCtx) {
   let gotSnap = false;
   let snapWaitFrames = 0;
 
-  const fluid: FluidRenderer = createFluidRenderer(THREE, renderer, SNAP_MAX_P, 0.6 * ctl.scale * voxel, voxel);
+  const fluid: FluidRenderer = createFluidRenderer(THREE, renderer, SNAP_MAX_P, 0.6 * ctl.scale * cellV, cellV);
 
-  // cell -> world: worldX = (px + offX) * voxel (see water-spring-runtime's
+  // cell -> world: worldX = (px + offX) * cellV (see water-spring-runtime's
   // dummy.position convention; cell i center i+0.5 ↔ voxel index box+i).
-  const offX = box.x0 - cxRound - 0.5;
-  const offY = box.y0 - 0.5;
-  const offZ = box.z0 - czRound - 0.5;
+  // At K>1 a sim cell's centre sits (K-1)/2 fine voxels above/right of its
+  // first fine voxel's centre — ctr folds that in (0 at K=1, exact old form).
+  const ctr = (K - 1) / (2 * K);
+  const offX = box.x0 - cxRound / K - 0.5 + ctr;
+  const offY = box.y0 - 0.5 + ctr;
+  const offZ = box.z0 - czRound / K - 0.5 + ctr;
   let cellD = 0.6 * ctl.scale; // particle D in CELL units (driver reports on terrain msg)
   driver.onTerrain((_t, D) => {
     cellD = D;
-    fluid.setParticleD(D * voxel);
+    fluid.setParticleD(D * cellV);
     fluid.markSceneDirty();
   });
 
@@ -362,7 +426,7 @@ export function createParticleWater(ctx: PWaterCtx) {
   // the default; "?pwrender=ssfr" restores the splat pipeline.
   const renderMode = params.get("pwrender") === "ssfr" ? "ssfr" : "hifi";
   const hifi: HiFiFluid | null = renderMode === "hifi"
-    ? createHiFiFluid(THREE, renderer, nx, nz, { x: offX, y: offY, z: offZ }, voxel)
+    ? createHiFiFluid(THREE, renderer, nx, nz, { x: offX, y: offY, z: offZ }, cellV)
     : null;
 
   // ── Render-side surface relaxation ("average out the tops") ─────────────
@@ -462,7 +526,7 @@ export function createParticleWater(ctx: PWaterCtx) {
       const fade = relaxAmt * Math.max(0, 1 - st.speed[i / 3] / RELAX_SPEED);
       if (fade <= 0) continue;
       const y = st.pos[i + 1] + st.vel[i + 1] * extra;
-      renderPos[i + 1] = (y + (gSurf[b] - y) * fade + offY) * voxel;
+      renderPos[i + 1] = (y + (gSurf[b] - y) * fade + offY) * cellV;
     }
   }
   const sunDir = new THREE.Vector3(0, 1, 0);
@@ -490,7 +554,7 @@ export function createParticleWater(ctx: PWaterCtx) {
       driver = createDriver(false, source, ctl.scale, driverExtras);
       driver.onTerrain((_t, D) => {
         cellD = D;
-        fluid.setParticleD(D * voxel);
+        fluid.setParticleD(D * cellV);
         fluid.markSceneDirty();
       });
     }
@@ -547,9 +611,9 @@ export function createParticleWater(ctx: PWaterCtx) {
     const extra = st.extra;
     const n3 = st.count * 3;
     for (let i = 0; i < n3; i += 3) {
-      renderPos[i] = (st.pos[i] + st.vel[i] * extra + offX) * voxel;
-      renderPos[i + 1] = (st.pos[i + 1] + st.vel[i + 1] * extra + offY) * voxel;
-      renderPos[i + 2] = (st.pos[i + 2] + st.vel[i + 2] * extra + offZ) * voxel;
+      renderPos[i] = (st.pos[i] + st.vel[i] * extra + offX) * cellV;
+      renderPos[i + 1] = (st.pos[i + 1] + st.vel[i + 1] * extra + offY) * cellV;
+      renderPos[i + 2] = (st.pos[i + 2] + st.vel[i + 2] * extra + offZ) * cellV;
     }
     if (relaxAmt > 0) {
       binFields(st);
@@ -557,9 +621,9 @@ export function createParticleWater(ctx: PWaterCtx) {
     }
     const f3 = st.foamCount * 3;
     for (let i = 0; i < f3; i += 3) {
-      foamPos[i] = (st.foamPos[i] + offX) * voxel;
-      foamPos[i + 1] = (st.foamPos[i + 1] + offY) * voxel;
-      foamPos[i + 2] = (st.foamPos[i + 2] + offZ) * voxel;
+      foamPos[i] = (st.foamPos[i] + offX) * cellV;
+      foamPos[i + 1] = (st.foamPos[i + 1] + offY) * cellV;
+      foamPos[i + 2] = (st.foamPos[i + 2] + offZ) * cellV;
     }
     fluid.updateParticles(renderPos, st.speed, st.count);
     fluid.updateFoam(foamPos, st.foamFade, st.foamCount);
@@ -588,6 +652,8 @@ export function createParticleWater(ctx: PWaterCtx) {
     return {
       enabled: true,
       kind: driver.kind,
+      simK: K,
+      cellSize: cellV,
       box: { x0: box.x0, x1: box.x1, y1: box.y1, z0: box.z0, z1: box.z1 },
       source: { mode: srcMode, basinY: origin.y, roofY: ceilY < 0 ? null : ceilY, emitY: Math.round(emitYW * 10) / 10 },
       settings: {
@@ -646,28 +712,66 @@ export function createParticleWater(ctx: PWaterCtx) {
     const st = lastState;
     if (!st) return [];
     const out: Array<[number, number, number]> = [];
-    if (st.pos.length > 0) {
-      const seen = new Set<number>();
-      const n3 = st.count * 3;
-      for (let i = 0; i < n3; i += 3) {
-        const cx = Math.floor(st.pos[i]);
-        const cy = Math.floor(st.pos[i + 1]);
-        const cz = Math.floor(st.pos[i + 2]);
-        const key = ((cx & 1023) << 20) | ((cy & 1023) << 10) | (cz & 1023);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push([box.x0 + cx, box.y0 + cy, box.z0 + cz]);
+    if (K === 1) {
+      if (st.pos.length > 0) {
+        const seen = new Set<number>();
+        const n3 = st.count * 3;
+        for (let i = 0; i < n3; i += 3) {
+          const cx = Math.floor(st.pos[i]);
+          const cy = Math.floor(st.pos[i + 1]);
+          const cz = Math.floor(st.pos[i + 2]);
+          const key = ((cx & 1023) << 20) | ((cy & 1023) << 10) | (cz & 1023);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push([box.x0 + cx, box.y0 + cy, box.z0 + cz]);
+        }
+        return out;
+      }
+      const nb = nx * nz;
+      for (let b = 0; b < nb; b++) {
+        if (!gHas[b]) continue;
+        const wx = box.x0 + (b % nx);
+        const wz = box.z0 + ((b / nx) | 0);
+        const yLo = Math.floor(gMin[b]);
+        const yHi = Math.floor(gTop[b]);
+        for (let y = yLo; y <= yHi; y++) out.push([wx, box.y0 + y, wz]);
       }
       return out;
     }
-    const nb = nx * nz;
-    for (let b = 0; b < nb; b++) {
-      if (!gHas[b]) continue;
-      const wx = box.x0 + (b % nx);
-      const wz = box.z0 + ((b / nx) | 0);
-      const yLo = Math.floor(gMin[b]);
-      const yHi = Math.floor(gTop[b]);
-      for (let y = yLo; y <= yHi; y++) out.push([wx, box.y0 + y, wz]);
+    // K > 1: the moisture consumer (addW) only keeps a per-FINE-column lo/hi
+    // span, so per coarse water column emit each of its K x K fine columns
+    // with just the span ends in FINE voxel coords. lo = bottom of the lowest
+    // wet cell (conservative for irrigation reach); hi = centre of the top
+    // wet cell (the surface sits inside it — top-of-cell would over-drown
+    // shore grass by up to K-1 voxels).
+    const spans = new Map<number, { lo: number; hi: number }>();
+    if (st.pos.length > 0) {
+      const n3 = st.count * 3;
+      for (let i = 0; i < n3; i += 3) {
+        const bx = st.pos[i] | 0;
+        const by = Math.floor(st.pos[i + 1]);
+        const bz = st.pos[i + 2] | 0;
+        if (bx < 0 || bx >= nx || bz < 0 || bz >= nz) continue;
+        const b = bz * nx + bx;
+        const e = spans.get(b);
+        if (!e) spans.set(b, { lo: by, hi: by });
+        else { if (by < e.lo) e.lo = by; if (by > e.hi) e.hi = by; }
+      }
+    } else {
+      const nb = nx * nz;
+      for (let b = 0; b < nb; b++) {
+        if (gHas[b]) spans.set(b, { lo: Math.floor(gMin[b]), hi: Math.floor(gTop[b]) });
+      }
+    }
+    for (const [b, e] of spans) {
+      const fx0 = (box.x0 + (b % nx)) * K;
+      const fz0 = (box.z0 + ((b / nx) | 0)) * K;
+      const yLo = (box.y0 + e.lo) * K;
+      const yHi = (box.y0 + e.hi) * K + (K >> 1);
+      for (let dz = 0; dz < K; dz++) for (let dx = 0; dx < K; dx++) {
+        out.push([fx0 + dx, yLo, fz0 + dz]);
+        if (yHi !== yLo) out.push([fx0 + dx, yHi, fz0 + dz]);
+      }
     }
     return out;
   }
@@ -687,10 +791,21 @@ export function createParticleWater(ctx: PWaterCtx) {
   // are ignored: the sim only exists around the spring.
   const editQueue: number[] = [];
   function onSolidEdit(vx: number, vy: number, vz: number, solidNow: boolean) {
-    const gx = vx - box.x0, gy = vy - box.y0, gz = vz - box.z0;
+    // Fine voxel edit -> sim cell. Placing any voxel makes the cell solid; a
+    // removal only opens the cell when NOTHING in its K^3 block remains solid
+    // (colMap + latent are already updated when this hook fires, so the
+    // rescan sees current truth). K=1 reduces to the old exact mapping.
+    const cx = Math.floor(vx / K), cy = Math.floor(vy / K), cz = Math.floor(vz / K);
+    const gx = cx - box.x0, gy = cy - box.y0, gz = cz - box.z0;
     if (gx < 0 || gx >= nx || gy < 0 || gy >= ny || gz < 0 || gz >= nz) return;
+    let v = solidNow ? 1 : 0;
+    if (K > 1 && !solidNow) {
+      scan: for (let fy = cy * K; fy < cy * K + K; fy++)
+        for (let fz = cz * K; fz < cz * K + K; fz++)
+          for (let fx = cx * K; fx < cx * K + K; fx++)
+            if (fineSolidAt(fx, fy, fz)) { v = 1; break scan; }
+    }
     const idx = (gy * nz + gz) * nx + gx;
-    const v = solidNow ? 1 : 0;
     if (terrain.solid[idx] === v) return;
     terrain.solid[idx] = v;
     editQueue.push(gx, gy, gz, v);
