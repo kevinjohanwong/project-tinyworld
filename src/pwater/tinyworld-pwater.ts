@@ -76,11 +76,13 @@ export function createParticleWater(ctx: PWaterCtx) {
   // R, speeds, MAX_N) is a cell count. On fixed-metric scan worlds the voxel
   // is 0.015 m, so 1 cell = 1 voxel made the whole water budget ~15 litres of
   // sub-centimetre film — invisible. Decouple: pick K so a sim cell lands
-  // near 6 cm on fine-voxel worlds (leslielab 0.015 -> K=4) and keep K=1 on
-  // every coarse world/bed (voxel >= 0.02) so verified behavior is untouched.
-  // ?pwk= overrides. Only the world bridge changes — solver dynamics, worker
-  // and GPU paths see an ordinary (coarser) grid.
-  const kDefault = voxel < 0.02 ? Math.max(1, Math.min(8, Math.round(0.06 / voxel))) : 1;
+  // near 6 cm on fine-voxel worlds (leslielab 0.015 -> K=4; fresh scans pass
+  // the conquest-shapes 1.5x coarsen so 0.015 -> 0.0225 -> K=3) and keep K=1
+  // on every coarse world/bed (voxel >= 0.03: the verification beds start at
+  // 0.03375) so verified behavior is untouched. ?pwk= overrides. Only the
+  // world bridge changes — solver dynamics, worker and GPU paths see an
+  // ordinary (coarser) grid.
+  const kDefault = voxel < 0.03 ? Math.max(1, Math.min(8, Math.round(0.06 / voxel))) : 1;
   const K = Math.max(1, Math.min(16, Math.round(num("pwk", kDefault))));
   const cellV = voxel * K; // world metres per sim cell
   const fineSolidAt = (x: number, y: number, z: number) =>
