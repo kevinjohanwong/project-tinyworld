@@ -277,8 +277,10 @@ export function createParticleWater(ctx: PWaterCtx) {
     // this keeps ny = terrain relief rather than absolute altitude — without
     // it, a high-sited spring blew the MAX_CELLS budget vertically and the
     // while-loop squeezed the XZ footprint to a skinny column ("water height
-    // limitations").
-    const y0 = Math.max(0, minSolidY - 6);
+    // limitations"). World cell coords can be NEGATIVE (scan worlds centre
+    // near 0), so the floor must not clamp at 0 — that cut the domain at the
+    // first lip on leslielab (falls vanished mid-air, no lower cascades).
+    const y0 = minSolidY - 6;
     const y1 = Math.min(maxY + 4, Math.max(origin.y + 10, Math.ceil(emitYW) + 4));
     return { x0, x1, z0, z1, y0, y1 };
   };
@@ -286,6 +288,22 @@ export function createParticleWater(ctx: PWaterCtx) {
   while ((box.x1 - box.x0) * (box.z1 - box.z0) * (box.y1 - box.y0) > MAX_CELLS && half > 16) {
     half = Math.round(half * 0.8);
     box = clampBox();
+  }
+  // Whole-world domain when the budget allows. The disc+route box exists only
+  // to keep huge worlds under MAX_CELLS; on worlds whose full footprint fits
+  // (leslielab: ~880k of 3.5M), the disc was the artifact — water pooled to a
+  // hard straight edge against CLOSED crop walls mid-terrain, and downstream
+  // tiers past the pad never simulated. If the whole footprint (at the same
+  // y-range) fits the budget, take it: every wall then sits in true void, so
+  // boundaries are all honest island-edge drains. ?pwbox=N (explicit) keeps
+  // the sized disc; ?pwgrow=0 disables. Boundary choice only — sim untouched.
+  let domain = "routed";
+  if (params.get("pwbox") == null && params.get("pwgrow") !== "0") {
+    const wx0 = minX - 2, wx1 = maxX + 3, wz0 = minZ - 2, wz1 = maxZ + 3;
+    if ((wx1 - wx0) * (wz1 - wz0) * (box.y1 - box.y0) <= MAX_CELLS) {
+      box = { x0: wx0, x1: wx1, z0: wz0, z1: wz1, y0: box.y0, y1: box.y1 };
+      domain = "whole-world";
+    }
   }
   const nx = box.x1 - box.x0;
   const ny = box.y1 - box.y0;
@@ -362,7 +380,7 @@ export function createParticleWater(ctx: PWaterCtx) {
     wallOpen,
   };
   console.log(
-    `[pwater] terrain crop ${nx}x${ny}x${nz} (${((performance.now() - t0) | 0)}ms), ` +
+    `[pwater] terrain crop ${nx}x${ny}x${nz} ${domain} (${((performance.now() - t0) | 0)}ms), ` +
     `basin cell (${origin.x},${origin.y},${origin.z}), latent tops ${latentTops}, route ${route.length} cells ` +
     `(${route[route.length - 1][0]},${route[route.length - 1][1]}), source ${srcMode}` +
     (srcMode === "ceiling" ? ` (roof y=${ceilY}, emit y=${emitYW.toFixed(1)})` : ` (emit y=${emitYW.toFixed(1)})`) +
