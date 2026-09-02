@@ -213,6 +213,12 @@ export function createHiFiFluid(
         vec3 N = normalize(vec3(-dhdx, 1.0, -dhdz));
         float slope = length(vec2(dhdx, dhdz));
         float fallT = smoothstep(0.9, 2.6, slope);
+        // A multi-cell vertical drop belongs to the curtain pass ENTIRELY:
+        // the heightfield interpolating across a cliff face stretches into
+        // giant near-vertical quads that read as dark glass walls boxing the
+        // mesa (the "jello block"). Cut them; moderate chutes keep the
+        // residual below so attached steep streams don't open holes.
+        if (slope > 3.2) discard;
 
         float rip, gx, gz;
         if (fallT > 0.5) {
@@ -312,13 +318,19 @@ export function createHiFiFluid(
         float shore = 1.0 - smoothstep(0.0, 0.32 * uVoxel, thick);
         float shoreLace = shore * smoothstep(0.52, 0.85, breakup + foamT * 0.4) * 0.55;
         float impactFoam = smoothstep(0.25, 0.9, impactT) * smoothstep(0.35, 0.75, breakup + impactT * 0.3);
-        float white = clamp(lace + shoreLace + impactFoam, 0.0, 0.92) * (1.0 - fallT * 0.5);
+        // Rapids: water rushing down a slope aerates and reads WHITE, not as
+        // a glossy cellophane skin over the terrain (slope x speed, both
+        // measured — a still pond on a slope shelf stays glassy).
+        float rapids = smoothstep(0.35, 1.1, slope) * smoothstep(0.2, 0.75, speedT)
+                     * (0.45 + 0.55 * smoothstep(0.3, 0.8, breakup));
+        float white = clamp(lace + shoreLace + impactFoam + rapids, 0.0, 0.94) * (1.0 - fallT * 0.5);
         col = mix(col, vec3(0.96, 0.98, 1.0), white);
 
         float edge = smoothstep(0.12, 0.55, mask);
         float film = smoothstep(0.0, 0.05 * uVoxel, thick);
         float a = edge * mix(0.35, 1.0, film);
         a *= 1.0 - 0.85 * fallT;
+        a *= 1.0 - smoothstep(1.8, 3.2, slope);
         gl_FragColor = vec4(col, a);
       }
     `,
@@ -425,7 +437,9 @@ export function createHiFiFluid(
   let curtCount = 0;
   const curtMat = new THREE.ShaderMaterial({
     transparent: true,
-    depthWrite: true,
+    // No depth write: instances draw in buffer order, so a near sheet writing
+    // depth hard-clips the sheets behind it into faceted cutouts.
+    depthWrite: false,
     side: THREE.DoubleSide,
     uniforms: {
       uTime: material.uniforms.uTime,

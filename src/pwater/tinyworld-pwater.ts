@@ -735,7 +735,13 @@ export function createParticleWater(ctx: PWaterCtx) {
         } else if (sWet[b] <= 0) sOn[b] = 0;
         // Foam: INJECT into the persistent field here (churn is a source, not
         // a value); the advect/decay pass below owns transport and rendering.
-        sFoam[b] = Math.min(1, sFoam[b] + foamRaw * dtReal * FOAM_INJ);
+        // The spring boil churns CONSTANTLY, so uncapped injection saturates
+        // a dense white cake over the source pool — thin injection near the
+        // mouth (full strength again ~6 cells out).
+        const sdx = (b % nx) - (origin.x - box.x0);
+        const sdz = ((b / nx) | 0) - (origin.z - box.z0);
+        const srcCap = 0.22 + 0.78 * Math.min(1, (sdx * sdx + sdz * sdz) / 36);
+        sFoam[b] = Math.min(1, sFoam[b] + foamRaw * dtReal * FOAM_INJ * srcCap);
         if (!sOn[b]) { f.mask[b] = 0; continue; }
         if (wetNow) {
           sH[b] += (hRaw - sH[b]) * aEma;
