@@ -16493,6 +16493,22 @@ export default function TinyWorld() {
       makeSlug: (layer: string) => makeSlug(layer),
       placeBomb: (vx: number, vy: number, vz: number, size = 1, tier = "stone") => placeBomb(vx, vy, vz, size, tier),
       detonate: (idx = 0) => (bombs[idx] ? detonate(bombs[idx], new Set()) : { ok: false, reason: "no bomb " + idx }),
+      // Debug-only carve for water test beds: removes a sphere of blocks
+      // through the SAME removeResolvedBlock seam as bomb/mine/laser digs,
+      // so pwater's onSolidEdit fires exactly like a real player dig. A
+      // test-bed boundary tool like ?springat — not a gameplay surface.
+      dig: (vx: number, vy: number, vz: number, r = 2) => {
+        let removed = 0;
+        for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) for (let dz = -r; dz <= r; dz++) {
+          if (dx * dx + dy * dy + dz * dz > r * r) continue;
+          const bx = vx + dx, by = vy + dy, bz = vz + dz;
+          const t = resolveBlockAt(bx, by, bz, true);
+          if (!t?.mesh) continue;
+          const blayer = t.mesh.userData.layer as string;
+          if (removeResolvedBlock(t, "tw_dig")) { syncGroundAfterRemove(bx, by, bz, blayer); removed++; }
+        }
+        return { removed };
+      },
       bombInfo: () => ({
         bombs: bombs.map((b) => ({ vx: b.vx, vy: b.vy, vz: b.vz, size: b.size, tier: b.tier })),
         slugs: Object.fromEntries(Object.entries(stockpileByLayerRef.current as any).filter(([k]) => k.startsWith("slug_"))),
