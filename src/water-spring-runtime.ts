@@ -547,7 +547,26 @@ export function createSpring(ctx: SpringContext) {
     // Re-site once for the latent-tops terrain view (version 13).
     const savedVersion = (saved as any)?.version ?? 0;
     const RESITE = params.get("springresite") === "1" || (saved != null && savedVersion < 13);
-    if (saved?.origin && !RESITE) {
+    // ?springat=x,z — explicit source position (world cells). A test-bed
+    // boundary condition (like ?pwbox/?pwk): deterministic harnesses need the
+    // source pinned instead of heuristic siting. Snaps to the column's top; a
+    // missing column is a hard miss (falls through to the normal siters).
+    const atSpec = params.get("springat");
+    let atOrigin: Vec3 | null = null;
+    if (atSpec) {
+      const [ax, az] = atSpec.split(",").map((v) => Math.round(+v));
+      if (Number.isFinite(ax) && Number.isFinite(az)) {
+        for (const [x, y, z] of tops) {
+          if (x === ax && z === az) { atOrigin = [x, y, z]; break; }
+        }
+        console.log(atOrigin
+          ? `[spring] explicit ?springat site (${atOrigin[0]},${atOrigin[1]},${atOrigin[2]})`
+          : `[spring] ?springat=(${ax},${az}) has no column — using heuristic siting`);
+      }
+    }
+    if (atOrigin) {
+      origin = atOrigin;
+    } else if (saved?.origin && !RESITE) {
       origin = [saved.origin.x, saved.origin.y, saved.origin.z];
     } else {
       origin = (params.get("springsite") === "basin" ? null : chooseShelf()) ?? chooseBasin() ?? chooseOutlet();

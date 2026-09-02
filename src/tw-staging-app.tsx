@@ -774,6 +774,163 @@ function makeMidPoolTestWorldSource(): { layers: Record<string, Int32Array>; met
   };
 }
 
+// Scan-scale rooms water bed (?debugWorld=1&terrain=rooms&bare=1&tod=day).
+// KJ Sep 2: "create a voxel space that can accurately test the water dynamics —
+// pools, hills, and the terrain we might see in rooms". Unlike every other bed
+// (all ≥0.0225 authored → K=1 water), this bed is authored at voxel 0.015 so
+// the conquest-shapes 1.5× coarsen lands it at LOADED 0.0225 — the exact scale
+// fresh scans arrive at — engaging K=3 (6.75 cm sim cells), the path where the
+// real leslielab bugs lived. Construction is a 4-cell CRUST with sealed cliff
+// faces (like a scan shell), not solid fill, so ~400k fine solids stay
+// headless-friendly. One continuous flow path crosses all three feature zones:
+//   spring HILL (mesa top y80, biggest flat → siter must pick it, tilted east)
+//   → cascade off the east cliff → catch trench → channel → deep POOL (24 cm)
+//   → shallow dish → west DOORWAY (with lintel) → enclosed ROOM (3-cell walls,
+//   partial roof, sunken 24 cm tub, table on legs) → east doorway → exit
+//   channel → off the open world edge. Metric depths are realistic so every
+//   water feature is ≥3 sim cells deep at K=3. meta.roomsRegions publishes the
+//   zone rects (AUTHORED fine cells — divide by 1.5 for loaded/probe coords).
+function makeRoomsWaterWorldSource(): { layers: Record<string, Int32Array>; meta: Record<string, unknown>; blockCount: number; resolution: number } {
+  const voxel = 0.015;
+  const N = 280;                    // 4.2 m span authored (187 cells loaded)
+  const FLOOR_Y = 2;
+  const BASE = 30;                  // plain surface (45 cm)
+  const HILL = { x0: 10, x1: 90, z0: 80, z1: 200, top: 80 };
+  const ROOM = { x0: 190, x1: 270, z0: 90, z1: 190 };   // outer wall faces
+  const WALLT = 3;                  // wall thickness (→2 loaded)
+  const WALL_TOP = 90;              // 1.35 m; ~1.05 m above the room floor
+  const DOOR = { z0: 130, z1: 150, top: 65 };           // gaps in W+E walls, lintel above
+  const ROOF = { z0: ROOM.z0, z1: 126 };                // partial roof (north strip)
+  const TUB = { x0: 210, x1: 240, z0: 105, z1: 135, floor: 4 };  // 24 cm deep
+  const ROOM_FLOOR = 20;            // 30 cm — below the channel mouth (22) so water pours in
+  const grass: number[] = [];
+  const dirt: number[] = [];
+  const wall: number[] = [];
+  const ceiling: number[] = [];
+  const ground: number[] = [];
+  const dist = (x: number, z: number, cx: number, cz: number) => Math.hypot(x - cx, z - cz);
+  // Checkerboard terraces fragment the plain into ≤729-loaded-column patches
+  // (v1 lesson: a sine-product terrace has a huge connected zero-band — the
+  // plain BFS'd into one 6995-column component and, with the pool/exit cuts as
+  // qualifying drop edges, out-area'd the hill and stole the spring). 40-cell
+  // patches with 6-step cliffs (Δ4 loaded > the BFS ≤2 join tolerance).
+  const terr = (x: number, z: number) =>
+    6 * ((Math.floor(x / 40) + Math.floor(z / 40)) % 2);
+  const inRoomInterior = (x: number, z: number) =>
+    x > ROOM.x0 + WALLT - 1 && x < ROOM.x1 - WALLT + 1 && z > ROOM.z0 + WALLT - 1 && z < ROOM.z1 - WALLT + 1;
+  const heightAt = (x: number, z: number): number => {
+    let h = BASE + terr(x, z);
+    // Hill mesa, tilted gently east (≤1-step drift per 5×5 window keeps the
+    // plateau BFS whole) so spring water runs east and pours off the east cliff.
+    if (x >= HILL.x0 && x <= HILL.x1 && z >= HILL.z0 && z <= HILL.z1)
+      h = HILL.top - Math.round((x - HILL.x0) * 0.03);
+    // Catch trench along the east cliff base — collects the cascade and feeds
+    // the channel (no wandering sheet across the plain).
+    if (x > HILL.x1 && x <= HILL.x1 + 12 && z >= HILL.z0 && z <= HILL.z1) h = Math.min(h, 26);
+    // Channel: trench → pools → room west door, sloping 26 → 22.
+    if (z >= DOOR.z0 && z <= DOOR.z1 && x > HILL.x1 && x <= ROOM.x0)
+      h = Math.min(h, Math.round(26 - (x - HILL.x1) * 0.04));
+    // Deep pool on the channel path (floor 10 ≈ 24 cm below its rim).
+    if (dist(x, z, 130, 140) <= 16) h = Math.min(h, 10);
+    // Shallow dish (9 cm) — the "does shallow water read" case.
+    if (dist(x, z, 168, 140) <= 12) h = Math.min(h, 16);
+    // Room interior: flat floor, below the channel mouth.
+    if (inRoomInterior(x, z)) h = ROOM_FLOOR;
+    // Sunken tub inside the room.
+    if (x >= TUB.x0 && x <= TUB.x1 && z >= TUB.z0 && z <= TUB.z1) h = TUB.floor;
+    // Exit channel: east door → world edge (open cull boundary = the drain).
+    if (z >= DOOR.z0 && z <= DOOR.z1 && x > ROOM.x1 && x < N)
+      h = Math.min(h, Math.round(18 - (x - ROOM.x1) * 0.3));
+    return Math.max(FLOOR_Y + 1, h);
+  };
+  // Wall-face membership for the room perimeter ring.
+  const inWallRing = (x: number, z: number) => {
+    const inX = x >= ROOM.x0 && x <= ROOM.x1, inZ = z >= ROOM.z0 && z <= ROOM.z1;
+    if (!inX || !inZ) return false;
+    return x < ROOM.x0 + WALLT || x > ROOM.x1 - WALLT || z < ROOM.z0 + WALLT || z > ROOM.z1 - WALLT;
+  };
+  const heights = new Int16Array(N * N);
+  for (let x = 0; x < N; x++) for (let z = 0; z < N; z++) heights[x * N + z] = heightAt(x, z);
+  const hAt = (x: number, z: number) =>
+    x < 0 || z < 0 || x >= N || z >= N ? BASE : heights[x * N + z];
+  for (let x = 0; x < N; x++) {
+    for (let z = 0; z < N; z++) {
+      const h = hAt(x, z);
+      // Crust: 4-cell skin, extended down far enough to seal every cliff face
+      // (fill from min(own, 4-neighbours) − 3 so vertical drops are solid-backed).
+      const hmin = Math.min(h, hAt(x - 1, z), hAt(x + 1, z), hAt(x, z - 1), hAt(x, z + 1));
+      for (let y = Math.max(FLOOR_Y, hmin - 3); y < h; y++) dirt.push(x, y, z);
+      grass.push(x, h, z);
+      ground.push(x, z, h);
+    }
+  }
+  // Room walls: from each column's surface up to WALL_TOP, with door gaps
+  // (below DOOR.top) in the west and east walls — the lintel above stays.
+  for (let x = ROOM.x0; x <= ROOM.x1; x++) {
+    for (let z = ROOM.z0; z <= ROOM.z1; z++) {
+      if (!inWallRing(x, z)) continue;
+      const isDoorCol =
+        z >= DOOR.z0 && z <= DOOR.z1 && (x < ROOM.x0 + WALLT || x > ROOM.x1 - WALLT);
+      const h = hAt(x, z);
+      for (let y = h + 1; y <= WALL_TOP; y++) {
+        if (isDoorCol && y <= DOOR.top) continue;
+        wall.push(x, y, z);
+      }
+    }
+  }
+  // Partial roof (north strip) — water under an overhang + dollhouse-rule read.
+  for (let x = ROOM.x0; x <= ROOM.x1; x++)
+    for (let z = ROOF.z0; z <= ROOF.z1; z++) ceiling.push(x, WALL_TOP + 1, z);
+  // Table: 4 legs + slab (furniture obstacle in the flow path, floor 20).
+  for (const [lx, lz] of [[250, 155], [262, 155], [250, 167], [262, 167]]) {
+    for (let dx = 0; dx < 3; dx++) for (let dz = 0; dz < 3; dz++)
+      for (let y = ROOM_FLOOR + 1; y <= ROOM_FLOOR + 20; y++) wall.push(lx + dx, y, lz + dz);
+  }
+  for (let x = 248; x <= 266; x++) for (let z = 153; z <= 171; z++)
+    wall.push(x, ROOM_FLOOR + 21, z, x, ROOM_FLOOR + 22, z);
+  const layers: Record<string, Int32Array> = {
+    grass: new Int32Array(grass),
+    dirt: new Int32Array(dirt),
+    water: new Int32Array([]),
+    wall: new Int32Array(wall),
+    ceiling: new Int32Array(ceiling),
+    trunks: new Int32Array([]),
+    leaves: new Int32Array([]),
+    ground: new Int32Array(ground),
+  };
+  const blockCount = Object.entries(layers).reduce(
+    (sum, [name, a]) => (name === "ground" ? sum : sum + a.length / 3),
+    0,
+  );
+  return {
+    layers,
+    meta: {
+      voxel,
+      span: N * voxel,
+      centerX: (N / 2) * voxel,
+      centerZ: (N / 2) * voxel,
+      worldName: "ROOMS WATER BED",
+      sourceName: "rooms-water-bed",
+      capturedAt: Date.now(),
+      weatherSeason: "summer",
+      debugWorld: true,
+      roomsRegions: {
+        units: "authored-fine-cells (÷1.5 for loaded)",
+        hill: [HILL.x0, HILL.x1, HILL.z0, HILL.z1],
+        trench: [HILL.x1, HILL.x1 + 12, HILL.z0, HILL.z1],
+        channel: [HILL.x1, ROOM.x0, DOOR.z0, DOOR.z1],
+        deepPool: [114, 146, 124, 156],
+        shallowDish: [156, 180, 128, 152],
+        room: [ROOM.x0, ROOM.x1, ROOM.z0, ROOM.z1],
+        tub: [TUB.x0, TUB.x1, TUB.z0, TUB.z1],
+        exit: [ROOM.x1, N, DOOR.z0, DOOR.z1],
+      },
+    },
+    blockCount,
+    resolution: voxel,
+  };
+}
+
 // Water-physics slope testbed (?debugWorld=1&terrain=slope). Phase 0 of the
 // water-physics plan (docs/water-physics-plan.md): a deterministic single-axis
 // flow bed for measuring momentum/rivers/weir behavior. Flow runs along +X:
@@ -2058,6 +2215,7 @@ export default function TinyWorld() {
       : _terrain === "breach" ? "breach"
       : _terrain === "breachflat" ? "breachflat"
       : _terrain === "steps" ? "steps"
+      : _terrain === "rooms" ? "rooms"
       : _terrain === "synthetic" ? "synthetic"
       : "scan";
     setLoadNote(
@@ -2069,12 +2227,14 @@ export default function TinyWorld() {
       : _mode === "breach" ? "loading breached-lake gorge testbed…"
       : _mode === "breachflat" ? "loading flat breached-lake gorge testbed…"
       : _mode === "steps" ? "loading two-tier waterfall testbed…"
+      : _mode === "rooms" ? "loading scan-scale rooms water bed…"
       : _mode === "synthetic" ? "loading synthetic debug world…"
       : "loading debug scan…",
     );
     const t = setTimeout(() => {
       (async () => {
         if (_mode === "steps") return buildWorld(makeStepsWorldSource());
+        if (_mode === "rooms") return buildWorld(makeRoomsWaterWorldSource());
         if (_mode === "hydro") return buildWorld(makeWaterTestWorldSource());
         if (_mode === "mid") return buildWorld(makeMidPoolTestWorldSource());
         if (_mode === "slope") return buildWorld(makeSlopeWorldSource());
