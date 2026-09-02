@@ -515,6 +515,11 @@ export function createParticleWater(ctx: PWaterCtx) {
   const gfMin = new Float32Array(nx * nz);
   const gfCnt = new Float32Array(nx * nz);
   const gfVy = new Float32Array(nx * nz);
+  // Loop 3: mean horizontal velocity of the FALLING particles per column —
+  // orients the curtain sheet perpendicular to the water's travel over the
+  // lip instead of camera-facing, so adjacent fall columns form one wall.
+  const gfVx = new Float32Array(nx * nz);
+  const gfVz = new Float32Array(nx * nz);
   let fallCols = 0;
   let fallN = 0;
 
@@ -525,6 +530,7 @@ export function createParticleWater(ctx: PWaterCtx) {
     gHas.fill(0); gCnt.fill(0); gFx.fill(0); gFz.fill(0);
     gSpd.fill(0); gImp.fill(0); gFoam.fill(0);
     gbHas.fill(0); gbCnt.fill(0); gfHas.fill(0); gfCnt.fill(0); gfVy.fill(0);
+    gfVx.fill(0); gfVz.fill(0);
     fallCols = 0; fallN = 0;
     const n3 = st.count * 3;
     for (let i = 0; i < n3; i += 3) {
@@ -552,6 +558,8 @@ export function createParticleWater(ctx: PWaterCtx) {
         }
         gfCnt[b]++;
         gfVy[b] += vy;
+        gfVx[b] += st.vel[i];
+        gfVz[b] += st.vel[i + 2];
         fallN++;
       } else {
         if (!gbHas[b]) { gbTop[b] = y; gbMin[b] = y; gbHas[b] = 1; }
@@ -679,10 +687,13 @@ export function createParticleWater(ctx: PWaterCtx) {
           // at rest spacing (1/D^2) — a lone trickle reads ~0.2, a full
           // sheet saturates at 1. Falls stay INSTANT — no smoothing.
           const span = gfTop[b] - gfMin[b] + cellD;
+          const finv = 1 / gfCnt[b];
           f.fTop[b] = gfTop[b] + cellD * 0.5;
           f.fBot[b] = gfMin[b] - cellD * 0.5;
           f.fDen[b] = Math.min(1, (gfCnt[b] / span) * cellD * cellD);
-          f.fVy[b] = gfVy[b] / gfCnt[b];
+          f.fVy[b] = gfVy[b] * finv;
+          f.fFx[b] = gfVx[b] * finv;
+          f.fFz[b] = gfVz[b] * finv;
         } else f.fDen[b] = 0;
         const wetNow = gbHas[b] ? 1 : 0;
         let hRaw = 0, depRaw = 0, foamRaw = 0, impRaw = 0;

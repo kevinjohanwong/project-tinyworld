@@ -26,6 +26,8 @@ export type HiFiFields = {
   fBot: Float32Array;
   fDen: Float32Array; // 0..1 sheet density (particles per cell of height vs 1/D^2)
   fVy: Float32Array; // mean vertical speed, cells/s (negative = down)
+  fFx: Float32Array; // mean horizontal velocity of the falling particles (cells/s)
+  fFz: Float32Array;
 };
 
 export type HiFiFluid = {
@@ -52,6 +54,7 @@ export function createHiFiFluid(
     fx: new Float32Array(n), fz: new Float32Array(n),
     foam: new Float32Array(n), imp: new Float32Array(n),
     fTop: new Float32Array(n), fBot: new Float32Array(n), fDen: new Float32Array(n), fVy: new Float32Array(n),
+    fFx: new Float32Array(n), fFz: new Float32Array(n),
   };
   const tex0Data = new Float32Array(n * 4); // h, dep, mask, foam
   const tex1Data = new Float32Array(n * 4); // fx, fz, imp, speedT(unused)
@@ -293,19 +296,11 @@ export function createHiFiFluid(
         vec3 col = mix(refracted, skyRefl, clamp(fres, 0.0, 1.0));
         col += uSunCol * sunRefl;
 
-        // Waterfall curtain: translucent falling water with aeration streaks.
-        float aer = 0.0;
-        if (fallT > 0.001) {
-          vec2 sp1 = vec2((vCell.x + vCell.z) * 3.1, vCell.y * 0.13 + uTime * 2.6);
-          vec2 sp2 = vec2((vCell.x - vCell.z) * 5.3 + 4.7, vCell.y * 0.21 + uTime * 3.4);
-          float streaks = fbm(sp1) * 0.62 + vnoise(sp2 * vec2(2.6, 1.0)) * 0.38;
-          float drop = clamp(1.0 - N.y, 0.0, 1.0);
-          aer = smoothstep(0.32, 0.72, streaks) * (0.45 + 0.55 * clamp(impactT + foamT * 0.5 + drop * 0.4, 0.0, 1.0));
-          aer = max(aer, 0.14);
-          vec3 sheet = refracted * mix(vec3(1.0), uShallow * 1.25, 0.55) + skyRefl * (0.18 + fres * 0.8);
-          vec3 curtain = mix(sheet, vec3(0.95, 0.98, 1.0), aer);
-          col = mix(col, curtain, fallT);
-        }
+        // Falls are the CURTAIN pass's job (Sep 2 loop 3): the height-field
+        // surface HANDS OFF at the lip instead of draping a stretched skirt
+        // down the cliff (the old cellophane membrane + hanging teeth). The
+        // surface fades out as slope goes vertical; a small residual keeps
+        // steep-but-attached chute water from opening a hole.
 
         // Foam: sim sources + depth-fade shoreline lace under advected breakup.
         float breakup = ripple(vCell.xz * 1.7 + 11.3, flowC);
@@ -317,9 +312,9 @@ export function createHiFiFluid(
         col = mix(col, vec3(0.96, 0.98, 1.0), white);
 
         float edge = smoothstep(0.12, 0.55, mask);
-        float film = smoothstep(0.0, 0.05 * uVoxel, thick + fallT);
+        float film = smoothstep(0.0, 0.05 * uVoxel, thick);
         float a = edge * mix(0.35, 1.0, film);
-        a = mix(a, 0.62 + 0.38 * aer, fallT);
+        a *= 1.0 - 0.85 * fallT;
         gl_FragColor = vec4(col, a);
       }
     `,
@@ -409,15 +404,19 @@ export function createHiFiFluid(
   const curtCol = new Float32Array(n * 2);
   const curtSpan = new Float32Array(n * 2);
   const curtInfo = new Float32Array(n * 3);
+  const curtFlow = new Float32Array(n * 2);
   const aColAttr = new THREE.InstancedBufferAttribute(curtCol, 2);
   const aSpanAttr = new THREE.InstancedBufferAttribute(curtSpan, 2);
   const aInfoAttr = new THREE.InstancedBufferAttribute(curtInfo, 3);
+  const aFlowAttr = new THREE.InstancedBufferAttribute(curtFlow, 2);
   aColAttr.setUsage(THREE.DynamicDrawUsage);
   aSpanAttr.setUsage(THREE.DynamicDrawUsage);
   aInfoAttr.setUsage(THREE.DynamicDrawUsage);
+  aFlowAttr.setUsage(THREE.DynamicDrawUsage);
   curtGeo.setAttribute("aCol", aColAttr);
   curtGeo.setAttribute("aSpan", aSpanAttr);
   curtGeo.setAttribute("aInfo", aInfoAttr);
+  curtGeo.setAttribute("aFlow", aFlowAttr);
   curtGeo.instanceCount = 0;
   let curtCount = 0;
   const curtMat = new THREE.ShaderMaterial({
@@ -444,6 +443,7 @@ export function createHiFiFluid(
       attribute vec2 aCol;
       attribute vec2 aSpan;
       attribute vec3 aInfo;
+      attribute vec2 aFlow;
       uniform float uCurtWidth;
       varying vec3 vWorld;
       varying vec3 vCell;
@@ -451,13 +451,23 @@ export function createHiFiFluid(
       varying vec3 vInfo;
       varying float vAlong;
       void main() {
-        // Camera right, projected to the ground plane (uniform group scale:
-        // world and cell directions coincide).
-        vec3 right = vec3(viewMatrix[0][0], 0.0, viewMatrix[2][0]);
-        float rl = length(right);
-        right = rl > 1e-4 ? right / rl : vec3(1.0, 0.0, 0.0);
+        // Sheet tangent: perpendicular to the water's horizontal travel over
+        // the lip, so the card is the plane the water actually falls through
+        // and adjacent fall columns line up into one continuous wall instead
+        // of a stack of camera-facing billboards. Slow/ambiguous flow falls
+        // back to camera-facing.
+        vec3 camR = vec3(viewMatrix[0][0], 0.0, viewMatrix[2][0]);
+        float crl = length(camR);
+        camR = crl > 1e-4 ? camR / crl : vec3(1.0, 0.0, 0.0);
+        float fl = length(aFlow);
+        vec3 flowT = fl > 1e-4 ? vec3(-aFlow.y / fl, 0.0, aFlow.x / fl) : camR;
+        float steer = smoothstep(0.4, 1.2, fl);
+        vec3 right = normalize(mix(camR, flowT * sign(dot(flowT, camR) + 1e-3), steer));
+        // Width scales with measured sheet density: a trickle is a thin rope,
+        // a torrent approaches the full cell width.
+        float w = uCurtWidth * (0.35 + 0.75 * aInfo.x);
         vec3 base = vec3(aCol.x + 0.5, aSpan.x, aCol.y + 0.5);
-        vec3 p = base + right * (position.x * uCurtWidth) + vec3(0.0, position.y * aSpan.y, 0.0);
+        vec3 p = base + right * (position.x * w) + vec3(0.0, position.y * aSpan.y, 0.0);
         vCell = p;
         vUv = uv;
         vInfo = aInfo;
@@ -507,7 +517,11 @@ export function createHiFiFluid(
         float streaks = fbm(sp1) * 0.62 + vnoise(sp2 * vec2(2.4, 1.0)) * 0.38;
         float lip = smoothstep(0.0, 0.10, 1.0 - vUv.y);   // hand-off to the surface tongue
         float impact = smoothstep(0.28, 0.0, vUv.y);        // plunge whitening at the base
-        float aer = smoothstep(0.30, 0.72, streaks) * (0.40 + 0.60 * den) + impact * 0.45 * den;
+        // Aeration scales with measured fall SPEED: fast water entrains air
+        // and reads white; a slow trickle stays glassy (Sep 2 ruling).
+        float spdT = clamp((speed - 3.0) / 11.0, 0.0, 1.0);
+        float aer = smoothstep(0.30, 0.72, streaks) * (0.25 + 0.75 * den) * (0.35 + 0.65 * spdT)
+                  + impact * (0.25 + 0.50 * spdT) * den;
         aer = clamp(aer, 0.0, 1.0);
         float edge = 1.0 - smoothstep(0.30, 0.5, abs(vUv.x - 0.5));
         // Scene behind the sheet, refracted by the streak relief.
@@ -523,7 +537,7 @@ export function createHiFiFluid(
         vec3 curtain = mix(sheet, vec3(0.95, 0.98, 1.0), aer);
         float sunUp = clamp(uSunDir.y, 0.0, 1.0);
         curtain += uSunCol * aer * 0.10 * sunUp;
-        float a = edge * lip * (0.28 + 0.72 * den) * (0.50 + 0.50 * aer) * uCurtain;
+        float a = edge * lip * (0.12 + 0.88 * den) * (0.45 + 0.55 * aer) * uCurtain;
         if (a < 0.02) discard;
         gl_FragColor = vec4(curtain, a);
       }
@@ -604,16 +618,20 @@ export function createHiFiFluid(
     }
     mistGeo.attributes.position.needsUpdate = true;
     mistGeo.attributes.aImp.needsUpdate = true;
-    // Curtain instances: every column with a falling span.
-    const { fTop, fBot, fDen, fVy } = fields;
+    // Curtain instances: fall columns above the MIN-FLUX floor. A stray
+    // droplet (den well under the floor) spawns nothing — the single-droplet
+    // sky-rectangle bug dies here; a trickle spawns a thin faint rope; only
+    // real discharge builds a full sheet (Sep 2 flow-variable falls ruling).
+    const { fTop, fBot, fDen, fVy, fFx, fFz } = fields;
     let c = 0;
     for (let z = 0; z < nz; z++)
       for (let x = 0; x < nx; x++) {
         const k = z * nx + x;
-        if (fDen[k] <= 0.004) continue;
+        if (fDen[k] <= 0.05) continue;
         curtCol[c * 2] = x; curtCol[c * 2 + 1] = z;
         curtSpan[c * 2] = fBot[k]; curtSpan[c * 2 + 1] = Math.max(0.05, fTop[k] - fBot[k]);
         curtInfo[c * 3] = fDen[k]; curtInfo[c * 3 + 1] = fVy[k]; curtInfo[c * 3 + 2] = ((x * 73 + z * 151) % 97) / 97;
+        curtFlow[c * 2] = fFx[k]; curtFlow[c * 2 + 1] = fFz[k];
         c++;
       }
     curtCount = c;
@@ -621,6 +639,7 @@ export function createHiFiFluid(
     aColAttr.needsUpdate = true;
     aSpanAttr.needsUpdate = true;
     aInfoAttr.needsUpdate = true;
+    aFlowAttr.needsUpdate = true;
   }
 
   const prevClearCol = new THREE.Color();
