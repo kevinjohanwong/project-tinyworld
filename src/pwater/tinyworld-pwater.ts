@@ -491,6 +491,25 @@ export function createParticleWater(ctx: PWaterCtx) {
   // is bottom + heldVolume/columnArea instead of the max particle top, so a
   // splash no longer lifts the whole cell and settled pools read level.
   const gHVol = new Float32Array(nx * nz);
+  // Temporal smoothing + mask hysteresis (Sep 2 look loop 2): the wet mask,
+  // surface height, depth and foam are filtered over ~0.3 s instead of being
+  // instantaneous per-frame reads. A column must hold water for TAU_ON before
+  // it turns wet and stay empty for TAU_OFF before it dries, which kills the
+  // per-frame shoreline flicker and the isolated floating blue rectangles
+  // (a single stray particle no longer paints a cell for one frame). While a
+  // draining column rides out its hysteresis hold the last height is kept, so
+  // thin sheets fade instead of strobing. Falls are exempt — they must react
+  // instantly. ?pwsmooth=0 disables (raw per-frame fields, old behavior).
+  const SMOOTH_ON = params.get("pwsmooth") !== "0";
+  const TAU_EMA = 0.3;   // s, height/depth/foam response
+  const TAU_ON = 0.12;   // s of sustained water before a cell turns wet
+  const TAU_OFF = 0.45;  // s of sustained emptiness before a cell dries
+  const sWet = new Float32Array(nx * nz);  // hysteresis accumulator 0..1
+  const sOn = new Uint8Array(nx * nz);     // current smoothed mask
+  const sH = new Float32Array(nx * nz);
+  const sDep = new Float32Array(nx * nz);
+  const sFoam = new Float32Array(nx * nz);
+  const sImp = new Float32Array(nx * nz);
   const gfHas = new Uint8Array(nx * nz);
   const gfTop = new Float32Array(nx * nz);
   const gfMin = new Float32Array(nx * nz);
@@ -652,29 +671,66 @@ export function createParticleWater(ctx: PWaterCtx) {
       binFields(st);
       const f = hifi.fields;
       const nb = nx * nz;
+      const aEma = SMOOTH_ON ? 1 - Math.exp(-dtReal / TAU_EMA) : 1;
       for (let b = 0; b < nb; b++) {
         if (gfHas[b]) {
           // Falling span in cell units, padded by half a particle spacing.
           // Density: particles per cell of height vs a one-cell-thick sheet
           // at rest spacing (1/D^2) — a lone trickle reads ~0.2, a full
-          // sheet saturates at 1.
+          // sheet saturates at 1. Falls stay INSTANT — no smoothing.
           const span = gfTop[b] - gfMin[b] + cellD;
           f.fTop[b] = gfTop[b] + cellD * 0.5;
           f.fBot[b] = gfMin[b] - cellD * 0.5;
           f.fDen[b] = Math.min(1, (gfCnt[b] / span) * cellD * cellD);
           f.fVy[b] = gfVy[b] / gfCnt[b];
         } else f.fDen[b] = 0;
-        if (!gbHas[b]) { f.mask[b] = 0; continue; }
+        const wetNow = gbHas[b] ? 1 : 0;
+        let hRaw = 0, depRaw = 0, foamRaw = 0, impRaw = 0;
+        if (wetNow) {
+          hRaw = gSurf[b];
+          depRaw = gbTop[b] - gbMin[b] + cellD;
+          const inv = 1 / gCnt[b];
+          f.fx[b] = gFx[b] * inv;
+          f.fz[b] = gFz[b] * inv;
+          const spdT = Math.min(1, (gSpd[b] * inv) / 8);
+          impRaw = Math.min(1, gImp[b] * inv * 1.5);
+          foamRaw = Math.min(1, spdT * spdT * 0.8 + impRaw * 0.7 + Math.min(1, gFoam[b] / 3) * 0.5);
+        }
+        if (!SMOOTH_ON) {
+          f.mask[b] = wetNow;
+          if (!wetNow) continue;
+          f.h[b] = hRaw; f.dep[b] = depRaw; f.imp[b] = impRaw; f.foam[b] = foamRaw;
+          continue;
+        }
+        // Hysteresis: fast attack (TAU_ON), slow release (TAU_OFF). A cell
+        // that flickers wet/dry at the shoreline stays steadily wet; a lone
+        // stray particle never reaches the on-threshold at all.
+        if (wetNow) sWet[b] = Math.min(1, sWet[b] + dtReal / TAU_ON);
+        else sWet[b] = Math.max(0, sWet[b] - dtReal / TAU_OFF);
+        if (!sOn[b]) {
+          if (sWet[b] >= 1) {
+            sOn[b] = 1;
+            // Snap state on first wet so the EMA doesn't lag up from zero.
+            sH[b] = hRaw; sDep[b] = depRaw; sFoam[b] = foamRaw; sImp[b] = impRaw;
+          }
+        } else if (sWet[b] <= 0) sOn[b] = 0;
+        if (!sOn[b]) { f.mask[b] = 0; continue; }
+        if (wetNow) {
+          sH[b] += (hRaw - sH[b]) * aEma;
+          sDep[b] += (depRaw - sDep[b]) * aEma;
+          sFoam[b] += (foamRaw - sFoam[b]) * aEma;
+          sImp[b] += (impRaw - sImp[b]) * aEma;
+        } else {
+          // Riding out the hysteresis hold: keep the last surface height so
+          // the sheet fades in place instead of collapsing, fade the foam.
+          sFoam[b] += -sFoam[b] * aEma;
+          sImp[b] += -sImp[b] * aEma;
+        }
         f.mask[b] = 1;
-        f.h[b] = gSurf[b];
-        f.dep[b] = gbTop[b] - gbMin[b] + cellD;
-        const inv = 1 / gCnt[b];
-        f.fx[b] = gFx[b] * inv;
-        f.fz[b] = gFz[b] * inv;
-        const spdT = Math.min(1, (gSpd[b] * inv) / 8);
-        const impT = Math.min(1, gImp[b] * inv * 1.5);
-        f.imp[b] = impT;
-        f.foam[b] = Math.min(1, spdT * spdT * 0.8 + impT * 0.7 + Math.min(1, gFoam[b] / 3) * 0.5);
+        f.h[b] = sH[b];
+        f.dep[b] = sDep[b];
+        f.imp[b] = sImp[b];
+        f.foam[b] = sFoam[b];
       }
       hifi.commit();
       renderer.getSize(sizeV);
