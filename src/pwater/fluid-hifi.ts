@@ -111,8 +111,8 @@ export function createHiFiFluid(
       uSunCol: { value: new THREE.Color(1.0, 0.95, 0.86) },
       uSkyHi: { value: new THREE.Color(0.435, 0.647, 0.847) },
       uSkyLo: { value: new THREE.Color(0.812, 0.878, 0.925) },
-      uShallow: { value: new THREE.Color(0.12, 0.62, 0.58) },
-      uDeep: { value: new THREE.Color(0.04, 0.26, 0.42) },
+      uShallow: { value: new THREE.Color(0.1, 0.58, 0.63) },
+      uDeep: { value: new THREE.Color(0.02, 0.23, 0.5) },
       uAbsorb: { value: tune.absorb },
       uRefract: { value: tune.refract },
       uRippleAmp: { value: tune.rippleAmp },
@@ -290,8 +290,12 @@ export function createHiFiFluid(
         float ndh = max(dot(Np, H), 0.0);
         float specCore = pow(ndh, 260.0);
         float specHalo = pow(ndh, 46.0);
-        float glint = smoothstep(0.5, 0.92, vnoise(vCell.xz * 9.0 + uTime * vec2(1.7, 1.3)));
-        float sunRefl = specCore * (2.2 + 6.0 * glint) + specHalo * 0.24;
+        // Sparkle (Sep 2 loop 5): two fine octaves multiplied — glitter-scale
+        // pinpricks instead of chip-sized vnoise cells inside the sun path.
+        float gn = vnoise(vCell.xz * 23.0 + uTime * vec2(1.7, 1.3))
+                 * vnoise(vCell.xz * 41.0 - uTime * vec2(1.1, 2.3));
+        float glint = smoothstep(0.38, 0.72, gn);
+        float sunRefl = specCore * (2.2 + 2.6 * glint) + specHalo * 0.24;
 
         vec3 col = mix(refracted, skyRefl, clamp(fres, 0.0, 1.0));
         col += uSunCol * sunRefl;
@@ -357,8 +361,8 @@ export function createHiFiFluid(
         p.z += (fract(aSeed * 13.7) - 0.5) * 0.8 * phase;
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         float grow = 0.55 + phase * 1.5;
-        gl_PointSize = clamp(620.0 * uScale * grow * aImp / max(-mv.z, 1.0), 0.0, 110.0);
-        vA = aImp * pow(1.0 - phase, 1.7) * smoothstep(0.0, 0.18, phase) * 0.45;
+        gl_PointSize = clamp(430.0 * uScale * grow * aImp / max(-mv.z, 1.0), 0.0, 72.0);
+        vA = aImp * pow(1.0 - phase, 1.7) * smoothstep(0.0, 0.18, phase) * 0.38;
         vSeed = aSeed;
         gl_Position = projectionMatrix * mv;
       }
