@@ -92,7 +92,7 @@ let DP_MAX = 0.1 * H; // per-iteration; x ITERS x SUBSTEPS = 0.72 cells/frame ma
 // relax it outward) retains inflow in the accumulator. Relaxation of that
 // compression is exactly the pool being pushed up, so submerged inflow
 // becomes rate-limited by pressure, not blocked.
-const EMIT_RHO_GATE = 1.25; // fraction of rho0 above which the mouth is compressed
+const EMIT_RHO_GATE = 1.08; // fraction of rho0 above which the mouth is compressed
 // Evaporation — a universal air-boundary rule: water leaves through exposed
 // surface. Exposure is inferred from the neighborhood: a buried or lake-bulk
 // particle (nb >= EVAP_NB) has ~no exposed surface and never evaporates; an
@@ -710,7 +710,10 @@ export class Sim {
       const ang = this.rng() * Math.PI * 2;
       const rad = Math.sqrt(this.rng()) * 0.9;
       const px = t.source[0] + Math.cos(ang) * rad;
-      const py = t.source[1] + this.rng() * 1.2;
+      // Spawn AT the mouth (0..0.35 cells), not 1.2 cells above it: the old
+      // tall spawn column plus the loose density gate stacked a permanent
+      // standing dome of real water over the spring (measured 34-47 cm).
+      const py = t.source[1] + this.rng() * 0.35;
       const pz = t.source[2] + Math.sin(ang) * rad;
       // Back-pressure: a full mouth accepts no mass this tick; the retained
       // inflow stays in emitAcc and flows out as the pool makes room. The
