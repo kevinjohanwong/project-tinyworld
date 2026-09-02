@@ -508,8 +508,16 @@ export function createParticleWater(ctx: PWaterCtx) {
   const sOn = new Uint8Array(nx * nz);     // current smoothed mask
   const sH = new Float32Array(nx * nz);
   const sDep = new Float32Array(nx * nz);
-  const sFoam = new Float32Array(nx * nz);
   const sImp = new Float32Array(nx * nz);
+  // Foam field (Sep 2 look loop 4): a persistent quantity INJECTED where the
+  // sim churns (impacts, fast flow, foam sprites), ADVECTED downstream with
+  // the local surface flow, and DECAYING over ~3 s — so foam forms streaks
+  // and lingering patches that ride the current, instead of instantaneous
+  // per-cell averages (the old hard rectangular blobs).
+  const TAU_FOAM = 3.0;
+  const FOAM_INJ = 2.2;    // injection rate: foamRaw -> field per second
+  const sFoam = new Float32Array(nx * nz);
+  const sFoam2 = new Float32Array(nx * nz);
   const gfHas = new Uint8Array(nx * nz);
   const gfTop = new Float32Array(nx * nz);
   const gfMin = new Float32Array(nx * nz);
@@ -722,27 +730,54 @@ export function createParticleWater(ctx: PWaterCtx) {
           if (sWet[b] >= 1) {
             sOn[b] = 1;
             // Snap state on first wet so the EMA doesn't lag up from zero.
-            sH[b] = hRaw; sDep[b] = depRaw; sFoam[b] = foamRaw; sImp[b] = impRaw;
+            sH[b] = hRaw; sDep[b] = depRaw; sImp[b] = impRaw;
           }
         } else if (sWet[b] <= 0) sOn[b] = 0;
+        // Foam: INJECT into the persistent field here (churn is a source, not
+        // a value); the advect/decay pass below owns transport and rendering.
+        sFoam[b] = Math.min(1, sFoam[b] + foamRaw * dtReal * FOAM_INJ);
         if (!sOn[b]) { f.mask[b] = 0; continue; }
         if (wetNow) {
           sH[b] += (hRaw - sH[b]) * aEma;
           sDep[b] += (depRaw - sDep[b]) * aEma;
-          sFoam[b] += (foamRaw - sFoam[b]) * aEma;
           sImp[b] += (impRaw - sImp[b]) * aEma;
         } else {
           // Riding out the hysteresis hold: keep the last surface height so
-          // the sheet fades in place instead of collapsing, fade the foam.
-          sFoam[b] += -sFoam[b] * aEma;
+          // the sheet fades in place instead of collapsing.
           sImp[b] += -sImp[b] * aEma;
         }
         f.mask[b] = 1;
         f.h[b] = sH[b];
         f.dep[b] = sDep[b];
         f.imp[b] = sImp[b];
-        f.foam[b] = sFoam[b];
       }
+      // Foam transport (loop 4): semi-Lagrangian advection along the surface
+      // flow + exponential decay. Foam drifts downstream off its source,
+      // stretches into streaks along the current, and fades out over
+      // TAU_FOAM — nothing is repainted per frame from scratch.
+      if (SMOOTH_ON) {
+        const dec = Math.exp(-dtReal / TAU_FOAM);
+        for (let z = 0; z < nz; z++) {
+          const row = z * nx;
+          for (let x = 0; x < nx; x++) {
+            const b = row + x;
+            const sx = x - f.fx[b] * dtReal;
+            const sz = z - f.fz[b] * dtReal;
+            const x0 = Math.max(0, Math.min(nx - 1, Math.floor(sx)));
+            const z0 = Math.max(0, Math.min(nz - 1, Math.floor(sz)));
+            const x1 = Math.min(nx - 1, x0 + 1);
+            const z1 = Math.min(nz - 1, z0 + 1);
+            const tx = Math.min(1, Math.max(0, sx - x0));
+            const tz = Math.min(1, Math.max(0, sz - z0));
+            const v = (sFoam[z0 * nx + x0] * (1 - tx) + sFoam[z0 * nx + x1] * tx) * (1 - tz)
+                    + (sFoam[z1 * nx + x0] * (1 - tx) + sFoam[z1 * nx + x1] * tx) * tz;
+            sFoam2[b] = v * dec;
+            f.foam[b] = sFoam2[b];
+          }
+        }
+        sFoam.set(sFoam2);
+      }
+      // (!SMOOTH_ON: f.foam already carries the raw per-frame value.)
       hifi.commit();
       renderer.getSize(sizeV);
       if (sizeV.x !== lastW || sizeV.y !== lastH) {
