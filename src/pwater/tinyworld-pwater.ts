@@ -740,7 +740,11 @@ export function createParticleWater(ctx: PWaterCtx) {
       const nb = nx * nz;
       const aEma = SMOOTH_ON ? 1 - Math.exp(-dtReal / TAU_EMA) : 1;
       for (let b = 0; b < nb; b++) {
-        if (gfHas[b]) {
+        // A curtain only exists where there is a real drop: the column's own
+        // ground sits well below the surrounding lip. Fall-classified splash
+        // over a flat pool (spring boil, landing churn on level ground) drew
+        // curled ribbons in the sky ABOVE the mesa rim — no drop, no curtain.
+        if (gfHas[b] && gLip[b] - gTerr[b] > 2) {
           // Falling span in cell units, padded by half a particle spacing.
           // Density: particles per cell of height vs a one-cell-thick sheet
           // at rest spacing (1/D^2) — a lone trickle reads ~0.2, a full
@@ -748,28 +752,17 @@ export function createParticleWater(ctx: PWaterCtx) {
           const span = gfTop[b] - gfMin[b] + cellD;
           const finv = 1 / gfCnt[b];
           const den = Math.min(1, (gfCnt[b] / span) * cellD * cellD);
-          // Anchor the sheet to terrain: the top may not float above the lip
-          // it pours over (splash-fed columns had sky-high tops), and a real
-          // discharge runs continuously down to its landing even where sparse
-          // particle sampling leaves vertical gaps mid-fall.
           const lipY = gLip[b] + 0.6;
           const landing = gTerr[b];
-          let top = gfTop[b] + cellD * 0.5;
-          if (top > lipY) top = lipY;
-          let bot = gfMin[b] - cellD * 0.5;
-          if (den > 0.12 && bot > landing + 0.4) bot = landing + 0.4;
-          if (bot > top - 0.05) bot = top - 0.05;
-          f.fTop[b] = top;
-          f.fBot[b] = bot;
-          f.fDen[b] = den;
-          f.fVy[b] = gfVy[b] * finv;
           // Arc seeding (Sep 3): fall-classified particles are already
           // gravity-dominated (horizontal ≈ 0 → arc ≈ 0 → the skirt), so the
           // launch velocity comes from the upstream SURFACE flow feeding the
           // lip — neighboring wet body columns whose surface sits near lip
-          // height. Falls with no such feeder (pure splash) keep their own
-          // horizontal as before.
-          let sfx = 0, sfz = 0, sc = 0;
+          // height. The same feeder scan captures the RENDERED pool surface
+          // height (gSurf — the exact value the surface mesh draws), because
+          // the curve of the fall must START at the top lip of water: ribbon
+          // top = feeder surface, arc zero there, curving away as it drops.
+          let sfx = 0, sfz = 0, sc = 0, lipSurf = 0;
           const bx0 = b % nx, bz0 = (b / nx) | 0;
           for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
             if (!dx && !dz) continue;
@@ -780,9 +773,24 @@ export function createParticleWater(ctx: PWaterCtx) {
               const ninv = 1 / gCnt[nbb];
               sfx += gFx[nbb] * ninv;
               sfz += gFz[nbb] * ninv;
+              if (gSurf[nbb] > lipSurf) lipSurf = gSurf[nbb];
               sc++;
             }
           }
+          // Anchor the sheet: a lip-fed fall pins its top to the pool surface
+          // it pours out of (raised OR lowered — sparse columns binned tops
+          // mid-cliff, leaving the sheet detached from the lip); splash-only
+          // columns keep their particle top, clamped below the terrain lip.
+          let top = gfTop[b] + cellD * 0.5;
+          if (sc && lipSurf > 0) top = lipSurf;
+          else if (top > lipY) top = lipY;
+          let bot = gfMin[b] - cellD * 0.5;
+          if (den > 0.12 && bot > landing + 0.4) bot = landing + 0.4;
+          if (bot > top - 0.05) bot = top - 0.05;
+          f.fTop[b] = top;
+          f.fBot[b] = bot;
+          f.fDen[b] = den;
+          f.fVy[b] = gfVy[b] * finv;
           if (sc) {
             f.fFx[b] = sfx / sc;
             f.fFz[b] = sfz / sc;
