@@ -530,11 +530,62 @@ export function createParticleWater(ctx: PWaterCtx) {
   const gfVz = new Float32Array(nx * nz);
   let fallCols = 0;
   let fallN = 0;
+  // Terrain anchor (Sep 3, "not connected at all"): per-column terrain TOP
+  // face and LIP height (max terrain top within LR cells). Splash-fed fall
+  // columns binned their span tops from ballistic particle heights, drawing
+  // curtain ribbons in open sky — disconnected from the lip above and the
+  // landing below. Sheet tops clamp to the lip they pour over; a real
+  // discharge extends down to its landing so the sheet reads lip→ground as
+  // one connected fall. Rebuilt from the live-edited terrain copy whenever a
+  // solid edit lands, so digs stay honest.
+  const gTerr = new Float32Array(nx * nz);
+  const gLip = new Float32Array(nx * nz);
+  const gTmpM = new Float32Array(nx * nz);
+  let terrDirty = true;
+  function rebuildTerrainAnchor() {
+    terrDirty = false;
+    const ts = terrain.solid;
+    for (let z = 0; z < nz; z++) {
+      const row = z * nx;
+      for (let x = 0; x < nx; x++) {
+        let top = 0;
+        for (let y = ny - 1; y >= 0; y--) {
+          if (ts[(y * nz + z) * nx + x]) { top = y + 1; break; }
+        }
+        gTerr[row + x] = top;
+      }
+    }
+    // LR must cover the ballistic arc's horizontal reach (capped at 3 cells
+    // in the curtain shader) so an arcing tongue keeps its lip anchor.
+    const LR = 3;
+    for (let z = 0; z < nz; z++) {
+      const row = z * nx;
+      for (let x = 0; x < nx; x++) {
+        let m = 0;
+        for (let d = -LR; d <= LR; d++) {
+          const xx = x + d;
+          if (xx >= 0 && xx < nx && gTerr[row + xx] > m) m = gTerr[row + xx];
+        }
+        gTmpM[row + x] = m;
+      }
+    }
+    for (let x = 0; x < nx; x++) {
+      for (let z = 0; z < nz; z++) {
+        let m = 0;
+        for (let d = -LR; d <= LR; d++) {
+          const zz = z + d;
+          if (zz >= 0 && zz < nz && gTmpM[zz * nx + x] > m) m = gTmpM[zz * nx + x];
+        }
+        gLip[z * nx + x] = m;
+      }
+    }
+  }
 
   // Per-column bins over the particle snapshot: surface top/bottom, mean
   // horizontal flow, mean speed, fall-impact (fast downward particles), and
   // foam density. Pure read-only telemetry over sim output.
   function binFields(st: FrameState) {
+    if (terrDirty) rebuildTerrainAnchor();
     gHas.fill(0); gCnt.fill(0); gFx.fill(0); gFz.fill(0);
     gSpd.fill(0); gImp.fill(0); gFoam.fill(0);
     gbHas.fill(0); gbCnt.fill(0); gfHas.fill(0); gfCnt.fill(0); gfVy.fill(0);
@@ -696,12 +747,49 @@ export function createParticleWater(ctx: PWaterCtx) {
           // sheet saturates at 1. Falls stay INSTANT — no smoothing.
           const span = gfTop[b] - gfMin[b] + cellD;
           const finv = 1 / gfCnt[b];
-          f.fTop[b] = gfTop[b] + cellD * 0.5;
-          f.fBot[b] = gfMin[b] - cellD * 0.5;
-          f.fDen[b] = Math.min(1, (gfCnt[b] / span) * cellD * cellD);
+          const den = Math.min(1, (gfCnt[b] / span) * cellD * cellD);
+          // Anchor the sheet to terrain: the top may not float above the lip
+          // it pours over (splash-fed columns had sky-high tops), and a real
+          // discharge runs continuously down to its landing even where sparse
+          // particle sampling leaves vertical gaps mid-fall.
+          const lipY = gLip[b] + 0.6;
+          const landing = gTerr[b];
+          let top = gfTop[b] + cellD * 0.5;
+          if (top > lipY) top = lipY;
+          let bot = gfMin[b] - cellD * 0.5;
+          if (den > 0.12 && bot > landing + 0.4) bot = landing + 0.4;
+          if (bot > top - 0.05) bot = top - 0.05;
+          f.fTop[b] = top;
+          f.fBot[b] = bot;
+          f.fDen[b] = den;
           f.fVy[b] = gfVy[b] * finv;
-          f.fFx[b] = gfVx[b] * finv;
-          f.fFz[b] = gfVz[b] * finv;
+          // Arc seeding (Sep 3): fall-classified particles are already
+          // gravity-dominated (horizontal ≈ 0 → arc ≈ 0 → the skirt), so the
+          // launch velocity comes from the upstream SURFACE flow feeding the
+          // lip — neighboring wet body columns whose surface sits near lip
+          // height. Falls with no such feeder (pure splash) keep their own
+          // horizontal as before.
+          let sfx = 0, sfz = 0, sc = 0;
+          const bx0 = b % nx, bz0 = (b / nx) | 0;
+          for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dz) continue;
+            const xx = bx0 + dx, zz = bz0 + dz;
+            if (xx < 0 || xx >= nx || zz < 0 || zz >= nz) continue;
+            const nbb = zz * nx + xx;
+            if (gbHas[nbb] && gCnt[nbb] > 0 && gbTop[nbb] >= gLip[b] - 2) {
+              const ninv = 1 / gCnt[nbb];
+              sfx += gFx[nbb] * ninv;
+              sfz += gFz[nbb] * ninv;
+              sc++;
+            }
+          }
+          if (sc) {
+            f.fFx[b] = sfx / sc;
+            f.fFz[b] = sfz / sc;
+          } else {
+            f.fFx[b] = gfVx[b] * finv;
+            f.fFz[b] = gfVz[b] * finv;
+          }
         } else f.fDen[b] = 0;
         const wetNow = gbHas[b] ? 1 : 0;
         let hRaw = 0, depRaw = 0, foamRaw = 0, impRaw = 0;
@@ -740,8 +828,12 @@ export function createParticleWater(ctx: PWaterCtx) {
         // mouth (full strength again ~6 cells out).
         const sdx = (b % nx) - (origin.x - box.x0);
         const sdz = ((b / nx) | 0) - (origin.z - box.z0);
-        const srcCap = 0.22 + 0.78 * Math.min(1, (sdx * sdx + sdz * sdz) / 36);
-        sFoam[b] = Math.min(1, sFoam[b] + foamRaw * dtReal * FOAM_INJ * srcCap);
+        // Radius 14 cells (was 6 — far smaller than the source pool, so the
+        // whole mesa top still caked white and draped over the rim), plus a
+        // saturation deficit so sustained churn equilibrates against decay
+        // below full white instead of pinning at 1.
+        const srcCap = 0.15 + 0.85 * Math.min(1, (sdx * sdx + sdz * sdz) / 196);
+        sFoam[b] = Math.min(1, sFoam[b] + foamRaw * dtReal * FOAM_INJ * srcCap * (1 - 0.65 * sFoam[b]));
         if (!sOn[b]) { f.mask[b] = 0; continue; }
         if (wetNow) {
           sH[b] += (hRaw - sH[b]) * aEma;
@@ -1003,6 +1095,7 @@ export function createParticleWater(ctx: PWaterCtx) {
     const idx = (gy * nz + gz) * nx + gx;
     if (terrain.solid[idx] === v) return;
     terrain.solid[idx] = v;
+    terrDirty = true;
     editQueue.push(gx, gy, gz, v);
   }
 
