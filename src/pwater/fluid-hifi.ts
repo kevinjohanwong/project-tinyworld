@@ -414,9 +414,24 @@ export function createHiFiFluid(
   // their side edges so a wide sheet reads continuous. Sim-driven only.
   const curtTune = { curtain: 1, curtWidth: 1.25 };
   const curtGeo = new THREE.InstancedBufferGeometry();
-  curtGeo.setAttribute("position", new THREE.Float32BufferAttribute([-0.5, 0, 0, 0.5, 0, 0, 0.5, 1, 0, -0.5, 1, 0], 3));
-  curtGeo.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
-  curtGeo.setIndex([0, 1, 2, 0, 2, 3]);
+  // Vertically-segmented ribbon (Sep 3): the sheet must be able to BEND —
+  // a 4-vertex quad can only slant, so the ballistic arc needs real rows.
+  {
+    const CURT_SEG = 16;
+    const cp: number[] = [], cu: number[] = [], ci: number[] = [];
+    for (let s = 0; s <= CURT_SEG; s++) {
+      const t = s / CURT_SEG;
+      cp.push(-0.5, t, 0, 0.5, t, 0);
+      cu.push(0, t, 1, t);
+      if (s < CURT_SEG) {
+        const a = s * 2;
+        ci.push(a, a + 1, a + 3, a, a + 3, a + 2);
+      }
+    }
+    curtGeo.setAttribute("position", new THREE.Float32BufferAttribute(cp, 3));
+    curtGeo.setAttribute("uv", new THREE.Float32BufferAttribute(cu, 2));
+    curtGeo.setIndex(ci);
+  }
   const curtCol = new Float32Array(n * 2);
   const curtSpan = new Float32Array(n * 2);
   const curtInfo = new Float32Array(n * 3);
@@ -486,6 +501,16 @@ export function createHiFiFluid(
         float w = uCurtWidth * (0.35 + 0.75 * aInfo.x);
         vec3 base = vec3(aCol.x + 0.5, aSpan.x, aCol.y + 0.5);
         vec3 p = base + right * (position.x * w) + vec3(0.0, position.y * aSpan.y, 0.0);
+        // Ballistic arc (Sep 3 ruling): water LAUNCHES off the lip with its
+        // measured horizontal flow and follows a projectile path — an arched
+        // tongue at the top steepening to vertical — instead of draping the
+        // cliff face like a skirt. drop below the span top gives flight time
+        // t = sqrt(2*drop/g) (sim GRAV = 28 cells/s^2); horizontal carry is
+        // flow speed * t, capped so long falls stay sane.
+        float drop = (1.0 - position.y) * aSpan.y;
+        vec3 hDir = fl > 1e-4 ? vec3(aFlow.x / fl, 0.0, aFlow.y / fl) : vec3(0.0);
+        float arc = min(fl * sqrt(2.0 * max(drop, 0.0) / 28.0), 3.0);
+        p += hDir * arc;
         vCell = p;
         vUv = uv;
         vInfo = aInfo;
