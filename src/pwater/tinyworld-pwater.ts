@@ -336,7 +336,7 @@ export function createParticleWater(ctx: PWaterCtx) {
   // ?pwribnorm= per-cell fall density at which ribbons hit full width/whiteness.
   // Terrace reference tuned 0.03 on its small demo grid; our K-coarsened worlds
   // carry less mass per fall cell, so the default is recalibrated denser.
-  const ribNorm = Math.max(0.001, num("pwribnorm", 0.015));
+  const ribNorm = Math.max(0.001, num("pwribnorm", 0.005));
   const ctr = (K - 1) / (2 * K);
   const offX = box.x0 - cxRound / K - 0.5 + ctr;
   const offY = box.y0 - 0.5 + ctr;
