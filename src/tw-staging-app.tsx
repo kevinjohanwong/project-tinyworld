@@ -774,6 +774,90 @@ function makeMidPoolTestWorldSource(): { layers: Record<string, Int32Array>; met
   };
 }
 
+// Independent terrace-water acceptance bed
+// (?debugWorld=1&terrain=waterverify&bare=1&tod=day&springat=30,70).
+// Authored at scan scale so the normal shapes pass produces a K=3 water grid.
+// A single source must pass five observable checks without authored water:
+// level upper reservoir, connected lip handoff, two momentum-carrying drops,
+// equalization through a narrow doorway, and flooding a dry side pocket after dig.
+function makeWaterVerifyWorldSource(): { layers: Record<string, Int32Array>; meta: Record<string, unknown>; blockCount: number; resolution: number } {
+  const voxel = 0.015;
+  const N = 220;
+  const FLOOR_Y = 2;
+  const BASE = 24;
+  const UPPER = { x0: 12, x1: 72, z0: 72, z1: 148, top: 68 };
+  const MID = { x0: 82, x1: 124, z0: 82, z1: 138, floor: 25 };
+  const LOWER = { x0: 138, x1: 184, z0: 78, z1: 142, floor: 12 };
+  const ROOM = { x0: 184, x1: 216, z0: 82, z1: 138, floor: 10 };
+  const grass: number[] = [];
+  const dirt: number[] = [];
+  const wall: number[] = [];
+  const ground: number[] = [];
+  const inside = (x: number, z: number, r: { x0: number; x1: number; z0: number; z1: number }) =>
+    x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1;
+  const heightAt = (x: number, z: number): number => {
+    let h = BASE;
+    if (inside(x, z, UPPER)) h = UPPER.top - Math.round((x - UPPER.x0) * 0.035);
+    if (x > UPPER.x1 && x < MID.x0 && z >= 101 && z <= 119) h = 30;
+    if (inside(x, z, MID)) h = MID.floor;
+    if (x > MID.x1 && x < LOWER.x0 && z >= 103 && z <= 117) h = 18;
+    if (inside(x, z, LOWER)) h = LOWER.floor;
+    if (inside(x, z, ROOM)) h = ROOM.floor;
+    if (x > LOWER.x1 && x < ROOM.x0 && z >= 104 && z <= 116) h = 11;
+    if (x > ROOM.x1 && z >= 104 && z <= 116) h = Math.max(3, 10 - Math.floor((x - ROOM.x1) * 0.45));
+    return h;
+  };
+  const heights = new Int16Array(N * N);
+  for (let x = 0; x < N; x++) for (let z = 0; z < N; z++) heights[x * N + z] = heightAt(x, z);
+  const hAt = (x: number, z: number) => x < 0 || z < 0 || x >= N || z >= N ? BASE : heights[x * N + z];
+  for (let x = 0; x < N; x++) for (let z = 0; z < N; z++) {
+    const h = hAt(x, z);
+    const hmin = Math.min(h, hAt(x - 1, z), hAt(x + 1, z), hAt(x, z - 1), hAt(x, z + 1));
+    for (let y = Math.max(FLOOR_Y, hmin - 4); y < h; y++) dirt.push(x, y, z);
+    grass.push(x, h, z);
+    ground.push(x, z, h);
+  }
+  // A roofed room around the final basin. The west/east openings are only the
+  // 12-cell channel width, testing connected-level propagation through doors.
+  for (let x = ROOM.x0; x <= ROOM.x1; x++) for (let z = ROOM.z0; z <= ROOM.z1; z++) {
+    const perimeter = x === ROOM.x0 || x === ROOM.x1 || z === ROOM.z0 || z === ROOM.z1;
+    if (!perimeter) continue;
+    const doorway = (x === ROOM.x0 || x === ROOM.x1) && z >= 104 && z <= 116;
+    for (let y = ROOM.floor + 1; y <= 48; y++) if (!(doorway && y <= 34)) wall.push(x, y, z);
+  }
+  for (let x = ROOM.x0; x <= ROOM.x1; x++) for (let z = ROOM.z0; z <= 98; z++) wall.push(x, 49, z);
+  // A sealed, dry pocket beside the lower pool. __tw.dig at its thin shared
+  // wall must open it and water must propagate in through the real edit seam.
+  for (let x = 150; x <= 174; x++) for (let z = 148; z <= 174; z++) {
+    for (let y = 13; y <= 30; y++) if (x === 150 || x === 174 || z === 148 || z === 174) wall.push(x, y, z);
+  }
+  const layers: Record<string, Int32Array> = {
+    grass: new Int32Array(grass), dirt: new Int32Array(dirt), water: new Int32Array([]),
+    wall: new Int32Array(wall), trunks: new Int32Array([]), leaves: new Int32Array([]),
+    ground: new Int32Array(ground),
+  };
+  const blockCount = Object.entries(layers).reduce((sum, [name, a]) => name === "ground" ? sum : sum + a.length / 3, 0);
+  return {
+    layers,
+    meta: {
+      voxel, span: N * voxel, centerX: N * voxel / 2, centerZ: N * voxel / 2,
+      worldName: "TERRACE WATER VERIFY", sourceName: "terrace-water-verify",
+      capturedAt: Date.now(), weatherSeason: "summer", debugWorld: true,
+      waterVerifyRegions: {
+        units: "authored-fine-cells (÷1.5 for loaded)",
+        upperPool: [UPPER.x0, UPPER.x1, UPPER.z0, UPPER.z1],
+        firstLip: [UPPER.x1, MID.x0, 101, 119],
+        middlePool: [MID.x0, MID.x1, MID.z0, MID.z1],
+        secondLip: [MID.x1, LOWER.x0, 103, 117],
+        lowerPool: [LOWER.x0, LOWER.x1, LOWER.z0, LOWER.z1],
+        room: [ROOM.x0, ROOM.x1, ROOM.z0, ROOM.z1],
+        digPocket: [150, 174, 148, 174],
+        digWallTarget: [150, 20, 148],
+      },
+    }, blockCount, resolution: voxel,
+  };
+}
+
 // Scan-scale rooms water bed (?debugWorld=1&terrain=rooms&bare=1&tod=day).
 // KJ Sep 2: "create a voxel space that can accurately test the water dynamics —
 // pools, hills, and the terrain we might see in rooms". Unlike every other bed
@@ -2215,6 +2299,7 @@ export default function TinyWorld() {
       : _terrain === "breach" ? "breach"
       : _terrain === "breachflat" ? "breachflat"
       : _terrain === "steps" ? "steps"
+      : _terrain === "waterverify" ? "waterverify"
       : _terrain === "rooms" ? "rooms"
       : _terrain === "synthetic" ? "synthetic"
       : "scan";
@@ -2227,6 +2312,7 @@ export default function TinyWorld() {
       : _mode === "breach" ? "loading breached-lake gorge testbed…"
       : _mode === "breachflat" ? "loading flat breached-lake gorge testbed…"
       : _mode === "steps" ? "loading two-tier waterfall testbed…"
+      : _mode === "waterverify" ? "loading terrace-water acceptance bed…"
       : _mode === "rooms" ? "loading scan-scale rooms water bed…"
       : _mode === "synthetic" ? "loading synthetic debug world…"
       : "loading debug scan…",
@@ -2234,6 +2320,7 @@ export default function TinyWorld() {
     const t = setTimeout(() => {
       (async () => {
         if (_mode === "steps") return buildWorld(makeStepsWorldSource());
+        if (_mode === "waterverify") return buildWorld(makeWaterVerifyWorldSource());
         if (_mode === "rooms") return buildWorld(makeRoomsWaterWorldSource());
         if (_mode === "hydro") return buildWorld(makeWaterTestWorldSource());
         if (_mode === "mid") return buildWorld(makeMidPoolTestWorldSource());
