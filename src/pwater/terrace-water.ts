@@ -105,6 +105,7 @@ export function createTerraceWater(opts: TerraceOpts) {
           const rem0 = rem;
           const resting = y === 0 || solid[i - LAYER] === 1 || mass[i - LAYER] >= 0.5;
           let moved = 0;
+          let freeEdgeMask = 0;
           dflow[i] = 0; fvx[i] = 0; fvz[i] = 0;
 
           /* 1. down */
@@ -138,9 +139,34 @@ export function createTerraceWater(opts: TerraceOpts) {
             }
           }
 
-          /* 2. level sideways — a thin film riding on full water clings */
+          /* 2. unsupported-neighbour outflow — gravity gets first claim.
+             A shallow film may cling over supported water, but not when the
+             adjacent cell opens into a genuine drop. Move into that open
+             neighbour before level spreading, then carry the measured launch
+             momentum into the falling column on the next step. */
+          if (rem > MINMASS && resting && y > 0) {
+            for (let k = 0; k < 4; k++) {
+              const qx = x + DX[k], qz = z + DZ[k];
+              if (qx < 0 || qz < 0 || qx >= nx || qz >= nz) continue;
+              const j = i + DOFF[k];
+              if (solid[j] || solid[j - LAYER] || mass[j - LAYER] >= 0.5) continue;
+              freeEdgeMask |= 1 << k;
+              let f = (rem - mass[j]) / 5;
+              if (f > MINFLOW) f *= 0.5;
+              if (f <= 0) continue;
+              if (f > rem) f = rem;
+              nmass[i] -= f; nmass[j] += f; rem -= f; moved += f;
+              fvx[i] += f * DX[k]; fvz[i] += f * DZ[k];
+              const v0 = V0_BASE + V0_DEPTH * Math.min(1, rem0);
+              mmx[j] += f * v0 * DX[k]; mmz[j] += f * v0 * DZ[k];
+              if (rem <= MINMASS) break;
+            }
+          }
+
+          /* 3. level sideways — a thin film riding on full water clings */
           if (rem > MINMASS && !(rem < 0.06 && y > 0 && !solid[i - LAYER] && mass[i - LAYER] >= 0.95)) {
             for (let k = 0; k < 4; k++) {
+              if (freeEdgeMask & (1 << k)) continue;
               const qx = x + DX[k], qz = z + DZ[k];
               if (qx < 0 || qz < 0 || qx >= nx || qz >= nz) continue;
               const j = i + DOFF[k];
@@ -159,7 +185,7 @@ export function createTerraceWater(opts: TerraceOpts) {
             }
           }
 
-          /* 3. squeeze up */
+          /* 4. squeeze up */
           if (rem > MINMASS && y < ny - 1) {
             const u = i + LAYER;
             if (!solid[u]) {
