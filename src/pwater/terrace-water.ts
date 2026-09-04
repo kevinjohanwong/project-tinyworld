@@ -37,6 +37,9 @@ export type TerraceOpts = {
   // Momentum-everywhere toggle (default on). Off reproduces the lip-only
   // momentum behavior exactly (retention/bias/head-impulse all skipped).
   momentum?: boolean;
+  // Ballistic-droplet toggle (default on). Off keeps all lip outflow on the
+  // grid path (pre-droplet behavior).
+  drops?: boolean;
 };
 
 const MAXC = 0.02, MINMASS = 0.0001, MINFLOW = 0.01, MAXSPEED = 1.0, VIS = 0.028;
@@ -50,6 +53,13 @@ const V0_BASE = 0.22, V0_DEPTH = 0.38, VDECAY = 0.66;
 // waves come from), and solid walls reflect the incoming component.
 const INERTIA = 1.6, MOM_PUSH = 0.04, HEADV = 0.55;
 const RET_FREE = 0.997, RET_BED = 0.985, REFL = 0.3;
+// Ballistic droplets (ladder rung 2): water crossing a lip with launch speed
+// leaves the grid as simulated airborne parcels — position + 3D velocity,
+// gravity-integrated, mass-conserving — and splashes its mass back into the
+// grid where it lands. The arc is SIMULATED, not rendered. VSCALE converts
+// automaton launch speed (cells/step) to continuous cells/s at the approved
+// diorama pace; G_DROP matches the sim's visual gravity constant.
+const MAXD = 3000, DROP_MASS = 0.02, VSCALE = 6, G_DROP = 28, LAND_MASS = 0.35;
 const STEP_HZ = 120; // terrace runs 2 steps/frame at 60fps
 const ISO = 0.5;
 
@@ -57,6 +67,7 @@ export function createTerraceWater(opts: TerraceOpts) {
   const { THREE, renderer, nx, ny, nz, solid, off, cellV } = opts;
   let ribNorm = opts.ribNorm && opts.ribNorm > 0 ? opts.ribNorm : 0.03;
   let momOn = opts.momentum !== false;
+  let dropsOn = opts.drops !== false;
   const LAYER = nx * nz; // idx = y*LAYER + z*nx + x — same layout as terrain.solid
   const S = nx * ny * nz;
   const idx = (x: number, y: number, z: number) => y * LAYER + z * nx + x;
@@ -82,6 +93,106 @@ export function createTerraceWater(opts: TerraceOpts) {
   let springRate = opts.springRate;
   let inAcc = 0, outAcc = 0, displacedAcc = 0;
   let inTotal = 0, outTotal = 0;
+
+  // ── Ballistic droplet state ──────────────────────────────────────────────
+  // Lip outflow accrues per-cell until a full droplet's mass is available,
+  // then emits a parcel with the momentum-weighted launch velocity. Every
+  // unit of mass is ledger-tracked: accumulator (airAcc) + flying (airFly).
+  const dPos = new Float32Array(MAXD * 3), dVel = new Float32Array(MAXD * 3), dMass = new Float32Array(MAXD);
+  let dCount = 0, airAcc = 0, airFly = 0;
+  const dAcc = new Map<number, { m: number; px: number; pz: number }>();
+  const dropImpacts: Array<{ x: number; z: number; t: number }> = [];
+  function accrueDroplet(cx: number, cy: number, cz: number, dm: number, lvx: number, lvz: number) {
+    const key = cy * LAYER + cz * nx + cx;
+    let a = dAcc.get(key);
+    if (!a) dAcc.set(key, (a = { m: 0, px: 0, pz: 0 }));
+    a.m += dm; a.px += dm * lvx; a.pz += dm * lvz; airAcc += dm;
+    while (a.m >= DROP_MASS && dCount < MAXD) {
+      const j3 = dCount * 3;
+      dPos[j3] = cx + 0.2 + Math.random() * 0.6;
+      dPos[j3 + 1] = cy + 0.3 + Math.random() * 0.3;
+      dPos[j3 + 2] = cz + 0.2 + Math.random() * 0.6;
+      const mvx = a.px / a.m, mvz = a.pz / a.m;
+      dVel[j3] = mvx * VSCALE * (0.85 + Math.random() * 0.3);
+      dVel[j3 + 1] = (Math.random() - 0.35) * 1.4;
+      dVel[j3 + 2] = mvz * VSCALE * (0.85 + Math.random() * 0.3);
+      dMass[dCount] = DROP_MASS;
+      dCount++;
+      a.px -= DROP_MASS * mvx; a.pz -= DROP_MASS * mvz; a.m -= DROP_MASS;
+      airAcc -= DROP_MASS; airFly += DROP_MASS;
+    }
+  }
+
+  // Land a droplet: its mass and horizontal momentum rejoin the grid cell,
+  // conserving both (the cell's velocity becomes the mass-weighted mean).
+  function landDroplet(cell: number, dm: number, vx: number, vz: number) {
+    const m0 = mass[cell], mt = m0 + dm;
+    let cvx = (hvx[cell] * m0 + Math.max(-0.95, Math.min(0.95, vx / VSCALE)) * dm) / mt;
+    let cvz = (hvz[cell] * m0 + Math.max(-0.95, Math.min(0.95, vz / VSCALE)) * dm) / mt;
+    hvx[cell] = cvx; hvz[cell] = cvz;
+    mass[cell] = mt;
+    airFly -= dm;
+    // A droplet may land beyond the active box — grow it so the automaton
+    // scans the landed water next step.
+    const ly = (cell / LAYER) | 0, lr = cell - ly * LAYER, lz = (lr / nx) | 0, lx = lr - lz * nx;
+    if (lx < bx0) bx0 = lx; if (lx > bx1) bx1 = lx;
+    if (ly < by0) by0 = ly; if (ly > by1) by1 = ly;
+    if (lz < bz0) bz0 = lz; if (lz > bz1) bz1 = lz;
+  }
+
+  // Ballistic integrator: gravity + straight-line motion, substepped so fast
+  // warm-up frames cannot tunnel through one-cell-thick terrain. A droplet
+  // ends by landing on solid ground, plunging into standing water, or leaving
+  // the world (ledger-drained) — never by timeout.
+  function stepDroplets(dt: number) {
+    if (dCount === 0) return;
+    const nSub = Math.max(1, Math.ceil(dt * 30));
+    const h = dt / nSub;
+    for (let s = 0; s < nSub && dCount > 0; s++) {
+      let j = 0;
+      while (j < dCount) {
+        const j3 = j * 3;
+        dVel[j3 + 1] -= G_DROP * h;
+        dPos[j3] += dVel[j3] * h;
+        dPos[j3 + 1] += dVel[j3 + 1] * h;
+        dPos[j3 + 2] += dVel[j3 + 2] * h;
+        const cx = Math.floor(dPos[j3]), cy = Math.floor(dPos[j3 + 1]), cz = Math.floor(dPos[j3 + 2]);
+        let dead = false;
+        if (cx < 0 || cz < 0 || cx >= nx || cz >= nz || cy < 0) {
+          // Off the world: same true-void exit as the box floor.
+          outTotal += dMass[j]; outAcc += dMass[j]; airFly -= dMass[j];
+          dead = true;
+        } else if (cy < ny) {
+          const cell = cy * LAYER + cz * nx + cx;
+          if (solid[cell]) {
+            // Hit terrain — splash into the first open cell above the surface.
+            let ly = cy + 1;
+            while (ly < ny && solid[ly * LAYER + cz * nx + cx]) ly++;
+            const sp = Math.sqrt(dVel[j3] * dVel[j3] + dVel[j3 + 1] * dVel[j3 + 1] + dVel[j3 + 2] * dVel[j3 + 2]);
+            if (ly < ny) {
+              landDroplet(ly * LAYER + cz * nx + cx, dMass[j], dVel[j3], dVel[j3 + 2]);
+              spawnSpray(dPos[j3], ly, dPos[j3 + 2], Math.min(1, sp * 0.08) * LAND_MASS, 2);
+            } else { outTotal += dMass[j]; outAcc += dMass[j]; airFly -= dMass[j]; }
+            dead = true;
+          } else if (mass[cell] >= 0.5 && dVel[j3 + 1] < 0) {
+            // Plunged into standing water.
+            const sp = Math.sqrt(dVel[j3] * dVel[j3] + dVel[j3 + 1] * dVel[j3 + 1] + dVel[j3 + 2] * dVel[j3 + 2]);
+            landDroplet(cell, dMass[j], dVel[j3], dVel[j3 + 2]);
+            spawnSpray(dPos[j3], cy + Math.min(1, mass[cell]), dPos[j3 + 2], Math.min(1, sp * 0.08) * LAND_MASS, 2);
+            dead = true;
+          }
+        }
+        if (dead) {
+          const l = --dCount, l3 = l * 3;
+          dPos[j3] = dPos[l3]; dPos[j3 + 1] = dPos[l3 + 1]; dPos[j3 + 2] = dPos[l3 + 2];
+          dVel[j3] = dVel[l3]; dVel[j3 + 1] = dVel[l3 + 1]; dVel[j3 + 2] = dVel[l3 + 2];
+          dMass[j] = dMass[l];
+          continue;
+        }
+        j++;
+      }
+    }
+  }
 
   function stable(t: number) {
     if (t <= 1) return 1;
@@ -172,11 +283,20 @@ export function createTerraceWater(opts: TerraceOpts) {
               if (f > MINFLOW) f *= 0.5;
               if (f <= 0) continue;
               if (f > rem) f = rem;
-              nmass[i] -= f; nmass[j] += f; rem -= f; moved += f;
-              fvx[i] += f * DX[k]; fvz[i] += f * DZ[k];
               const v0 = V0_BASE + V0_DEPTH * Math.min(1, rem0);
-              mmx[j] += f * v0 * DX[k]; mmz[j] += f * v0 * DZ[k];
-              if (momOn) { mmx[j] += f * vIx; mmz[j] += f * vIz; }
+              const lvx = (momOn ? vIx : 0) + v0 * DX[k], lvz = (momOn ? vIz : 0) + v0 * DZ[k];
+              let dm = 0;
+              if (dropsOn && dCount < MAXD - 8) {
+                // The faster the launch, the more of the parcel detaches
+                // from the grid as ballistic droplets.
+                const sp = Math.sqrt(lvx * lvx + lvz * lvz);
+                dm = f * Math.min(0.85, sp * 1.6);
+                if (dm > 1e-6) accrueDroplet(qx, y, qz, dm, lvx, lvz); else dm = 0;
+              }
+              nmass[i] -= f; nmass[j] += f - dm; rem -= f; moved += f;
+              fvx[i] += f * DX[k]; fvz[i] += f * DZ[k];
+              mmx[j] += (f - dm) * v0 * DX[k]; mmz[j] += (f - dm) * v0 * DZ[k];
+              if (momOn) { mmx[j] += (f - dm) * vIx; mmz[j] += (f - dm) * vIz; }
               if (rem <= MINMASS) break;
             }
           }
@@ -203,16 +323,24 @@ export function createTerraceWater(opts: TerraceOpts) {
               if (f <= 0) continue;
               if (f > rem) f = rem;
               nmass[i] -= f; nmass[j] += f; rem -= f; moved += f; fvx[i] += f * DX[k]; fvz[i] += f * DZ[k];
+              let dm = 0;
+              // Over a lip: water leaving resting ground into air picks up
+              // speed — and the fast fraction detaches as ballistic droplets.
+              if (resting && y > 0 && !solid[j - LAYER] && mass[j - LAYER] < 0.5) {
+                const v0 = V0_BASE + V0_DEPTH * Math.min(1, rem0);
+                const lvx = (momOn ? vIx : 0) + v0 * DX[k], lvz = (momOn ? vIz : 0) + v0 * DZ[k];
+                if (dropsOn && dCount < MAXD - 8) {
+                  const sp = Math.sqrt(lvx * lvx + lvz * lvz);
+                  dm = f * Math.min(0.85, sp * 1.6);
+                  if (dm > 1e-6) { accrueDroplet(qx, y, qz, dm, lvx, lvz); nmass[j] -= dm; } else dm = 0;
+                }
+                mmx[j] += (f - dm) * v0 * DX[k]; mmz[j] += (f - dm) * v0 * DZ[k];
+              }
               if (momOn) {
                 // The parcel keeps the source velocity and gains a gravity
                 // impulse from the head it dropped through.
                 const hg = head > 0 ? HEADV * Math.min(1, head) : 0;
-                mmx[j] += f * (vIx + hg * DX[k]); mmz[j] += f * (vIz + hg * DZ[k]);
-              }
-              // Over a lip: water leaving resting ground into air picks up speed.
-              if (resting && y > 0 && !solid[j - LAYER] && mass[j - LAYER] < 0.5) {
-                const v0 = V0_BASE + V0_DEPTH * Math.min(1, rem0);
-                mmx[j] += f * v0 * DX[k]; mmz[j] += f * v0 * DZ[k];
+                mmx[j] += (f - dm) * (vIx + hg * DX[k]); mmz[j] += (f - dm) * (vIz + hg * DZ[k]);
               }
               if (rem <= MINMASS) break;
             }
@@ -582,12 +710,37 @@ export function createTerraceWater(opts: TerraceOpts) {
   spray.frustumCulled = false;
   spray.renderOrder = 3;
 
+  /* ballistic droplet points — denser and bluer than mist: these are the
+     simulated airborne water parcels, not spray decoration */
+  const dGeo = new THREE.BufferGeometry();
+  const aDPos = new THREE.BufferAttribute(dPos, 3).setUsage(THREE.DynamicDrawUsage);
+  dGeo.setAttribute("position", aDPos);
+  dGeo.setDrawRange(0, 0);
+  const dropMat = new THREE.ShaderMaterial({
+    uniforms: { color: { value: new THREE.Color(0xcfeafc) }, pr: { value: 1 }, uCell: { value: cellV }, ...occUniforms() },
+    vertexShader: `
+      varying float vViewZ; uniform float pr; uniform float uCell;
+      void main(){ vec4 mv=modelViewMatrix*vec4(position,1.0); vViewZ=mv.z; gl_Position=projectionMatrix*mv;
+        gl_PointSize = 0.16 * 1500.0 * uCell * pr / max(uCell,-mv.z); }`,
+    fragmentShader: OCC_GLSL + `
+      uniform vec3 color; varying float vViewZ;
+      void main(){ if(occluded(vViewZ)) discard;
+        vec2 p=gl_PointCoord-0.5; float d=length(p);
+        float a=smoothstep(0.5,0.18,d)*0.85; if(a<0.02) discard;
+        gl_FragColor=vec4(color,a); }`,
+    transparent: true, depthWrite: false,
+  });
+  const dropPts = new THREE.Points(dGeo, dropMat);
+  dropPts.frustumCulled = false;
+  dropPts.renderOrder = 3;
+
   const group = new THREE.Group();
   group.scale.setScalar(cellV);
   group.position.set(off.x * cellV, off.y * cellV, off.z * cellV);
   group.add(water);
   group.add(streams);
   group.add(spray);
+  group.add(dropPts);
   const waterScene = new THREE.Scene();
   waterScene.add(group);
 
@@ -1084,7 +1237,11 @@ export function createTerraceWater(opts: TerraceOpts) {
     }
     const t0 = performance.now();
     for (let s = 0; s < n; s++) step();
+    // Droplets integrate over the same span of sim time the steps advanced.
+    if (n > 0) stepDroplets(n / STEP_HZ);
     const simMs = performance.now() - t0;
+    aDPos.needsUpdate = true;
+    dGeo.setDrawRange(0, dCount);
 
     camCell.x = camera.position.x / cellV - off.x;
     camCell.z = camera.position.z / cellV - off.z;
@@ -1103,6 +1260,9 @@ export function createTerraceWater(opts: TerraceOpts) {
     ribbonMat.uniforms.cameraFar.value = camera.far;
     sprayMat.uniforms.cameraNear.value = camera.near;
     sprayMat.uniforms.cameraFar.value = camera.far;
+    dropMat.uniforms.cameraNear.value = camera.near;
+    dropMat.uniforms.cameraFar.value = camera.far;
+    dropMat.uniforms.pr.value = renderer.getPixelRatio();
     if (fogCol) waterMat.uniforms.voidColor.value.copy(fogCol);
     sprayMat.uniforms.pr.value = renderer.getPixelRatio();
 
@@ -1148,6 +1308,7 @@ export function createTerraceWater(opts: TerraceOpts) {
   function drainAll() {
     mass.fill(0); nmass.fill(0); flux.fill(0); dflow.fill(0); hvx.fill(0); hvz.fill(0);
     pCount = 0;
+    dCount = 0; dAcc.clear(); airAcc = 0; airFly = 0;
   }
 
   function stats() {
@@ -1168,8 +1329,11 @@ export function createTerraceWater(opts: TerraceOpts) {
         }
       }
     }
+    const airborne = airAcc + airFly;
     return {
-      volume, wetCount, streams: streamCount, spray: pCount,
+      // Airborne mass is still live water — the ledger stays exact.
+      volume: volume + airborne, wetCount, streams: streamCount, spray: pCount,
+      droplets: { on: dropsOn, count: dCount, airborne: Math.round(airborne * 1000) / 1000 },
       momentum: {
         on: momOn,
         meanV: vn ? Math.round((vsum / vn) * 10000) / 10000 : 0,
@@ -1191,12 +1355,14 @@ export function createTerraceWater(opts: TerraceOpts) {
     if (o.warm !== undefined) warmLeft += Math.max(0, Number(o.warm) | 0);
     if (o.ribNorm !== undefined && Number(o.ribNorm) > 0) ribNorm = Number(o.ribNorm);
     if (o.momentum !== undefined) momOn = !!o.momentum;
+    if (o.droplets !== undefined) dropsOn = !!o.droplets;
   }
 
   function dispose() {
     wGeo.dispose(); waterMat.dispose();
     rGeo.dispose(); ribbonMat.dispose();
     pGeo.dispose(); sprayMat.dispose();
+    dGeo.dispose(); dropMat.dispose();
     blitQuad.geometry.dispose(); blitMat.dispose();
     sceneRT.dispose();
   }

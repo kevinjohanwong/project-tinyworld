@@ -339,6 +339,8 @@ export function createParticleWater(ctx: PWaterCtx) {
   const ribNorm = Math.max(0.001, num("pwribnorm", 0.005));
   // ?pwmom=0 disables momentum-everywhere (falls back to lip-only momentum).
   const momentum = params.get("pwmom") !== "0";
+  // ?pwdrops=0 disables ballistic droplets (all lip outflow stays on the grid).
+  const drops = params.get("pwdrops") !== "0";
   const ctr = (K - 1) / (2 * K);
   const offX = box.x0 - cxRound / K - 0.5 + ctr;
   const offY = box.y0 - 0.5 + ctr;
@@ -353,8 +355,9 @@ export function createParticleWater(ctx: PWaterCtx) {
     warmSteps: Math.round(warmSecs * STEP_HZ),
     ribNorm,
     momentum,
+    drops,
   });
-  console.log(`[pwater] terrace automaton grid ${nx}x${ny}x${nz}, spring rate ${springRate}/step, warm ${warmSecs}s, ribNorm ${ribNorm}, momentum ${momentum ? "on" : "off"}`);
+  console.log(`[pwater] terrace automaton grid ${nx}x${ny}x${nz}, spring rate ${springRate}/step, warm ${warmSecs}s, ribNorm ${ribNorm}, momentum ${momentum ? "on" : "off"}, droplets ${drops ? "on" : "off"}`);
 
   const sunDir = new THREE.Vector3(0, 1, 0);
   const sizeV = new THREE.Vector2();
@@ -396,6 +399,7 @@ export function createParticleWater(ctx: PWaterCtx) {
       hifi: null,
       fall: { cols: s.streams, particles: s.spray, vyGate: 0 },
       momentum: s.momentum,
+      droplets: s.droplets,
       count: s.wetCount,
       volume: Math.round(s.volume * 10) / 10,
       foam: 0,
@@ -422,6 +426,7 @@ export function createParticleWater(ctx: PWaterCtx) {
     if (o.warm !== undefined) water.knob({ warm: Math.round(Number(o.warm) * STEP_HZ) });
     if (o.ribNorm !== undefined) water.knob({ ribNorm: o.ribNorm });
     if (o.momentum !== undefined) water.knob({ momentum: o.momentum });
+    if (o.droplets !== undefined) water.knob({ droplets: o.droplets });
     return report();
   }
 
