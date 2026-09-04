@@ -29,6 +29,11 @@ export type TerraceOpts = {
   cellV: number;
   springRate: number; // mass/step
   warmSteps: number;
+  // Ribbon density normalizer: per-cell fall density at which a ribbon reaches
+  // full width/whiteness. Terrace reference = 0.03 (tuned on its 52-cell demo
+  // grid); TinyWorld falls carry less mass per cell, so the bridge defaults
+  // lower. Presentation-only — never feeds back into the sim.
+  ribNorm?: number;
 };
 
 const MAXC = 0.02, MINMASS = 0.0001, MINFLOW = 0.01, MAXSPEED = 1.0, VIS = 0.028;
@@ -38,6 +43,7 @@ const ISO = 0.5;
 
 export function createTerraceWater(opts: TerraceOpts) {
   const { THREE, renderer, nx, ny, nz, solid, off, cellV } = opts;
+  let ribNorm = opts.ribNorm && opts.ribNorm > 0 ? opts.ribNorm : 0.03;
   const LAYER = nx * nz; // idx = y*LAYER + z*nx + x — same layout as terrain.solid
   const S = nx * ny * nz;
   const idx = (x: number, y: number, z: number) => y * LAYER + z * nx + x;
@@ -686,7 +692,7 @@ export function createTerraceWater(opts: TerraceOpts) {
               if (sc > lscore) { lscore = sc; lipx = qx; lipz = qz; lm = mass[j]; }
             }
             const P: FallPath = {
-              x, y, z, cells, n, t: Math.min(1, tsum / n / 0.03),
+              x, y, z, cells, n, t: Math.min(1, tsum / n / ribNorm),
               lipx, lipz, lm, onWater, ysurf, lx: lxc, lz, ly: ly2, g: -1,
             };
             paths.push(P);
@@ -790,7 +796,7 @@ export function createTerraceWater(opts: TerraceOpts) {
           for (const P of Grp) {
             if (kk >= P.n) continue;
             const c = cxz(P, kk);
-            const t = tG * 0.75 + Math.min(1, sdens[P.cells[kk]] / 0.03) * 0.25;
+            const t = tG * 0.75 + Math.min(1, sdens[P.cells[kk]] / ribNorm) * 0.25;
             pts.push([c[0], c[1], hwOf(t, 1 + kk, kk === P.n - 1 ? 1.18 : 1.0)]);
             ts += t;
             ry = (P.cells[kk] / LAYER) | 0;
@@ -1089,6 +1095,7 @@ export function createTerraceWater(opts: TerraceOpts) {
     if (o.running !== undefined) springOn = !!o.running;
     if (o.drain) drainAll();
     if (o.warm !== undefined) warmLeft += Math.max(0, Number(o.warm) | 0);
+    if (o.ribNorm !== undefined && Number(o.ribNorm) > 0) ribNorm = Number(o.ribNorm);
   }
 
   function dispose() {

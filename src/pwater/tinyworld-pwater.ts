@@ -333,6 +333,10 @@ export function createParticleWater(ctx: PWaterCtx) {
   // ?pwwarm= sim-seconds fast-forwarded on load (default 90, matches the old
   // particle warm-up contract; terrace's own boot warm is 75 s).
   const warmSecs = Math.max(0, num("pwwarm", 90));
+  // ?pwribnorm= per-cell fall density at which ribbons hit full width/whiteness.
+  // Terrace reference tuned 0.03 on its small demo grid; our K-coarsened worlds
+  // carry less mass per fall cell, so the default is recalibrated denser.
+  const ribNorm = Math.max(0.001, num("pwribnorm", 0.015));
   const ctr = (K - 1) / (2 * K);
   const offX = box.x0 - cxRound / K - 0.5 + ctr;
   const offY = box.y0 - 0.5 + ctr;
@@ -345,8 +349,9 @@ export function createParticleWater(ctx: PWaterCtx) {
     cellV,
     springRate,
     warmSteps: Math.round(warmSecs * STEP_HZ),
+    ribNorm,
   });
-  console.log(`[pwater] terrace automaton grid ${nx}x${ny}x${nz}, spring rate ${springRate}/step, warm ${warmSecs}s`);
+  console.log(`[pwater] terrace automaton grid ${nx}x${ny}x${nz}, spring rate ${springRate}/step, warm ${warmSecs}s, ribNorm ${ribNorm}`);
 
   const sunDir = new THREE.Vector3(0, 1, 0);
   const sizeV = new THREE.Vector2();
@@ -411,6 +416,7 @@ export function createParticleWater(ctx: PWaterCtx) {
     if (o.running !== undefined) water.knob({ running: o.running });
     if (o.reset || o.drain) water.knob({ drain: true });
     if (o.warm !== undefined) water.knob({ warm: Math.round(Number(o.warm) * STEP_HZ) });
+    if (o.ribNorm !== undefined) water.knob({ ribNorm: o.ribNorm });
     return report();
   }
 
