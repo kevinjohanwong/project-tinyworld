@@ -714,21 +714,41 @@ export function createTerraceWater(opts: TerraceOpts) {
      simulated airborne water parcels, not spray decoration */
   const dGeo = new THREE.BufferGeometry();
   const aDPos = new THREE.BufferAttribute(dPos, 3).setUsage(THREE.DynamicDrawUsage);
+  const aDVel = new THREE.BufferAttribute(dVel, 3).setUsage(THREE.DynamicDrawUsage);
   dGeo.setAttribute("position", aDPos);
+  dGeo.setAttribute("velocity", aDVel);
   dGeo.setDrawRange(0, 0);
   const dropMat = new THREE.ShaderMaterial({
-    uniforms: { color: { value: new THREE.Color(0xcfeafc) }, pr: { value: 1 }, uCell: { value: cellV }, ...occUniforms() },
+    uniforms: { color: { value: new THREE.Color(0xf2fcff) }, pr: { value: 1 }, uCell: { value: cellV }, ...occUniforms() },
     vertexShader: `
-      varying float vViewZ; uniform float pr; uniform float uCell;
-      void main(){ vec4 mv=modelViewMatrix*vec4(position,1.0); vViewZ=mv.z; gl_Position=projectionMatrix*mv;
-        gl_PointSize = 0.16 * 1500.0 * uCell * pr / max(uCell,-mv.z); }`,
+      attribute vec3 velocity; varying float vViewZ; varying float vAngle; varying float vCurve;
+      uniform float pr; uniform float uCell;
+      void main(){
+        vec4 mv=modelViewMatrix*vec4(position,1.0); vViewZ=mv.z; gl_Position=projectionMatrix*mv;
+        vec4 tailMv=modelViewMatrix*vec4(position-velocity*0.045,1.0);
+        vec2 headNdc=gl_Position.xy/gl_Position.w;
+        vec4 tailClip=projectionMatrix*tailMv;
+        vec2 trail=headNdc-tailClip.xy/tailClip.w;
+        vAngle=atan(trail.y,trail.x);
+        vCurve=clamp((0.18-velocity.y*0.018),-0.18,0.30);
+        gl_PointSize = 0.46 * 1500.0 * uCell * pr / max(uCell,-mv.z);
+      }`,
     fragmentShader: OCC_GLSL + `
-      uniform vec3 color; varying float vViewZ;
+      uniform vec3 color; varying float vViewZ; varying float vAngle; varying float vCurve;
       void main(){ if(occluded(vViewZ)) discard;
-        vec2 p=gl_PointCoord-0.5; float d=length(p);
-        float a=smoothstep(0.5,0.18,d)*0.85; if(a<0.02) discard;
+        vec2 q=gl_PointCoord-0.5;
+        float c=cos(vAngle), s=sin(vAngle);
+        vec2 p=vec2(c*q.x+s*q.y,-s*q.x+c*q.y);
+        float x=p.x+0.08;
+        float center=vCurve*(x*x-0.08);
+        float width=mix(0.052,0.012,smoothstep(-0.42,0.42,x));
+        float core=1.0-smoothstep(width,width+0.045,abs(p.y-center));
+        float ends=smoothstep(-0.48,-0.34,x)*(1.0-smoothstep(0.30,0.49,x));
+        float halo=(1.0-smoothstep(width+0.02,width+0.15,abs(p.y-center)))*0.20;
+        float a=(core*0.52+halo)*ends;
+        if(a<0.015) discard;
         gl_FragColor=vec4(color,a); }`,
-    transparent: true, depthWrite: false,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
   const dropPts = new THREE.Points(dGeo, dropMat);
   dropPts.frustumCulled = false;
@@ -1241,6 +1261,7 @@ export function createTerraceWater(opts: TerraceOpts) {
     if (n > 0) stepDroplets(n / STEP_HZ);
     const simMs = performance.now() - t0;
     aDPos.needsUpdate = true;
+    aDVel.needsUpdate = true;
     dGeo.setDrawRange(0, dCount);
 
     camCell.x = camera.position.x / cellV - off.x;
