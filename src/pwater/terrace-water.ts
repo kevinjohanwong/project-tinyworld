@@ -290,7 +290,7 @@ export function createTerraceWater(opts: TerraceOpts) {
                 // The faster the launch, the more of the parcel detaches
                 // from the grid as ballistic droplets.
                 const sp = Math.sqrt(lvx * lvx + lvz * lvz);
-                dm = f * Math.min(0.85, sp * 1.6);
+                dm = f * Math.min(0.3, sp * 0.55);
                 if (dm > 1e-6) accrueDroplet(qx, y, qz, dm, lvx, lvz); else dm = 0;
               }
               nmass[i] -= f; nmass[j] += f - dm; rem -= f; moved += f;
@@ -331,7 +331,7 @@ export function createTerraceWater(opts: TerraceOpts) {
                 const lvx = (momOn ? vIx : 0) + v0 * DX[k], lvz = (momOn ? vIz : 0) + v0 * DZ[k];
                 if (dropsOn && dCount < MAXD - 8) {
                   const sp = Math.sqrt(lvx * lvx + lvz * lvz);
-                  dm = f * Math.min(0.85, sp * 1.6);
+                  dm = f * Math.min(0.3, sp * 0.55);
                   if (dm > 1e-6) { accrueDroplet(qx, y, qz, dm, lvx, lvz); nmass[j] -= dm; } else dm = 0;
                 }
                 mmx[j] += (f - dm) * v0 * DX[k]; mmz[j] += (f - dm) * v0 * DZ[k];
@@ -710,8 +710,9 @@ export function createTerraceWater(opts: TerraceOpts) {
   spray.frustumCulled = false;
   spray.renderOrder = 3;
 
-  /* ballistic droplet points — denser and bluer than mist: these are the
-     simulated airborne water parcels, not spray decoration */
+  /* ballistic droplet points — the simulated airborne water parcels, drawn in
+     the same soft blurred-spray language as the mist (the arc lives in the
+     simulated trajectory, not the sprite shape) */
   const dGeo = new THREE.BufferGeometry();
   const aDPos = new THREE.BufferAttribute(dPos, 3).setUsage(THREE.DynamicDrawUsage);
   const aDVel = new THREE.BufferAttribute(dVel, 3).setUsage(THREE.DynamicDrawUsage);
@@ -719,36 +720,23 @@ export function createTerraceWater(opts: TerraceOpts) {
   dGeo.setAttribute("velocity", aDVel);
   dGeo.setDrawRange(0, 0);
   const dropMat = new THREE.ShaderMaterial({
-    uniforms: { color: { value: new THREE.Color(0xf2fcff) }, pr: { value: 1 }, uCell: { value: cellV }, ...occUniforms() },
+    uniforms: { color: { value: new THREE.Color(0xeafaff) }, pr: { value: 1 }, uCell: { value: cellV }, ...occUniforms() },
     vertexShader: `
-      attribute vec3 velocity; varying float vViewZ; varying float vAngle; varying float vCurve;
+      attribute vec3 velocity; varying float vViewZ; varying float vSeed;
       uniform float pr; uniform float uCell;
       void main(){
         vec4 mv=modelViewMatrix*vec4(position,1.0); vViewZ=mv.z; gl_Position=projectionMatrix*mv;
-        vec4 tailMv=modelViewMatrix*vec4(position-velocity*0.045,1.0);
-        vec2 headNdc=gl_Position.xy/gl_Position.w;
-        vec4 tailClip=projectionMatrix*tailMv;
-        vec2 trail=headNdc-tailClip.xy/tailClip.w;
-        vAngle=atan(trail.y,trail.x);
-        vCurve=clamp((0.18-velocity.y*0.018),-0.18,0.30);
-        gl_PointSize = 0.46 * 1500.0 * uCell * pr / max(uCell,-mv.z);
+        vSeed=fract(sin(dot(position.xz,vec2(12.9898,78.233)))*43758.5453);
+        gl_PointSize = (0.09 + 0.07*vSeed) * 1500.0 * uCell * pr / max(uCell,-mv.z);
       }`,
     fragmentShader: OCC_GLSL + `
-      uniform vec3 color; varying float vViewZ; varying float vAngle; varying float vCurve;
+      uniform vec3 color; varying float vViewZ; varying float vSeed;
       void main(){ if(occluded(vViewZ)) discard;
-        vec2 q=gl_PointCoord-0.5;
-        float c=cos(vAngle), s=sin(vAngle);
-        vec2 p=vec2(c*q.x+s*q.y,-s*q.x+c*q.y);
-        float x=p.x+0.08;
-        float center=vCurve*(x*x-0.08);
-        float width=mix(0.052,0.012,smoothstep(-0.42,0.42,x));
-        float core=1.0-smoothstep(width,width+0.045,abs(p.y-center));
-        float ends=smoothstep(-0.48,-0.34,x)*(1.0-smoothstep(0.30,0.49,x));
-        float halo=(1.0-smoothstep(width+0.02,width+0.15,abs(p.y-center)))*0.20;
-        float a=(core*0.52+halo)*ends;
-        if(a<0.015) discard;
+        vec2 p=gl_PointCoord-0.5; float d=length(p);
+        float a=smoothstep(0.5,0.10,d)*(0.45+0.25*vSeed);
+        if(a<0.01) discard;
         gl_FragColor=vec4(color,a); }`,
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    transparent: true, depthWrite: false,
   });
   const dropPts = new THREE.Points(dGeo, dropMat);
   dropPts.frustumCulled = false;
