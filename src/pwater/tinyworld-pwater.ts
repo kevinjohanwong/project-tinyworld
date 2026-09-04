@@ -337,6 +337,8 @@ export function createParticleWater(ctx: PWaterCtx) {
   // Terrace reference tuned 0.03 on its small demo grid; our K-coarsened worlds
   // carry less mass per fall cell, so the default is recalibrated denser.
   const ribNorm = Math.max(0.001, num("pwribnorm", 0.005));
+  // ?pwmom=0 disables momentum-everywhere (falls back to lip-only momentum).
+  const momentum = params.get("pwmom") !== "0";
   const ctr = (K - 1) / (2 * K);
   const offX = box.x0 - cxRound / K - 0.5 + ctr;
   const offY = box.y0 - 0.5 + ctr;
@@ -350,8 +352,9 @@ export function createParticleWater(ctx: PWaterCtx) {
     springRate,
     warmSteps: Math.round(warmSecs * STEP_HZ),
     ribNorm,
+    momentum,
   });
-  console.log(`[pwater] terrace automaton grid ${nx}x${ny}x${nz}, spring rate ${springRate}/step, warm ${warmSecs}s, ribNorm ${ribNorm}`);
+  console.log(`[pwater] terrace automaton grid ${nx}x${ny}x${nz}, spring rate ${springRate}/step, warm ${warmSecs}s, ribNorm ${ribNorm}, momentum ${momentum ? "on" : "off"}`);
 
   const sunDir = new THREE.Vector3(0, 1, 0);
   const sizeV = new THREE.Vector2();
@@ -392,6 +395,7 @@ export function createParticleWater(ctx: PWaterCtx) {
       renderMode: "terrace",
       hifi: null,
       fall: { cols: s.streams, particles: s.spray, vyGate: 0 },
+      momentum: s.momentum,
       count: s.wetCount,
       volume: Math.round(s.volume * 10) / 10,
       foam: 0,
@@ -417,6 +421,7 @@ export function createParticleWater(ctx: PWaterCtx) {
     if (o.reset || o.drain) water.knob({ drain: true });
     if (o.warm !== undefined) water.knob({ warm: Math.round(Number(o.warm) * STEP_HZ) });
     if (o.ribNorm !== undefined) water.knob({ ribNorm: o.ribNorm });
+    if (o.momentum !== undefined) water.knob({ momentum: o.momentum });
     return report();
   }
 

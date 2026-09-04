@@ -34,16 +34,29 @@ export type TerraceOpts = {
   // grid); TinyWorld falls carry less mass per cell, so the bridge defaults
   // lower. Presentation-only — never feeds back into the sim.
   ribNorm?: number;
+  // Momentum-everywhere toggle (default on). Off reproduces the lip-only
+  // momentum behavior exactly (retention/bias/head-impulse all skipped).
+  momentum?: boolean;
 };
 
 const MAXC = 0.02, MINMASS = 0.0001, MINFLOW = 0.01, MAXSPEED = 1.0, VIS = 0.028;
 const V0_BASE = 0.22, V0_DEPTH = 0.38, VDECAY = 0.66;
+// Momentum everywhere (best-in-class ladder rung 1): every cell of water
+// carries velocity, not just lip launches. Universal rules only — resting
+// water RETAINS momentum with friction (bed vs free), every mass transfer
+// CARRIES the source's momentum, head drops feed a gravity impulse into the
+// moving parcel, flows are biased along existing velocity (inertia — lets
+// water surge slightly past level, which is where sloshing and traveling
+// waves come from), and solid walls reflect the incoming component.
+const INERTIA = 1.6, MOM_PUSH = 0.04, HEADV = 0.55;
+const RET_FREE = 0.997, RET_BED = 0.985, REFL = 0.3;
 const STEP_HZ = 120; // terrace runs 2 steps/frame at 60fps
 const ISO = 0.5;
 
 export function createTerraceWater(opts: TerraceOpts) {
   const { THREE, renderer, nx, ny, nz, solid, off, cellV } = opts;
   let ribNorm = opts.ribNorm && opts.ribNorm > 0 ? opts.ribNorm : 0.03;
+  let momOn = opts.momentum !== false;
   const LAYER = nx * nz; // idx = y*LAYER + z*nx + x — same layout as terrain.solid
   const S = nx * ny * nz;
   const idx = (x: number, y: number, z: number) => y * LAYER + z * nx + x;
@@ -103,6 +116,7 @@ export function createTerraceWater(opts: TerraceOpts) {
           let rem = mass[i];
           if (rem <= MINMASS) { if (flux[i] > 0) flux[i] *= 0.85; continue; }
           const rem0 = rem;
+          const vIx = hvx[i], vIz = hvz[i];
           const resting = y === 0 || solid[i - LAYER] === 1 || mass[i - LAYER] >= 0.5;
           let moved = 0;
           let freeEdgeMask = 0;
@@ -119,7 +133,7 @@ export function createTerraceWater(opts: TerraceOpts) {
                 if (f > MAXSPEED) f = MAXSPEED;
                 // Free fall carries its horizontal velocity: part of the mass
                 // steps sideways as it drops (the discrete parabola).
-                const vx = hvx[i], vz = hvz[i];
+                const vx = vIx, vz = vIz;
                 let fd = 0;
                 if (f > 0.5 * rem0 && (vx !== 0 || vz !== 0)) {
                   const ax = Math.abs(vx), az = Math.abs(vz);
@@ -133,6 +147,9 @@ export function createTerraceWater(opts: TerraceOpts) {
                     }
                   }
                   mmx[b] += (f - fd) * vx * VDECAY; mmz[b] += (f - fd) * vz * VDECAY;
+                } else if (momOn && (vx !== 0 || vz !== 0)) {
+                  // Gentle downflow keeps its horizontal momentum too.
+                  mmx[b] += f * vx * VDECAY; mmz[b] += f * vz * VDECAY;
                 }
                 nmass[i] -= f; nmass[b] += f - fd; rem -= f; moved += f; dflow[i] = f;
               }
@@ -159,6 +176,7 @@ export function createTerraceWater(opts: TerraceOpts) {
               fvx[i] += f * DX[k]; fvz[i] += f * DZ[k];
               const v0 = V0_BASE + V0_DEPTH * Math.min(1, rem0);
               mmx[j] += f * v0 * DX[k]; mmz[j] += f * v0 * DZ[k];
+              if (momOn) { mmx[j] += f * vIx; mmz[j] += f * vIz; }
               if (rem <= MINMASS) break;
             }
           }
@@ -171,11 +189,26 @@ export function createTerraceWater(opts: TerraceOpts) {
               if (qx < 0 || qz < 0 || qx >= nx || qz >= nz) continue;
               const j = i + DOFF[k];
               if (solid[j]) continue;
-              let f = (rem - mass[j]) / 5;
+              const head = rem - mass[j];
+              let f = head / 5;
+              if (momOn) {
+                // Inertia: flow along the cell's velocity is amplified, flow
+                // against it suppressed; strong momentum pushes water slightly
+                // past level equilibrium (surge → slosh → traveling waves).
+                const vdot = vIx * DX[k] + vIz * DZ[k];
+                const bias = 1 + INERTIA * vdot;
+                f = (f > 0 ? f : 0) * (bias > 0 ? bias : 0) + (vdot > 0 ? MOM_PUSH * vdot * rem : 0);
+              }
               if (f > MINFLOW) f *= 0.5;
               if (f <= 0) continue;
               if (f > rem) f = rem;
               nmass[i] -= f; nmass[j] += f; rem -= f; moved += f; fvx[i] += f * DX[k]; fvz[i] += f * DZ[k];
+              if (momOn) {
+                // The parcel keeps the source velocity and gains a gravity
+                // impulse from the head it dropped through.
+                const hg = head > 0 ? HEADV * Math.min(1, head) : 0;
+                mmx[j] += f * (vIx + hg * DX[k]); mmz[j] += f * (vIz + hg * DZ[k]);
+              }
               // Over a lip: water leaving resting ground into air picks up speed.
               if (resting && y > 0 && !solid[j - LAYER] && mass[j - LAYER] < 0.5) {
                 const v0 = V0_BASE + V0_DEPTH * Math.min(1, rem0);
@@ -197,6 +230,12 @@ export function createTerraceWater(opts: TerraceOpts) {
                 nmass[i] -= f; nmass[u] += f; rem -= f; moved += f;
               }
             }
+          }
+          // Momentum retention: whatever stays in the cell keeps its velocity
+          // minus friction — bed contact drains it faster than free water.
+          if (momOn && rem > MINMASS && (vIx !== 0 || vIz !== 0)) {
+            const ret = resting ? RET_BED : RET_FREE;
+            mmx[i] += rem * vIx * ret; mmz[i] += rem * vIz * ret;
           }
           flux[i] = flux[i] * 0.84 + moved * 0.16;
         }
@@ -225,6 +264,14 @@ export function createTerraceWater(opts: TerraceOpts) {
               let vx = mx / m, vz = mz / m;
               if (vx > 0.95) vx = 0.95; else if (vx < -0.95) vx = -0.95;
               if (vz > 0.95) vz = 0.95; else if (vz < -0.95) vz = -0.95;
+              if (momOn) {
+                // Solid walls (and the grid boundary) reflect the incoming
+                // velocity component with damping — waves bounce, not vanish.
+                if (vx > 0.001 && (x + 1 >= nx || solid[i + 1])) vx *= -REFL;
+                else if (vx < -0.001 && (x < 1 || solid[i - 1])) vx *= -REFL;
+                if (vz > 0.001 && (z + 1 >= nz || solid[i + nx])) vz *= -REFL;
+                else if (vz < -0.001 && (z < 1 || solid[i - nx])) vz *= -REFL;
+              }
               hvx[i] = vx; hvz[i] = vz;
             }
           }
@@ -1106,8 +1153,29 @@ export function createTerraceWater(opts: TerraceOpts) {
   function stats() {
     const flushIn = inAcc, flushOut = outAcc;
     inAcc = 0; outAcc = 0;
+    let vsum = 0, vmax = 0, vn = 0;
+    for (let y = Math.max(0, by0); y <= Math.min(ny - 1, by1); y++) {
+      const yb = y * LAYER;
+      for (let z = Math.max(0, bz0); z <= Math.min(nz - 1, bz1); z++) {
+        const zb = yb + z * nx;
+        for (let x = Math.max(0, bx0); x <= Math.min(nx - 1, bx1); x++) {
+          const i = zb + x;
+          if (mass[i] <= MINMASS) continue;
+          const s2 = hvx[i] * hvx[i] + hvz[i] * hvz[i];
+          vsum += Math.sqrt(s2);
+          if (s2 > vmax) vmax = s2;
+          vn++;
+        }
+      }
+    }
     return {
       volume, wetCount, streams: streamCount, spray: pCount,
+      momentum: {
+        on: momOn,
+        meanV: vn ? Math.round((vsum / vn) * 10000) / 10000 : 0,
+        maxV: Math.round(Math.sqrt(vmax) * 1000) / 1000,
+        movingCells: vn,
+      },
       inRate: flushIn, outRate: flushOut,
       emitted: inTotal, drained: outTotal, displaced: displacedAcc,
       warmLeft, springOn, springRate,
@@ -1122,6 +1190,7 @@ export function createTerraceWater(opts: TerraceOpts) {
     if (o.drain) drainAll();
     if (o.warm !== undefined) warmLeft += Math.max(0, Number(o.warm) | 0);
     if (o.ribNorm !== undefined && Number(o.ribNorm) > 0) ribNorm = Number(o.ribNorm);
+    if (o.momentum !== undefined) momOn = !!o.momentum;
   }
 
   function dispose() {
