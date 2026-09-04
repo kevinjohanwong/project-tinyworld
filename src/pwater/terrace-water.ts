@@ -288,6 +288,20 @@ export function createTerraceWater(opts: TerraceOpts) {
   const blitScene = new THREE.Scene();
   blitScene.add(blitQuad);
   const fsCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  // Shared by all water materials: the water pass renders after clearDepth(),
+  // so terrain occlusion must be tested manually against sceneDepth.
+  const resVec = new THREE.Vector2(2, 2);
+  const OCC_GLSL = `
+    uniform sampler2D tDepth; uniform vec2 resolution;
+    uniform float cameraNear; uniform float cameraFar;
+    #include <packing>
+    float sceneViewZ(vec2 uv){ return perspectiveDepthToViewZ(texture2D(tDepth, uv).x, cameraNear, cameraFar); }
+    bool occluded(float viewZ){ return viewZ < sceneViewZ(gl_FragCoord.xy / resolution) - 0.02; }
+  `;
+  const occUniforms = () => ({
+    tDepth: { value: sceneDepth }, resolution: { value: resVec },
+    cameraNear: { value: 0.5 }, cameraFar: { value: 400 },
+  });
 
   // Patterns (uv/noise/rings) read CELL-space coords (vCell) so terrace's
   // tuning holds at any world scale; lighting reads world-space normal/view.
@@ -321,6 +335,7 @@ export function createTerraceWater(opts: TerraceOpts) {
       return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
     }
     void main(){
+      if(vViewZ < sceneViewZ(gl_FragCoord.xy / resolution) - 0.02) discard;
       vec3 N = normalize(vN);
       if(!gl_FrontFacing) N = -N;
       float foam = clamp(vFoam, 0.0, 1.0);
@@ -381,7 +396,7 @@ export function createTerraceWater(opts: TerraceOpts) {
     uniforms: {
       time: { value: 0 },
       impacts: { value: [0, 1, 2, 3, 4, 5, 6, 7].map(() => new THREE.Vector3()) },
-      tScene: { value: sceneRT.texture }, tDepth: { value: sceneDepth }, resolution: { value: new THREE.Vector2(2, 2) },
+      tScene: { value: sceneRT.texture }, tDepth: { value: sceneDepth }, resolution: { value: resVec },
       cameraNear: { value: 0.5 }, cameraFar: { value: 400 }, voidColor: { value: new THREE.Color(0x0d1620) },
       uCell: { value: cellV },
       sunDir: { value: new THREE.Vector3(0, 1, 0) },
@@ -415,17 +430,19 @@ export function createTerraceWater(opts: TerraceOpts) {
   rGeo.setIndex(aRIdx);
   rGeo.setDrawRange(0, 0);
   const ribbonMat = new THREE.ShaderMaterial({
-    uniforms: { time: { value: 0 }, foamColor: { value: new THREE.Color(0xf4fcff) }, tint: { value: new THREE.Color(0x8fd2e4) } },
+    uniforms: { time: { value: 0 }, foamColor: { value: new THREE.Color(0xf4fcff) }, tint: { value: new THREE.Color(0x8fd2e4) }, ...occUniforms() },
     vertexShader: `
       attribute vec3 info;
-      varying vec2 vUv; varying vec3 vInfo; varying vec3 vCell;
+      varying vec2 vUv; varying vec3 vInfo; varying vec3 vCell; varying float vViewZ;
       void main(){
         vUv=uv; vInfo=info; vCell=position;
-        gl_Position=projectionMatrix*viewMatrix*modelMatrix*vec4(position,1.0);
+        vec4 mv = viewMatrix*modelMatrix*vec4(position,1.0);
+        vViewZ = mv.z;
+        gl_Position=projectionMatrix*mv;
       }`,
-    fragmentShader: `
+    fragmentShader: OCC_GLSL + `
       uniform float time; uniform vec3 foamColor; uniform vec3 tint;
-      varying vec2 vUv; varying vec3 vInfo; varying vec3 vCell;
+      varying vec2 vUv; varying vec3 vInfo; varying vec3 vCell; varying float vViewZ;
       float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
       float noise(vec2 p){
         vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
@@ -433,6 +450,7 @@ export function createTerraceWater(opts: TerraceOpts) {
         return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
       }
       void main(){
+        if(occluded(vViewZ)) discard;
         float t=vInfo.x, fall=vInfo.y;
         float u=vUv.x;
         float edge = smoothstep(0.0,0.24,u)*smoothstep(1.0,0.76,u);
@@ -468,14 +486,15 @@ export function createTerraceWater(opts: TerraceOpts) {
   pGeo.setAttribute("life", aPLife);
   pGeo.setDrawRange(0, 0);
   const sprayMat = new THREE.ShaderMaterial({
-    uniforms: { color: { value: new THREE.Color(0xeafaff) }, pr: { value: 1 }, uCell: { value: cellV } },
+    uniforms: { color: { value: new THREE.Color(0xeafaff) }, pr: { value: 1 }, uCell: { value: cellV }, ...occUniforms() },
     vertexShader: `
-      attribute float life; varying float vLife; uniform float pr; uniform float uCell;
-      void main(){ vLife=life; vec4 mv=modelViewMatrix*vec4(position,1.0); gl_Position=projectionMatrix*mv;
+      attribute float life; varying float vLife; varying float vViewZ; uniform float pr; uniform float uCell;
+      void main(){ vLife=life; vec4 mv=modelViewMatrix*vec4(position,1.0); vViewZ=mv.z; gl_Position=projectionMatrix*mv;
         gl_PointSize = (0.05 + 0.09*life) * 1500.0 * uCell * pr / max(uCell,-mv.z); }`,
-    fragmentShader: `
-      uniform vec3 color; varying float vLife;
-      void main(){ vec2 p=gl_PointCoord-0.5; float d=length(p);
+    fragmentShader: OCC_GLSL + `
+      uniform vec3 color; varying float vLife; varying float vViewZ;
+      void main(){ if(occluded(vViewZ)) discard;
+        vec2 p=gl_PointCoord-0.5; float d=length(p);
         float a=smoothstep(0.5,0.12,d)*(1.0-vLife)*(1.0-vLife)*0.8; if(a<0.01) discard;
         gl_FragColor=vec4(color,a); }`,
     transparent: true, depthWrite: false,
@@ -969,7 +988,7 @@ export function createTerraceWater(opts: TerraceOpts) {
     w = Math.max(2, Math.round(pw * pr));
     hgt = Math.max(2, Math.round(ph * pr));
     sceneRT.setSize(w, hgt);
-    waterMat.uniforms.resolution.value.set(w, hgt);
+    resVec.set(w, hgt);
   }
 
   function frame(scene: any, camera: any, sunDir: any, key: any, hemiCol: any, fogCol: any) {
@@ -1001,6 +1020,10 @@ export function createTerraceWater(opts: TerraceOpts) {
     if (fogCol) waterMat.uniforms.skyHorizon.value.copy(fogCol);
     waterMat.uniforms.cameraNear.value = camera.near;
     waterMat.uniforms.cameraFar.value = camera.far;
+    ribbonMat.uniforms.cameraNear.value = camera.near;
+    ribbonMat.uniforms.cameraFar.value = camera.far;
+    sprayMat.uniforms.cameraNear.value = camera.near;
+    sprayMat.uniforms.cameraFar.value = camera.far;
     if (fogCol) waterMat.uniforms.voidColor.value.copy(fogCol);
     sprayMat.uniforms.pr.value = renderer.getPixelRatio();
 
