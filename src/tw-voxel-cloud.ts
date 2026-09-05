@@ -302,6 +302,10 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   // horizon silhouette turns bumpy instead of ruler-flat.
   const uSeaAmp = { value: Math.max(1e-3, span) * 0.5 }; // mound height (world units)
   const uSeaInner = { value: Math.max(1e-3, span) * 1.35 }; // amplitude taper start (set at scatter)
+  // KJ Sep 5 round 3: "voxelfy these cloud hills" — the mounds quantize into
+  // discrete cube cells (flat tops, vertical walls) so the sea speaks the same
+  // blocky language as the voxel cloud pieces above it.
+  const uSeaCell = { value: Math.max(1e-3, span) * 0.09 }; // voxel cell size (world units)
   // Shared noise chunk (vertex + fragment must sample the identical field).
   const SEA_NOISE_GLSL =
     "float _sh(vec3 p){ p = fract(p*0.3183099+0.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }\n" +
@@ -320,39 +324,39 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     "  float dome2 = smoothstep(0.36, 0.80, lump2);\n" +
     "  return dome * 0.72 + dome2 * 0.28;\n" +
     "}\n";
-  const seaDiscMat = new THREE.MeshLambertMaterial({ vertexColors: true });
-  seaDiscMat.customProgramCacheKey = () => "tinyworldSeaDiscV4Heightfield";
+  // flatShading: the base Lambert lighting derives per-face normals from screen
+  // derivatives, so quantized terraces shade as crisp cube faces for free.
+  const seaDiscMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  seaDiscMat.customProgramCacheKey = () => "tinyworldSeaDiscV5VoxelHills";
   seaDiscMat.onBeforeCompile = (shader: any) => {
-    Object.assign(shader.uniforms, { uSeaTime, uSeaSpan, uSeaAmp, uSeaInner, uNight, uSunDir, uLight, uBaseColor, uSecColor, uHaze, uBack });
+    Object.assign(shader.uniforms, { uSeaTime, uSeaSpan, uSeaAmp, uSeaInner, uSeaCell, uNight, uSunDir, uLight, uBaseColor, uSecColor, uHaze, uBack });
     shader.vertexShader =
-      "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uSeaAmp;\nuniform float uSeaInner;\nvarying vec3 vSeaW;\nvarying vec3 vSeaWN;\n" +
+      "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uSeaAmp;\nuniform float uSeaInner;\nuniform float uSeaCell;\nvarying vec3 vSeaW;\n" +
       SEA_NOISE_GLSL +
       // Radial amplitude taper: flat under the island (nothing pokes up at the
       // rim), full mounds from ~1.6× the clearance radius outward.
       "float _seaAmpAt(vec2 wxz){ return uSeaAmp * smoothstep(uSeaInner * 0.85, uSeaInner * 1.6, length(wxz)); }\n" +
+      // Voxelized mound height: the field samples at the CELL CENTER (every
+      // vertex in a cell shares one height) and the height snaps to whole cell
+      // multiples — flat tops, vertical walls, stepped silhouette.
+      "float _seaHQ(vec2 wxz){\n" +
+      "  vec2 q = (floor(wxz / uSeaCell) + 0.5) * uSeaCell;\n" +
+      "  float h = _seaMound(q, uSeaTime, uSeaSpan) * _seaAmpAt(q);\n" +
+      "  return floor(h / uSeaCell + 0.5) * uSeaCell;\n" +
+      "}\n" +
       shader.vertexShader
         .replace(
-          "#include <beginnormal_vertex>",
-          "#include <beginnormal_vertex>\n" +
-            // Local plane coords (x, y) map to world (x, -z) after the mesh's
-            // rotation.x = -PI/2; local +z is world up. Sample the mound field
-            // in world XZ, displace along local z, and rebuild the normal from
-            // finite differences of the same field.
-            "  vec3 _sw0 = (modelMatrix * vec4(position, 1.0)).xyz;\n" +
-            "  float _sAmp = _seaAmpAt(_sw0.xz);\n" +
-            "  float _sEps = uSeaSpan * 0.05;\n" +
-            "  float _sh0 = _seaMound(_sw0.xz, uSeaTime, uSeaSpan) * _sAmp;\n" +
-            "  float _shx = _seaMound(_sw0.xz + vec2(_sEps, 0.0), uSeaTime, uSeaSpan) * _seaAmpAt(_sw0.xz + vec2(_sEps, 0.0));\n" +
-            "  float _shz = _seaMound(_sw0.xz + vec2(0.0, _sEps), uSeaTime, uSeaSpan) * _seaAmpAt(_sw0.xz + vec2(0.0, _sEps));\n" +
-            // world-space slope → local normal: local x = world x, local y = -world z
-            "  objectNormal = normalize(vec3(-(_shx - _sh0) / _sEps, (_shz - _sh0) / _sEps, 1.0));\n",
-        )
-        .replace(
           "#include <begin_vertex>",
-          "#include <begin_vertex>\n  transformed.z += _sh0;\n  vSeaW = (modelMatrix * vec4(transformed, 1.0)).xyz;\n  vSeaWN = normalize(mat3(modelMatrix) * objectNormal);",
+          "#include <begin_vertex>\n" +
+            // Local plane coords (x, y) map to world (x, -z) after the mesh's
+            // rotation.x = -PI/2; local +z is world up. Displace by the
+            // quantized cell height; flatShading derives the face normals.
+            "  vec3 _sw0 = (modelMatrix * vec4(position, 1.0)).xyz;\n" +
+            "  transformed.z += _seaHQ(_sw0.xz);\n" +
+            "  vSeaW = (modelMatrix * vec4(transformed, 1.0)).xyz;",
         );
     shader.fragmentShader =
-      "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uNight;\nuniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec2 uHaze;\nuniform vec2 uBack;\nvarying vec3 vSeaW;\nvarying vec3 vSeaWN;\n" +
+      "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uSeaCell;\nuniform float uNight;\nuniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec2 uHaze;\nuniform vec2 uBack;\nvarying vec3 vSeaW;\n" +
       SEA_NOISE_GLSL +
       // SAME toon ramp as the voxel swell pieces — the sea must speak the same
       // tonal language as the clouds above it (KJ: "floor should match").
@@ -364,15 +368,18 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       shader.fragmentShader.replace(
         "#include <color_fragment>",
         "#include <color_fragment>\n" +
-          // large rolling masses (lit lobes vs shadowed troughs) — the SAME
-          // field the vertex shader displaced, so bright tops sit on the domes.
+          // per-CELL colour sampling: every fragment in a voxel cell reads the
+          // field at that cell's center, so tone changes land on cell borders
+          // (blocky colour patches, matching the quantized geometry).
+          "  vec2 _sqc = (floor(vSeaW.xz / uSeaCell) + 0.5) * uSeaCell;\n" +
           "  float _k1 = 1.1 / uSeaSpan;\n" +
-          "  float _lump = _sfbm(vec3(vSeaW.x * _k1, uSeaTime * 0.014, vSeaW.z * _k1));\n" +
+          "  float _lump = _sfbm(vec3(_sqc.x * _k1, uSeaTime * 0.014, _sqc.y * _k1));\n" +
           "  float _lit = smoothstep(0.44, 0.57, _lump);\n" +
-          // fine mottle so the surface reads puffy, not airbrushed
           "  float _k2 = 4.6 / uSeaSpan;\n" +
-          "  float _mot = _sfbm(vec3(vSeaW.x * _k2 + 31.0, uSeaTime * 0.03, vSeaW.z * _k2));\n" +
-          "  vec3 _N = normalize(vSeaWN);\n" +
+          "  float _mot = _sfbm(vec3(_sqc.x * _k2 + 31.0, uSeaTime * 0.03, _sqc.y * _k2));\n" +
+          // flat per-face normal from screen derivatives — walls shade as cube
+          // sides, tops as cube tops (same language as the voxel cloud pieces).
+          "  vec3 _N = normalize(cross(dFdx(vSeaW), dFdy(vSeaW)));\n" +
           "  vec3 _V = normalize(cameraPosition - vSeaW);\n" +
           "  float _ndl = clamp(dot(_N, normalize(uSunDir)) * 0.5 + 0.5, 0.0, 1.0);\n" +
           "  float _lowSun = smoothstep(0.55, 0.1, normalize(uSunDir).y);\n" +
@@ -629,8 +636,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       // the near/mid field. Vertex colour keeps the old horizon fade.
       uSeaInner.value = seaInnerR;
       uSeaAmp.value = span * 0.5;
+      uSeaCell.value = span * 0.09;
       const midR = seaOuterR * 0.55;
-      const ringGeo = new THREE.RingGeometry(seaInnerR * 0.02, seaOuterR, 240, 96);
+      // Denser than the smooth heightfield needed: voxel steps only read as
+      // vertical walls when quads are smaller than a cell in the near/mid field.
+      const ringGeo = new THREE.RingGeometry(seaInnerR * 0.02, seaOuterR, 360, 144);
       const rPos = ringGeo.getAttribute("position");
       const ringCols: number[] = [];
       for (let i = 0; i < rPos.count; i++) {
