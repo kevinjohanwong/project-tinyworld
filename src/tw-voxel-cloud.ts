@@ -293,27 +293,72 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   // do all the lighting through the Lambert path).
   const uSeaTime = { value: 0 };
   const uSeaSpan = { value: Math.max(1e-3, span) };
+  // KJ Sep 5 (floating-palace reference, round 2): the sea floor is no longer a
+  // FLAT plane with painted-on lumps — the disc is now a DISPLACED HEIGHTFIELD.
+  // The vertex shader lifts vertices into rounded cumulus domes using the SAME
+  // fbm field the fragment colour samples (so lit lobes sit exactly on the
+  // geometric mounds), and builds real normals by finite differences — the sun
+  // then models bright dome tops against shadowed crevices for free, and the
+  // horizon silhouette turns bumpy instead of ruler-flat.
+  const uSeaAmp = { value: Math.max(1e-3, span) * 0.5 }; // mound height (world units)
+  const uSeaInner = { value: Math.max(1e-3, span) * 1.35 }; // amplitude taper start (set at scatter)
+  // Shared noise chunk (vertex + fragment must sample the identical field).
+  const SEA_NOISE_GLSL =
+    "float _sh(vec3 p){ p = fract(p*0.3183099+0.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }\n" +
+    "float _svn(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);\n" +
+    "  return mix(mix(mix(_sh(i+vec3(0,0,0)),_sh(i+vec3(1,0,0)),f.x),mix(_sh(i+vec3(0,1,0)),_sh(i+vec3(1,1,0)),f.x),f.y),\n" +
+    "             mix(mix(_sh(i+vec3(0,0,1)),_sh(i+vec3(1,0,1)),f.x),mix(_sh(i+vec3(0,1,1)),_sh(i+vec3(1,1,1)),f.x),f.y),f.z); }\n" +
+    "float _sfbm(vec3 x){ return 0.6*_svn(x)+0.3*_svn(x*2.03+11.1)+0.15*_svn(x*4.01+23.7); }\n" +
+    // Mound field: two dome scales shaped by smoothstep so tops read as round
+    // cauliflower lobes separated by real crevices (not soft airbrushed swell).
+    "float _seaMound(vec2 wxz, float t, float spanRef){\n" +
+    "  float k1 = 1.1 / spanRef;\n" +
+    "  float lump = _sfbm(vec3(wxz.x * k1, t * 0.014, wxz.y * k1));\n" +
+    "  float dome = smoothstep(0.34, 0.76, lump);\n" +
+    "  float k2 = 2.7 / spanRef;\n" +
+    "  float lump2 = _sfbm(vec3(wxz.x * k2 + 17.0, t * 0.02, wxz.y * k2));\n" +
+    "  float dome2 = smoothstep(0.36, 0.80, lump2);\n" +
+    "  return dome * 0.72 + dome2 * 0.28;\n" +
+    "}\n";
   const seaDiscMat = new THREE.MeshLambertMaterial({ vertexColors: true });
-  seaDiscMat.customProgramCacheKey = () => "tinyworldSeaDiscV3UnifiedLight";
+  seaDiscMat.customProgramCacheKey = () => "tinyworldSeaDiscV4Heightfield";
   seaDiscMat.onBeforeCompile = (shader: any) => {
-    Object.assign(shader.uniforms, { uSeaTime, uSeaSpan, uNight, uSunDir, uLight, uBaseColor, uSecColor });
+    Object.assign(shader.uniforms, { uSeaTime, uSeaSpan, uSeaAmp, uSeaInner, uNight, uSunDir, uLight, uBaseColor, uSecColor });
     shader.vertexShader =
-      "varying vec3 vSeaW;\nvarying vec3 vSeaWN;\n" +
-      shader.vertexShader.replace(
-        "#include <begin_vertex>",
-        "#include <begin_vertex>\n  vSeaW = (modelMatrix * vec4(transformed, 1.0)).xyz;\n  vSeaWN = normalize(mat3(modelMatrix) * objectNormal);",
-      );
+      "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uSeaAmp;\nuniform float uSeaInner;\nvarying vec3 vSeaW;\nvarying vec3 vSeaWN;\n" +
+      SEA_NOISE_GLSL +
+      // Radial amplitude taper: flat under the island (nothing pokes up at the
+      // rim), full mounds from ~1.6× the clearance radius outward.
+      "float _seaAmpAt(vec2 wxz){ return uSeaAmp * smoothstep(uSeaInner * 0.85, uSeaInner * 1.6, length(wxz)); }\n" +
+      shader.vertexShader
+        .replace(
+          "#include <beginnormal_vertex>",
+          "#include <beginnormal_vertex>\n" +
+            // Local plane coords (x, y) map to world (x, -z) after the mesh's
+            // rotation.x = -PI/2; local +z is world up. Sample the mound field
+            // in world XZ, displace along local z, and rebuild the normal from
+            // finite differences of the same field.
+            "  vec3 _sw0 = (modelMatrix * vec4(position, 1.0)).xyz;\n" +
+            "  float _sAmp = _seaAmpAt(_sw0.xz);\n" +
+            "  float _sEps = uSeaSpan * 0.05;\n" +
+            "  float _sh0 = _seaMound(_sw0.xz, uSeaTime, uSeaSpan) * _sAmp;\n" +
+            "  float _shx = _seaMound(_sw0.xz + vec2(_sEps, 0.0), uSeaTime, uSeaSpan) * _seaAmpAt(_sw0.xz + vec2(_sEps, 0.0));\n" +
+            "  float _shz = _seaMound(_sw0.xz + vec2(0.0, _sEps), uSeaTime, uSeaSpan) * _seaAmpAt(_sw0.xz + vec2(0.0, _sEps));\n" +
+            // world-space slope → local normal: local x = world x, local y = -world z
+            "  objectNormal = normalize(vec3(-(_shx - _sh0) / _sEps, (_shz - _sh0) / _sEps, 1.0));\n",
+        )
+        .replace(
+          "#include <begin_vertex>",
+          "#include <begin_vertex>\n  transformed.z += _sh0;\n  vSeaW = (modelMatrix * vec4(transformed, 1.0)).xyz;\n  vSeaWN = normalize(mat3(modelMatrix) * objectNormal);",
+        );
     shader.fragmentShader =
       "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uNight;\nuniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nvarying vec3 vSeaW;\nvarying vec3 vSeaWN;\n" +
-      "float _sh(vec3 p){ p = fract(p*0.3183099+0.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }\n" +
-      "float _svn(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);\n" +
-      "  return mix(mix(mix(_sh(i+vec3(0,0,0)),_sh(i+vec3(1,0,0)),f.x),mix(_sh(i+vec3(0,1,0)),_sh(i+vec3(1,1,0)),f.x),f.y),\n" +
-      "             mix(mix(_sh(i+vec3(0,0,1)),_sh(i+vec3(1,0,1)),f.x),mix(_sh(i+vec3(0,1,1)),_sh(i+vec3(1,1,1)),f.x),f.y),f.z); }\n" +
-      "float _sfbm(vec3 x){ return 0.6*_svn(x)+0.3*_svn(x*2.03+11.1)+0.15*_svn(x*4.01+23.7); }\n" +
+      SEA_NOISE_GLSL +
       shader.fragmentShader.replace(
         "#include <color_fragment>",
         "#include <color_fragment>\n" +
-          // large rolling masses (lit lobes vs shadowed troughs)
+          // large rolling masses (lit lobes vs shadowed troughs) — the SAME
+          // field the vertex shader displaced, so bright tops sit on the domes.
           "  float _k1 = 1.1 / uSeaSpan;\n" +
           "  float _lump = _sfbm(vec3(vSeaW.x * _k1, uSeaTime * 0.014, vSeaW.z * _k1));\n" +
           "  float _lit = smoothstep(0.44, 0.57, _lump);\n" +
@@ -323,7 +368,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  vec3 _N = normalize(vSeaWN);\n" +
           "  float _ndl = clamp(dot(_N, normalize(uSunDir)) * 0.5 + 0.5, 0.0, 1.0);\n" +
           "  float _lowSun = smoothstep(0.55, 0.1, normalize(uSunDir).y);\n" +
-          "  float _top = clamp(_lit * 0.72 + _ndl * 0.28, 0.0, 1.0);\n" +
+          // normals are real now (displaced heightfield) — let the sun model
+          // the domes; _lit only reinforces the crevice colour split.
+          "  float _top = clamp(_lit * 0.40 + _ndl * 0.60, 0.0, 1.0);\n" +
           "  vec3 _seaCol = mix(uSecColor, uBaseColor, _top);\n" +
           "  _seaCol *= mix(0.88, 1.06, smoothstep(0.40, 0.62, _mot));\n" +
           "  vec3 _skyFill = vec3(0.58,0.68,0.88);\n" +
@@ -554,14 +601,13 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     for (const d of seaDiscs) group.remove(d);
     seaDiscs.length = 0;
     if (state.seaCount > 0) {
-      const discMat = seaDiscMat;
+      // ONE dense ring (not flat circle + coarse ring): ~240×96 segments give
+      // the vertex shader enough resolution to displace rounded dome mounds in
+      // the near/mid field. Vertex colour keeps the old horizon fade.
+      uSeaInner.value = seaInnerR;
+      uSeaAmp.value = span * 0.5;
       const midR = seaOuterR * 0.55;
-      const inner = new THREE.Mesh(new THREE.CircleGeometry(midR, 72), discMat);
-      const innerCols: number[] = [];
-      const nIn = inner.geometry.getAttribute("position").count;
-      for (let i = 0; i < nIn; i++) innerCols.push(0.92, 0.94, 0.98);
-      inner.geometry.setAttribute("color", new THREE.Float32BufferAttribute(innerCols, 3));
-      const ringGeo = new THREE.RingGeometry(midR, seaOuterR, 72, 8);
+      const ringGeo = new THREE.RingGeometry(seaInnerR * 0.02, seaOuterR, 240, 96);
       const rPos = ringGeo.getAttribute("position");
       const ringCols: number[] = [];
       for (let i = 0; i < rPos.count; i++) {
@@ -571,15 +617,16 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
         ringCols.push(0.92 + (0.70 - 0.92) * e, 0.94 + (0.81 - 0.94) * e, 0.98 + (0.93 - 0.98) * e);
       }
       ringGeo.setAttribute("color", new THREE.Float32BufferAttribute(ringCols, 3));
-      const ring = new THREE.Mesh(ringGeo, discMat);
-      for (const m of [inner, ring]) {
-        m.rotation.x = -Math.PI / 2;
-        m.position.y = seaY - span * 0.05;
-        m.castShadow = false;
-        m.receiveShadow = false;
-        group.add(m);
-        seaDiscs.push(m);
-      }
+      const ring = new THREE.Mesh(ringGeo, seaDiscMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = seaY - span * 0.05;
+      ring.castShadow = false;
+      ring.receiveShadow = false;
+      // displaced mounds rise ~0.5 span above the base plane — grow the cull
+      // bounds so the heightfield never vanishes at glancing camera angles
+      ring.frustumCulled = false;
+      group.add(ring);
+      seaDiscs.push(ring);
     }
     for (let i = 0; i < state.seaCount; i++) {
       const angle = rnd() * Math.PI * 2;
