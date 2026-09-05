@@ -34,6 +34,7 @@ import { createRayGI, RAYGI_COMPOSITE_SHADER, RAYGI_BOUNCE_STRENGTH } from "@/tw
 import { createVolumetricCloudRing } from "@/tw-volumetric-clouds";
 import { createVoxelCloudRing } from "@/tw-voxel-cloud";
 import { patchDynShadowChunk, createDynShadowRig } from "@/tw-shadow-split";
+import { createSkyDome } from "@/tw-sky";
 import type { DynShadowRig } from "@/tw-shadow-split";
 import type { GreedyWall } from "@/wall-greedy";
 import { WARSHIP_DIMS, warshipBlocks } from "@/tw-warship-vox";
@@ -3022,23 +3023,27 @@ export default function TinyWorld() {
     // ── Ambient lighting system: 8-keyframe TOD palette (Project-Gaia inspired).
     // Continuous lerp by hour+minute so dawn/dusk get proper transition tones
     // instead of snapping. Each keyframe is spaced 3h apart, wrapping 21→00.
+    // Sky-dome fields (Sep 5 lighting rework rung 1): zen/hor = zenith/horizon
+    // gradient, glo/gloI = horizon glow banked at the sun's azimuth (authored
+    // hottest at dawn/dusk — the golden-hour signature), night = star/moon
+    // visibility 0..1.
     const KEYFRAMES = [
       // 0 — midnight (00:00) — moonlit cloudy night, lifted blacks
-      { bg: 0x101424, fog: 0x141a2c, fogD: 0.0, sun: 0xb8c8ff, sunI: 1.20, hemiS: 0x4a5890, hemiG: 0x1a1830, hemiI: 1.35, amb: 0x6a78a0, ambI: 0.95, rim: 0xff5fbd, rimI: 1.00 },
+      { bg: 0x101424, fog: 0x141a2c, fogD: 0.0, sun: 0xb8c8ff, sunI: 1.20, hemiS: 0x4a5890, hemiG: 0x1a1830, hemiI: 1.35, amb: 0x6a78a0, ambI: 0.95, rim: 0xff5fbd, rimI: 1.00, zen: 0x05070f, hor: 0x141b30, glo: 0x233052, gloI: 0.10, night: 1.00 },
       // 1 — predawn (03:00) — moonlight warming toward cobalt
-      { bg: 0x141828, fog: 0x181c30, fogD: 0.0, sun: 0x9ab0e0, sunI: 1.40, hemiS: 0x5a6898, hemiG: 0x1c1a30, hemiI: 1.50, amb: 0x6878a8, ambI: 1.00, rim: 0xc060e0, rimI: 1.00 },
+      { bg: 0x141828, fog: 0x181c30, fogD: 0.0, sun: 0x9ab0e0, sunI: 1.40, hemiS: 0x5a6898, hemiG: 0x1c1a30, hemiI: 1.50, amb: 0x6878a8, ambI: 1.00, rim: 0xc060e0, rimI: 1.00, zen: 0x070a18, hor: 0x1c2240, glo: 0x453a5e, gloI: 0.30, night: 0.85 },
       // 2 — dawn (06:00) — warm violet/peach horizon, sky still cool
-      { bg: 0x4a5078, fog: 0x2a2440, fogD: 0.016, sun: 0xffb878, sunI: 2.00, hemiS: 0xffc8a0, hemiG: 0x3a2540, hemiI: 1.80, amb: 0xc8c0d8, ambI: 1.45, rim: 0x9c6fff, rimI: 0.90 },
+      { bg: 0x4a5078, fog: 0x2a2440, fogD: 0.016, sun: 0xffb878, sunI: 2.00, hemiS: 0xffc8a0, hemiG: 0x3a2540, hemiI: 1.80, amb: 0xc8c0d8, ambI: 1.45, rim: 0x9c6fff, rimI: 0.90, zen: 0x2e3f74, hor: 0xffab6e, glo: 0xff8a4a, gloI: 1.15, night: 0.10 },
       // 3 — golden morning (09:00) — bright sky blue, warm sun
-      { bg: 0x7aa8d8, fog: 0x202c4a, fogD: 0.013, sun: 0xffd89a, sunI: 2.80, hemiS: 0xeed8b8, hemiG: 0x6a4a3a, hemiI: 2.05, amb: 0xccd0e0, ambI: 1.65, rim: 0xb0d0ff, rimI: 0.75 },
+      { bg: 0x7aa8d8, fog: 0x202c4a, fogD: 0.013, sun: 0xffd89a, sunI: 2.80, hemiS: 0xeed8b8, hemiG: 0x6a4a3a, hemiI: 2.05, amb: 0xccd0e0, ambI: 1.65, rim: 0xb0d0ff, rimI: 0.75, zen: 0x3f74c2, hor: 0xbcd9f2, glo: 0xffe2b8, gloI: 0.35, night: 0.00 },
       // 4 — midday (12:00) — bright clear sky
-      { bg: 0x88b8e8, fog: 0x0e1430, fogD: 0.010, sun: 0xfff0dd, sunI: 3.00, hemiS: 0xbdd4ff, hemiG: 0x8a6f50, hemiI: 2.20, amb: 0xcdd8e8, ambI: 1.75, rim: 0xb0d0ff, rimI: 0.70 },
+      { bg: 0x88b8e8, fog: 0x0e1430, fogD: 0.010, sun: 0xfff0dd, sunI: 3.00, hemiS: 0xbdd4ff, hemiG: 0x8a6f50, hemiI: 2.20, amb: 0xcdd8e8, ambI: 1.75, rim: 0xb0d0ff, rimI: 0.70, zen: 0x3f86e0, hor: 0xb4d7f2, glo: 0xfff0d8, gloI: 0.18, night: 0.00 },
       // 5 — golden afternoon (15:00) — sky cooling, sun warmer
-      { bg: 0x7a98c8, fog: 0x281a30, fogD: 0.013, sun: 0xffc890, sunI: 2.80, hemiS: 0xf5c8a0, hemiG: 0x7a4830, hemiI: 2.05, amb: 0xc8c0c8, ambI: 1.60, rim: 0xc080ff, rimI: 0.85 },
+      { bg: 0x7a98c8, fog: 0x281a30, fogD: 0.013, sun: 0xffc890, sunI: 2.80, hemiS: 0xf5c8a0, hemiG: 0x7a4830, hemiI: 2.05, amb: 0xc8c0c8, ambI: 1.60, rim: 0xc080ff, rimI: 0.85, zen: 0x3f6cb4, hor: 0xf0cf9e, glo: 0xffc27a, gloI: 0.55, night: 0.00 },
       // 6 — dusk (18:00) — coral sun, magenta sky bleeding to deep purple
-      { bg: 0x5a4068, fog: 0x251030, fogD: 0.016, sun: 0xff8866, sunI: 2.40, hemiS: 0xff9d8f, hemiG: 0x4a1a3f, hemiI: 1.85, amb: 0xc098b8, ambI: 1.40, rim: 0x9c5fff, rimI: 1.00 },
+      { bg: 0x5a4068, fog: 0x251030, fogD: 0.016, sun: 0xff8866, sunI: 2.40, hemiS: 0xff9d8f, hemiG: 0x4a1a3f, hemiI: 1.85, amb: 0xc098b8, ambI: 1.40, rim: 0x9c5fff, rimI: 1.00, zen: 0x252052, hor: 0xff7a46, glo: 0xff5a2e, gloI: 1.30, night: 0.12 },
       // 7 — twilight (21:00) — purple wash with first hint of moon
-      { bg: 0x141430, fog: 0x1a1830, fogD: 0.0, sun: 0xa888d0, sunI: 1.30, hemiS: 0x7a5a90, hemiG: 0x281a3a, hemiI: 1.40, amb: 0x9070b0, ambI: 1.05, rim: 0xff5fbd, rimI: 1.05 },
+      { bg: 0x141430, fog: 0x1a1830, fogD: 0.0, sun: 0xa888d0, sunI: 1.30, hemiS: 0x7a5a90, hemiG: 0x281a3a, hemiI: 1.40, amb: 0x9070b0, ambI: 1.05, rim: 0xff5fbd, rimI: 1.05, zen: 0x0a0c22, hor: 0x2e2450, glo: 0x6a3f78, gloI: 0.50, night: 0.80 },
     ];
     const _lerpN = (a: number, b: number, t: number) => a + (b - a) * t;
     const _lerpHex = (a: number, b: number, t: number) => {
@@ -3146,6 +3151,33 @@ export default function TinyWorld() {
         z: -cosA * Math.cos(az),
       };
     }
+    // RAW solar direction — no 8° altitude floor. The sky dome needs the sun
+    // where it actually is (including below the horizon at dusk/night) so the
+    // horizon glow banks at the true azimuth and the disc sets for real. The
+    // clamped _solarDirection stays for the shadow-casting lights only.
+    function _solarDirectionRaw(t: number, lat: number, lon: number) {
+      const { alt, az } = _solarPosition(t, lat, lon);
+      const cosA = Math.cos(alt);
+      return {
+        x: cosA * Math.sin(az),
+        y: Math.sin(alt),
+        z: -cosA * Math.cos(az),
+      };
+    }
+    // Synthetic sun direction for ?tod= previews: the override pins the palette
+    // hour, so the sky's sun position must come from that hour, not the real
+    // clock. Simple arc — east at 6, south+60° at 12, west at 18, below the
+    // horizon through the night hours.
+    function _overrideSunDir(hour: number) {
+      const alt = Math.sin(((hour - 6) / 12) * Math.PI) * (60 * Math.PI / 180);
+      const az = (Math.PI / 2) + ((hour - 6) / 12) * Math.PI;
+      const cosA = Math.cos(alt);
+      return {
+        x: cosA * Math.sin(az),
+        y: Math.sin(alt),
+        z: -cosA * Math.cos(az),
+      };
+    }
     // Moon = ANTI-SOLAR point: opposite azimuth, opposite altitude. So when the
     // sun is below the horizon (night) the moon is above it, riding a mirror arc
     // that peaks at solar midnight — a believable full-moon path that reuses the
@@ -3174,6 +3206,9 @@ export default function TinyWorld() {
         hemiS: _lerpHex(A.hemiS, B.hemiS, t), hemiG: _lerpHex(A.hemiG, B.hemiG, t), hemiI: _lerpN(A.hemiI, B.hemiI, t),
         amb: _lerpHex(A.amb, B.amb, t), ambI: _lerpN(A.ambI, B.ambI, t),
         rim: _lerpHex(A.rim, B.rim, t), rimI: _lerpN(A.rimI, B.rimI, t),
+        zen: _lerpHex(A.zen, B.zen, t), hor: _lerpHex(A.hor, B.hor, t),
+        glo: _lerpHex(A.glo, B.glo, t), gloI: _lerpN(A.gloI, B.gloI, t),
+        night: _lerpN(A.night, B.night, t),
       };
     }
     // ── Real-world day/night clock ────────────────────────────────────────────
@@ -3737,6 +3772,30 @@ export default function TinyWorld() {
       const _initNight = _initDay < 0.5;
       sun.castShadow = !_initNight;
       moon.castShadow = _initNight;
+    }
+
+    // ─── Sky dome (Sep 5 lighting rework rung 1) ──────────────────────────────
+    // Gradient dome + sun-azimuth horizon glow + sun/moon discs + stars,
+    // following the camera each frame. ?sky=0 reverts to the flat background
+    // for A/B. Under a ?tod= override the state is seeded once from the pinned
+    // hour (synthetic sun arc); otherwise the ~1s TOD tick keeps it live.
+    const _skyEnabled = new URLSearchParams(location.search).get("sky") !== "0";
+    const skyDome = _skyEnabled
+      ? createSkyDome({ THREE, scene, camera })
+      : null;
+    if (skyDome) {
+      const _a0 = anchorRef.current;
+      if (_todOv && _todOv in _todToHour) {
+        const sd = _overrideSunDir(_hourNow);
+        skyDome.update(tp, sd, { x: -sd.x, y: Math.max(0.14, -sd.y), z: -sd.z });
+      } else {
+        skyDome.update(
+          tp,
+          _solarDirectionRaw(worldNow(), _a0.lat, _a0.lon),
+          _moonDirection(worldNow(), _a0.lat, _a0.lon),
+        );
+      }
+      skyDome.frame(camera.position, performance.now() / 1000);
     }
 
     // Cloud raymarch cost is per-fragment GPU (a 132-step march full-screen).
@@ -21287,11 +21346,18 @@ export default function TinyWorld() {
         // on WALL-CLOCK time (not frame count) so the cycle keeps updating even
         // when the frame rate is low (throttled tab, weak device) instead of
         // stalling until 60 frames accrue.
+        // Sky dome follows the camera every frame; time drives star twinkle.
+        if (skyDome) skyDome.frame(camera.position, performance.now() / 1000);
         if (!_todOv && performance.now() - _lastTodApplyMs >= 1000) {
           _lastTodApplyMs = performance.now();
           const _a = anchorRef.current;
           const _vt = worldNow();
           const liveTp = paletteAt(_solarVirtualHour(_vt, _a.lat, _a.lon));
+          // Sky dome: gradient/glow/stars track the live palette; the glow
+          // banks at the RAW sun azimuth (no altitude floor).
+          if (skyDome) {
+            skyDome.update(liveTp, _solarDirectionRaw(_vt, _a.lat, _a.lon), _moonDirection(_vt, _a.lat, _a.lon));
+          }
           // Sky dome.
           if (scene.background && (scene.background as any).isColor) {
             (scene.background as THREE.Color).setHex(liveTp.bg);
