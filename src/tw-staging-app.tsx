@@ -3029,21 +3029,21 @@ export default function TinyWorld() {
     // visibility 0..1.
     const KEYFRAMES = [
       // 0 — midnight (00:00) — moonlit cloudy night, lifted blacks
-      { bg: 0x101424, fog: 0x141a2c, fogD: 0.0, sun: 0xb8c8ff, sunI: 1.20, hemiS: 0x4a5890, hemiG: 0x1a1830, hemiI: 1.35, amb: 0x6a78a0, ambI: 0.95, rim: 0xff5fbd, rimI: 1.00, zen: 0x05070f, hor: 0x141b30, glo: 0x233052, gloI: 0.10, night: 1.00 },
+      { bg: 0x10182c, fog: 0x18233a, fogD: 0.0, sun: 0xb8c8ff, sunI: 1.20, hemiS: 0x566b9d, hemiG: 0x202a42, hemiI: 1.55, amb: 0x6a78a0, ambI: 0.95, rim: 0x789de0, rimI: 1.10, zen: 0x050914, hor: 0x182844, glo: 0x263858, gloI: 0.10, night: 1.00, exp: 0.82 },
       // 1 — predawn (03:00) — moonlight warming toward cobalt
-      { bg: 0x141828, fog: 0x181c30, fogD: 0.0, sun: 0x9ab0e0, sunI: 1.40, hemiS: 0x5a6898, hemiG: 0x1c1a30, hemiI: 1.50, amb: 0x6878a8, ambI: 1.00, rim: 0xc060e0, rimI: 1.00, zen: 0x070a18, hor: 0x1c2240, glo: 0x453a5e, gloI: 0.30, night: 0.85 },
+      { bg: 0x16203a, fog: 0x1d2942, fogD: 0.0, sun: 0x9ab0e0, sunI: 1.40, hemiS: 0x6177aa, hemiG: 0x25304a, hemiI: 1.60, amb: 0x6878a8, ambI: 1.00, rim: 0x789de0, rimI: 1.05, zen: 0x081026, hor: 0x243554, glo: 0x514868, gloI: 0.30, night: 0.85, exp: 0.86 },
       // 2 — dawn (06:00) — warm violet/peach horizon, sky still cool
-      { bg: 0x4a5078, fog: 0x2a2440, fogD: 0.016, sun: 0xffb878, sunI: 2.00, hemiS: 0xffc8a0, hemiG: 0x3a2540, hemiI: 1.80, amb: 0xc8c0d8, ambI: 1.45, rim: 0x9c6fff, rimI: 0.90, zen: 0x2e3f74, hor: 0xffab6e, glo: 0xff8a4a, gloI: 1.15, night: 0.10 },
+      { bg: 0x4a5078, fog: 0x57445c, fogD: 0.016, sun: 0xffb878, sunI: 2.00, hemiS: 0x8fa9d8, hemiG: 0x4b3a4b, hemiI: 1.80, amb: 0xc8c0d8, ambI: 1.45, rim: 0x9c6fff, rimI: 0.90, zen: 0x2e3f74, hor: 0xffab6e, glo: 0xff8a4a, gloI: 1.15, night: 0.10, exp: 0.98 },
       // 3 — golden morning (09:00) — bright sky blue, warm sun
-      { bg: 0x7aa8d8, fog: 0x202c4a, fogD: 0.013, sun: 0xffd89a, sunI: 2.80, hemiS: 0xeed8b8, hemiG: 0x6a4a3a, hemiI: 2.05, amb: 0xccd0e0, ambI: 1.65, rim: 0xb0d0ff, rimI: 0.75, zen: 0x3f74c2, hor: 0xbcd9f2, glo: 0xffe2b8, gloI: 0.35, night: 0.00 },
+      { bg: 0x7aa8d8, fog: 0x809fc0, fogD: 0.013, sun: 0xffd89a, sunI: 2.80, hemiS: 0xeed8b8, hemiG: 0x6a4a3a, hemiI: 2.05, amb: 0xccd0e0, ambI: 1.65, rim: 0xb0d0ff, rimI: 0.75, zen: 0x3f74c2, hor: 0xbcd9f2, glo: 0xffe2b8, gloI: 0.35, night: 0.00, exp: 1.10 },
       // 4 — midday (12:00) — bright clear sky
-      { bg: 0x88b8e8, fog: 0x0e1430, fogD: 0.010, sun: 0xfff0dd, sunI: 3.00, hemiS: 0xbdd4ff, hemiG: 0x8a6f50, hemiI: 2.20, amb: 0xcdd8e8, ambI: 1.75, rim: 0xb0d0ff, rimI: 0.70, zen: 0x3f86e0, hor: 0xb4d7f2, glo: 0xfff0d8, gloI: 0.18, night: 0.00 },
+      { bg: 0x88b8e8, fog: 0x88b8e8, fogD: 0.010, sun: 0xfff0dd, sunI: 3.00, hemiS: 0xbdd4ff, hemiG: 0x8a6f50, hemiI: 2.20, amb: 0xcdd8e8, ambI: 1.75, rim: 0xb0d0ff, rimI: 0.70, zen: 0x3f86e0, hor: 0xb4d7f2, glo: 0xfff0d8, gloI: 0.18, night: 0.00, exp: 1.10 },
       // 5 — golden afternoon (15:00) — sky cooling, sun warmer
-      { bg: 0x7a98c8, fog: 0x281a30, fogD: 0.013, sun: 0xffc890, sunI: 2.80, hemiS: 0xf5c8a0, hemiG: 0x7a4830, hemiI: 2.05, amb: 0xc8c0c8, ambI: 1.60, rim: 0xc080ff, rimI: 0.85, zen: 0x3f6cb4, hor: 0xf0cf9e, glo: 0xffc27a, gloI: 0.55, night: 0.00 },
+      { bg: 0x6f8fbd, fog: 0xc28d70, fogD: 0.013, sun: 0xffb665, sunI: 2.75, hemiS: 0x88a7d1, hemiG: 0x76533b, hemiI: 1.95, amb: 0xb7bfd0, ambI: 1.50, rim: 0x7697cf, rimI: 0.90, zen: 0x355f9d, hor: 0xe5b07d, glo: 0xffad5c, gloI: 0.72, night: 0.00, exp: 1.04 },
       // 6 — dusk (18:00) — coral sun, magenta sky bleeding to deep purple
-      { bg: 0x5a4068, fog: 0x251030, fogD: 0.016, sun: 0xff8866, sunI: 2.40, hemiS: 0xff9d8f, hemiG: 0x4a1a3f, hemiI: 1.85, amb: 0xc098b8, ambI: 1.40, rim: 0x9c5fff, rimI: 1.00, zen: 0x252052, hor: 0xff7a46, glo: 0xff5a2e, gloI: 1.30, night: 0.12 },
+      { bg: 0x493f62, fog: 0xa05d4e, fogD: 0.016, sun: 0xff7a42, sunI: 2.30, hemiS: 0x6f83b0, hemiG: 0x4b3541, hemiI: 1.75, amb: 0x9da8c0, ambI: 1.25, rim: 0x7898d4, rimI: 1.05, zen: 0x202746, hor: 0xe87b54, glo: 0xff6c32, gloI: 1.35, night: 0.12, exp: 0.94 },
       // 7 — twilight (21:00) — purple wash with first hint of moon
-      { bg: 0x141430, fog: 0x1a1830, fogD: 0.0, sun: 0xa888d0, sunI: 1.30, hemiS: 0x7a5a90, hemiG: 0x281a3a, hemiI: 1.40, amb: 0x9070b0, ambI: 1.05, rim: 0xff5fbd, rimI: 1.05, zen: 0x0a0c22, hor: 0x2e2450, glo: 0x6a3f78, gloI: 0.50, night: 0.80 },
+      { bg: 0x172039, fog: 0x26304a, fogD: 0.0, sun: 0xa888d0, sunI: 1.30, hemiS: 0x6277a8, hemiG: 0x28334c, hemiI: 1.50, amb: 0x7f8eae, ambI: 1.05, rim: 0x7598dc, rimI: 1.10, zen: 0x080e20, hor: 0x263655, glo: 0x5f4e72, gloI: 0.42, night: 0.80, exp: 0.86 },
     ];
     const _lerpN = (a: number, b: number, t: number) => a + (b - a) * t;
     const _lerpHex = (a: number, b: number, t: number) => {
@@ -3209,6 +3209,7 @@ export default function TinyWorld() {
         zen: _lerpHex(A.zen, B.zen, t), hor: _lerpHex(A.hor, B.hor, t),
         glo: _lerpHex(A.glo, B.glo, t), gloI: _lerpN(A.gloI, B.gloI, t),
         night: _lerpN(A.night, B.night, t),
+        exp: _lerpN(A.exp, B.exp, t),
       };
     }
     // ── Real-world day/night clock ────────────────────────────────────────────
@@ -3232,7 +3233,7 @@ export default function TinyWorld() {
       (_hourNow < 6 ? "night" : _hourNow < 9 ? "dawn" : _hourNow < 17 ? "day" : _hourNow < 20 ? "dusk" : "night");
     const tp = paletteAt(_hourNow);
 
-    const aerialTintAt = (hour: number) => new THREE.Color(paletteAt(hour).bg);
+    const aerialTintAt = (hour: number) => new THREE.Color(paletteAt(hour).fog);
     const fogCompletionFar = (near: number, maxBlend: number) => {
       const y = Math.max(0.001, Math.min(0.999, maxBlend));
       let t = y;
@@ -3346,7 +3347,7 @@ export default function TinyWorld() {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.1;
+    renderer.toneMappingExposure = tp.exp;
     rendererRef.current = renderer;
     mountRef.current!.appendChild(renderer.domElement);
     renderer.domElement.style.width = "100%";
@@ -4028,7 +4029,8 @@ export default function TinyWorld() {
     // 1 s tint-loop apply is byte-identical to the old direct writes at mix 0.
     const lightBase = {
       sunI: sun.intensity, moonI: moon.intensity,
-      ambHex: tp.amb, ambI: tp.ambI, rimI: tp.rimI, fillI: 0.6,
+      ambHex: tp.amb, ambI: tp.ambI, rimI: tp.rimI,
+      fillI: 0.6 + tp.night * 0.75 + Math.max(0, tp.gloI - 0.45) * 0.32,
     };
     const interiorState = { mix: 0, target: 0, enabled: __diagParams.get("interior") === "1" };
     const INT_AMB_WARM = new THREE.Color(0xd8b58a); // warm room/cave fill
@@ -21353,6 +21355,7 @@ export default function TinyWorld() {
           const _a = anchorRef.current;
           const _vt = worldNow();
           const liveTp = paletteAt(_solarVirtualHour(_vt, _a.lat, _a.lon));
+          renderer.toneMappingExposure = liveTp.exp;
           // Sky dome: gradient/glow/stars track the live palette; the glow
           // banks at the RAW sun azimuth (no altitude floor).
           if (skyDome) {
@@ -21389,6 +21392,7 @@ export default function TinyWorld() {
           // __tw.diagBand({ hemi: true }) if you want the moonlit ambient back.
           rim.color.setHex(liveTp.rim);
           lightBase.rimI = liveTp.rimI;
+          lightBase.fillI = 0.6 + liveTp.night * 0.75 + Math.max(0, liveTp.gloI - 0.45) * 0.32;
           _applyInteriorMix();
           // Super-tree glow light rides the same daylight ramp: emissive
           // canopies actually cast light at night.
@@ -22521,6 +22525,9 @@ export default function TinyWorld() {
         }
         if (volumetricClouds.state.enabled) {
           const _cloudKey = moon.intensity > sun.intensity ? moon : sun;
+          const _cloudHour = (_todOv && _todOv in _todToHour)
+            ? _hourNow
+            : _solarVirtualHour(worldNow(), anchorRef.current.lat, anchorRef.current.lon);
           _cloudKeyDir.copy(_cloudKey.position).sub(_cloudKey.target.position).normalize();
           if (scene.background && (scene.background as any).isColor) _cloudSkyColor.copy(scene.background as any);
           volumetricClouds.update({
@@ -22529,6 +22536,7 @@ export default function TinyWorld() {
             keyColor: _cloudKey.color,
             skyColor: _cloudSkyColor,
             keyIntensity: _cloudKey.intensity,
+            nightFactor: paletteAt(_cloudHour).night,
           });
         }
         const _resetRenderState = () => {

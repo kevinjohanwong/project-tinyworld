@@ -46,6 +46,7 @@ export interface VoxelCloudUpdate {
   keyColor?: any;
   skyColor?: any;
   keyIntensity?: number;
+  nightFactor?: number;
 }
 
 // Deterministic PRNG so the scatter is stable frame-to-frame and reload-to-reload.
@@ -151,6 +152,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   // horizon instead of ending at a hard edge. Set from the sea reach at scatter.
   const uHaze = { value: new THREE.Vector2(span * 4.5, span * 9.0) };
   const uCloudMotion = { value: new THREE.Vector2(0, 0) };
+  const uNight = { value: 0 };
   const material = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 1, metalness: 0, vertexColors: true,
     transparent: true, depthWrite: true, // depthWrite keeps the opaque core sorted; only silhouette edges blend
@@ -158,7 +160,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   material.customProgramCacheKey = () => "tinyworldVoxelCloudVEinstBobGPU";
   material.onBeforeCompile = (shader: any) => {
     Object.assign(shader.uniforms, {
-      uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uBack, uSpanRef, uHaze, uCloudMotion,
+      uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uBack, uSpanRef, uHaze, uCloudMotion, uNight,
     });
     shader.vertexShader =
       "attribute float aY01;\nattribute vec2 aCloudBob;\nuniform vec2 uCloudMotion;\nvarying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\nvarying vec3 vWPos;\n" +
@@ -184,7 +186,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  vY01 = aY01;",
       );
     shader.fragmentShader =
-      "uniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec3 uRimColor;\nuniform vec4 uParams;\nuniform vec2 uGrad;\nuniform vec2 uNoise;\nuniform vec2 uBack;\nuniform float uSpanRef;\nuniform vec2 uHaze;\n" +
+      "uniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec3 uRimColor;\nuniform vec4 uParams;\nuniform vec2 uGrad;\nuniform vec2 uNoise;\nuniform vec2 uBack;\nuniform float uSpanRef;\nuniform vec2 uHaze;\nuniform float uNight;\n" +
       "varying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\nvarying vec3 vWPos;\n" +
       "vec3 cloudRamp(float t){\n" +
       "  vec3 c0 = vec3(0.56,0.61,0.69); vec3 c1 = vec3(0.82,0.84,0.88); vec3 c2 = vec3(1.0,1.0,0.99);\n" +
@@ -229,7 +231,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  col = mix(col, uRimColor, rim);\n" +
           "  col *= (1.0 - uParams.y * ndv);\n" +
           "  col *= ao;\n" +
-          "  col *= uLight;\n" +
+          "  vec3 skyFill = vec3(0.58,0.68,0.88);\n" +
+          "  float keyShare = ndl * (1.0 - 0.48 * lowSun);\n" +
+          "  col *= mix(mix(skyFill, uLight, 0.28), uLight, keyShare);\n" +
           // PLAY TO LIGHT: sun BEHIND the cloud (toward viewer) → transmitted glow on
           // the edges, using the real sun colour. Thin/edge parts (low ndv) glow most.
           "  float back = pow(clamp(dot(normalize(uSunDir), -normalize(vVDir)), 0.0, 1.0), uBack.y);\n" +
@@ -247,6 +251,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  float hd = smoothstep(uHaze.x, uHaze.y, length(vWPos.xz));\n" +
           "  vec3 hazeCol = mix(vec3(0.80, 0.87, 0.96), uLight, 0.4);\n" +
           "  col = mix(col, hazeCol, hd * 0.85);\n" +
+          "  float cloudLuma = dot(col, vec3(0.2126,0.7152,0.0722));\n" +
+          "  vec3 moonCloud = mix(vec3(cloudLuma), col, 0.22) * vec3(0.12,0.18,0.34);\n" +
+          "  col = mix(col, moonCloud, uNight * 0.96);\n" +
           "  gl_FragColor.rgb = col;\n" +
           // SOFT SILHOUETTE: fade alpha at grazing angles (the outline) so the hard
           // voxel edge feathers into the sky instead of a crisp Minecraft cube edge.
@@ -286,7 +293,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   const seaDiscMat = new THREE.MeshLambertMaterial({ vertexColors: true });
   seaDiscMat.customProgramCacheKey = () => "tinyworldSeaDiscV2";
   seaDiscMat.onBeforeCompile = (shader: any) => {
-    Object.assign(shader.uniforms, { uSeaTime, uSeaSpan });
+    Object.assign(shader.uniforms, { uSeaTime, uSeaSpan, uNight });
     shader.vertexShader =
       "varying vec3 vSeaW;\n" +
       shader.vertexShader.replace(
@@ -294,7 +301,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
         "#include <begin_vertex>\n  vSeaW = (modelMatrix * vec4(transformed, 1.0)).xyz;",
       );
     shader.fragmentShader =
-      "uniform float uSeaTime;\nuniform float uSeaSpan;\nvarying vec3 vSeaW;\n" +
+      "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uNight;\nvarying vec3 vSeaW;\n" +
       "float _sh(vec3 p){ p = fract(p*0.3183099+0.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }\n" +
       "float _svn(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);\n" +
       "  return mix(mix(mix(_sh(i+vec3(0,0,0)),_sh(i+vec3(1,0,0)),f.x),mix(_sh(i+vec3(0,1,0)),_sh(i+vec3(1,1,0)),f.x),f.y),\n" +
@@ -312,7 +319,10 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  float _mot = _sfbm(vec3(vSeaW.x * _k2 + 31.0, uSeaTime * 0.03, vSeaW.z * _k2));\n" +
           "  vec3 _crev = vec3(0.80, 0.85, 0.93);\n" +
           "  diffuseColor.rgb *= mix(_crev, vec3(1.03, 1.02, 1.0), _lit);\n" +
-          "  diffuseColor.rgb *= mix(0.92, 1.10, smoothstep(0.40, 0.62, _mot));\n",
+          "  diffuseColor.rgb *= mix(0.92, 1.10, smoothstep(0.40, 0.62, _mot));\n" +
+          "  float _seaLuma = dot(diffuseColor.rgb, vec3(0.2126,0.7152,0.0722));\n" +
+          "  vec3 _seaNight = mix(vec3(_seaLuma), diffuseColor.rgb, 0.22) * vec3(0.20,0.28,0.48);\n" +
+          "  diffuseColor.rgb = mix(diffuseColor.rgb, _seaNight, uNight * 0.92);\n",
       );
   };
 
@@ -641,10 +651,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     if (input.keyDirection) uSunDir.value.copy(input.keyDirection).normalize();
     if (input.keyColor) {
       uLight.value.copy(input.keyColor);
-      // clamp so a bright app sun can't blow the clouds out; night dims them
+      // Clamp only the ceiling. A minimum floor made moonlit clouds stay white.
       if (input.keyIntensity != null)
-        uLight.value.multiplyScalar(Math.min(1.5, Math.max(0.25, input.keyIntensity)));
+        uLight.value.multiplyScalar(Math.min(1.5, Math.max(0.06, input.keyIntensity)));
     }
+    uNight.value = Math.max(0, Math.min(1, input.nightFactor ?? 0));
     const t = input.elapsedSeconds;
     uSeaTime.value = t;
     uCloudMotion.value.set(t, state.bob);
