@@ -294,17 +294,17 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   const uSeaTime = { value: 0 };
   const uSeaSpan = { value: Math.max(1e-3, span) };
   const seaDiscMat = new THREE.MeshLambertMaterial({ vertexColors: true });
-  seaDiscMat.customProgramCacheKey = () => "tinyworldSeaDiscV2";
+  seaDiscMat.customProgramCacheKey = () => "tinyworldSeaDiscV3UnifiedLight";
   seaDiscMat.onBeforeCompile = (shader: any) => {
-    Object.assign(shader.uniforms, { uSeaTime, uSeaSpan, uNight });
+    Object.assign(shader.uniforms, { uSeaTime, uSeaSpan, uNight, uSunDir, uLight, uBaseColor, uSecColor });
     shader.vertexShader =
-      "varying vec3 vSeaW;\n" +
+      "varying vec3 vSeaW;\nvarying vec3 vSeaWN;\n" +
       shader.vertexShader.replace(
         "#include <begin_vertex>",
-        "#include <begin_vertex>\n  vSeaW = (modelMatrix * vec4(transformed, 1.0)).xyz;",
+        "#include <begin_vertex>\n  vSeaW = (modelMatrix * vec4(transformed, 1.0)).xyz;\n  vSeaWN = normalize(mat3(modelMatrix) * objectNormal);",
       );
     shader.fragmentShader =
-      "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uNight;\nvarying vec3 vSeaW;\n" +
+      "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uNight;\nuniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nvarying vec3 vSeaW;\nvarying vec3 vSeaWN;\n" +
       "float _sh(vec3 p){ p = fract(p*0.3183099+0.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }\n" +
       "float _svn(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);\n" +
       "  return mix(mix(mix(_sh(i+vec3(0,0,0)),_sh(i+vec3(1,0,0)),f.x),mix(_sh(i+vec3(0,1,0)),_sh(i+vec3(1,1,0)),f.x),f.y),\n" +
@@ -320,12 +320,21 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           // fine mottle so the surface reads puffy, not airbrushed
           "  float _k2 = 4.6 / uSeaSpan;\n" +
           "  float _mot = _sfbm(vec3(vSeaW.x * _k2 + 31.0, uSeaTime * 0.03, vSeaW.z * _k2));\n" +
-          "  vec3 _crev = vec3(0.80, 0.85, 0.93);\n" +
-          "  diffuseColor.rgb *= mix(_crev, vec3(1.03, 1.02, 1.0), _lit);\n" +
-          "  diffuseColor.rgb *= mix(0.92, 1.10, smoothstep(0.40, 0.62, _mot));\n" +
-          "  float _seaLuma = dot(diffuseColor.rgb, vec3(0.2126,0.7152,0.0722));\n" +
-          "  vec3 _seaNight = mix(vec3(_seaLuma), diffuseColor.rgb, 0.22) * vec3(0.20,0.28,0.48);\n" +
-          "  diffuseColor.rgb = mix(diffuseColor.rgb, _seaNight, uNight * 0.92);\n",
+          "  vec3 _N = normalize(vSeaWN);\n" +
+          "  float _ndl = clamp(dot(_N, normalize(uSunDir)) * 0.5 + 0.5, 0.0, 1.0);\n" +
+          "  float _lowSun = smoothstep(0.55, 0.1, normalize(uSunDir).y);\n" +
+          "  float _top = clamp(_lit * 0.72 + _ndl * 0.28, 0.0, 1.0);\n" +
+          "  vec3 _seaCol = mix(uSecColor, uBaseColor, _top);\n" +
+          "  _seaCol *= mix(0.88, 1.06, smoothstep(0.40, 0.62, _mot));\n" +
+          "  vec3 _skyFill = vec3(0.58,0.68,0.88);\n" +
+          "  float _keyShare = _ndl * (1.0 - 0.48 * _lowSun);\n" +
+          "  _seaCol *= mix(mix(_skyFill, uLight, 0.28), uLight, _keyShare);\n" +
+          "  _seaCol *= mix(vec3(1.0), vec3(0.82,0.84,1.02), (1.0 - _ndl) * _lowSun * 0.55);\n" +
+          "  float _seaLuma = dot(_seaCol, vec3(0.2126,0.7152,0.0722));\n" +
+          "  vec3 _seaNight = mix(vec3(_seaLuma), _seaCol, 0.18) * vec3(0.075,0.13,0.25);\n" +
+          "  float _moonTop = smoothstep(0.58, 0.94, _ndl);\n" +
+          "  _seaNight += vec3(0.14,0.22,0.44) * _moonTop * 0.18;\n" +
+          "  diffuseColor.rgb = mix(_seaCol, _seaNight, uNight * 0.97);\n",
       );
   };
 
