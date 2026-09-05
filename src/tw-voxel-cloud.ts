@@ -323,7 +323,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   const seaDiscMat = new THREE.MeshLambertMaterial({ vertexColors: true });
   seaDiscMat.customProgramCacheKey = () => "tinyworldSeaDiscV4Heightfield";
   seaDiscMat.onBeforeCompile = (shader: any) => {
-    Object.assign(shader.uniforms, { uSeaTime, uSeaSpan, uSeaAmp, uSeaInner, uNight, uSunDir, uLight, uBaseColor, uSecColor });
+    Object.assign(shader.uniforms, { uSeaTime, uSeaSpan, uSeaAmp, uSeaInner, uNight, uSunDir, uLight, uBaseColor, uSecColor, uHaze, uBack });
     shader.vertexShader =
       "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uSeaAmp;\nuniform float uSeaInner;\nvarying vec3 vSeaW;\nvarying vec3 vSeaWN;\n" +
       SEA_NOISE_GLSL +
@@ -352,8 +352,15 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "#include <begin_vertex>\n  transformed.z += _sh0;\n  vSeaW = (modelMatrix * vec4(transformed, 1.0)).xyz;\n  vSeaWN = normalize(mat3(modelMatrix) * objectNormal);",
         );
     shader.fragmentShader =
-      "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uNight;\nuniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nvarying vec3 vSeaW;\nvarying vec3 vSeaWN;\n" +
+      "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uNight;\nuniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec2 uHaze;\nuniform vec2 uBack;\nvarying vec3 vSeaW;\nvarying vec3 vSeaWN;\n" +
       SEA_NOISE_GLSL +
+      // SAME toon ramp as the voxel swell pieces — the sea must speak the same
+      // tonal language as the clouds above it (KJ: "floor should match").
+      "vec3 _seaRamp(float t){\n" +
+      "  vec3 c0 = vec3(0.56,0.61,0.69); vec3 c1 = vec3(0.82,0.84,0.88); vec3 c2 = vec3(1.0,1.0,0.99);\n" +
+      "  t = clamp(t,0.0,1.0);\n" +
+      "  return t < 0.5 ? mix(c0, c1, smoothstep(0.05,0.5,t)) : mix(c1, c2, smoothstep(0.5,0.9,t));\n" +
+      "}\n" +
       shader.fragmentShader.replace(
         "#include <color_fragment>",
         "#include <color_fragment>\n" +
@@ -366,21 +373,37 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  float _k2 = 4.6 / uSeaSpan;\n" +
           "  float _mot = _sfbm(vec3(vSeaW.x * _k2 + 31.0, uSeaTime * 0.03, vSeaW.z * _k2));\n" +
           "  vec3 _N = normalize(vSeaWN);\n" +
+          "  vec3 _V = normalize(cameraPosition - vSeaW);\n" +
           "  float _ndl = clamp(dot(_N, normalize(uSunDir)) * 0.5 + 0.5, 0.0, 1.0);\n" +
           "  float _lowSun = smoothstep(0.55, 0.1, normalize(uSunDir).y);\n" +
-          // normals are real now (displaced heightfield) — let the sun model
-          // the domes; _lit only reinforces the crevice colour split.
-          "  float _top = clamp(_lit * 0.40 + _ndl * 0.60, 0.0, 1.0);\n" +
+          // height gradient: crevices take secColor, dome tops take baseColor
+          "  float _top = clamp(_lit * 0.35 + _ndl * 0.65, 0.0, 1.0);\n" +
           "  vec3 _seaCol = mix(uSecColor, uBaseColor, _top);\n" +
-          "  _seaCol *= mix(0.88, 1.06, smoothstep(0.40, 0.62, _mot));\n" +
+          "  _seaCol *= mix(0.90, 1.06, smoothstep(0.40, 0.62, _mot));\n" +
+          // toon ramp on the real dome normal — identical shading language to
+          // the swell pieces (they do col *= cloudRamp(ndl)).
+          "  _seaCol *= _seaRamp(_ndl);\n" +
           "  vec3 _skyFill = vec3(0.58,0.68,0.88);\n" +
           "  float _keyShare = _ndl * (1.0 - 0.48 * _lowSun);\n" +
           "  _seaCol *= mix(mix(_skyFill, uLight, 0.28), uLight, _keyShare);\n" +
           "  _seaCol *= mix(vec3(1.0), vec3(0.82,0.84,1.02), (1.0 - _ndl) * _lowSun * 0.55);\n" +
+          // PLAY TO LIGHT (same as swells): sun behind the mounds → transmitted
+          // warm glow on camera-facing dome rims — the dusk peach the refs show.
+          "  float _ndv = clamp(dot(_N, _V), 0.0, 1.0);\n" +
+          "  float _back = pow(clamp(dot(normalize(uSunDir), -_V), 0.0, 1.0), uBack.y);\n" +
+          "  _seaCol += uLight * _back * uBack.x * (0.25 + 0.55 * (1.0 - _ndv));\n" +
+          // AERIAL HAZE — same band + colour as the swells, so the far sea and
+          // the far sky clouds dissolve into the same sun-tinted horizon.
+          "  float _hd = smoothstep(uHaze.x, uHaze.y, length(vSeaW.xz));\n" +
+          "  vec3 _hazeCol = mix(vec3(0.80, 0.87, 0.96), uLight, 0.4);\n" +
+          "  _seaCol = mix(_seaCol, _hazeCol, _hd * 0.85);\n" +
+          // Night: the swells' moonCloud treatment, held a touch deeper so the
+          // floor stays darker than the sky clouds (Hollywood-darkness ruling).
           "  float _seaLuma = dot(_seaCol, vec3(0.2126,0.7152,0.0722));\n" +
-          "  vec3 _seaNight = mix(vec3(_seaLuma), _seaCol, 0.18) * vec3(0.075,0.13,0.25);\n" +
-          "  float _moonTop = smoothstep(0.58, 0.94, _ndl);\n" +
-          "  _seaNight += vec3(0.14,0.22,0.44) * _moonTop * 0.18;\n" +
+          "  vec3 _seaNight = mix(vec3(_seaLuma), _seaCol, 0.18) * vec3(0.085,0.14,0.27) * 0.85;\n" +
+          "  float _moonTop = smoothstep(0.55, 0.92, _ndl);\n" +
+          "  float _moonRim = pow(1.0 - _ndv, 2.4) * smoothstep(0.30, 0.82, _ndl);\n" +
+          "  _seaNight += vec3(0.16,0.24,0.48) * (_moonTop * 0.20 + _moonRim * 0.15);\n" +
           "  diffuseColor.rgb = mix(_seaCol, _seaNight, uNight * 0.97);\n",
       );
   };
