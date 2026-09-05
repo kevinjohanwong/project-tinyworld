@@ -252,8 +252,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  vec3 hazeCol = mix(vec3(0.80, 0.87, 0.96), uLight, 0.4);\n" +
           "  col = mix(col, hazeCol, hd * 0.85);\n" +
           "  float cloudLuma = dot(col, vec3(0.2126,0.7152,0.0722));\n" +
-          "  vec3 moonCloud = mix(vec3(cloudLuma), col, 0.22) * vec3(0.12,0.18,0.34);\n" +
-          "  col = mix(col, moonCloud, uNight * 0.96);\n" +
+          "  vec3 moonCloud = mix(vec3(cloudLuma), col, 0.18) * vec3(0.085,0.14,0.27);\n" +
+          "  float moonFace = smoothstep(0.55, 0.92, ndl);\n" +
+          "  float moonRim = pow(1.0 - ndv, 2.4) * smoothstep(0.30, 0.82, ndl);\n" +
+          "  moonCloud += vec3(0.16,0.24,0.48) * (moonFace * 0.22 + moonRim * 0.18);\n" +
+          "  col = mix(col, moonCloud, uNight * 0.97);\n" +
           "  gl_FragColor.rgb = col;\n" +
           // SOFT SILHOUETTE: fade alpha at grazing angles (the outline) so the hard
           // voxel edge feathers into the sky instead of a crisp Minecraft cube edge.
