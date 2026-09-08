@@ -75,8 +75,15 @@ export function createParticleWater(ctx: PWaterCtx) {
   const fineSolidAt = (x: number, y: number, z: number) =>
     (colMapF.get(`${x},${z}`)?.has(y) ?? false) || (extraSolidF ? extraSolidF(x, y, z) : false);
 
-  // Coarse solid-oracle views. A sim cell is solid when ANY of its K^3 fine
-  // voxels is solid (conservative: a 1-voxel crust floor stays watertight).
+  // Coarse solid-oracle views. Base rule: a sim cell is solid when ANY of its
+  // K^3 fine voxels is solid (a 1-voxel crust floor stays watertight). That
+  // alone lets a single scan-noise voxel raise the whole ~6cm cell, so the
+  // water sees a jagged, inflated bed and one pool shatters into puddles.
+  // Refinement: a cell whose fine occupancy can't form even half a watertight
+  // membrane (< K^2/2 voxels) AND that rests on a solid cell below is a noise
+  // spike, not structure — cull it. Crusts/walls keep >= K^2 occupancy so
+  // they always pass; culling supported cells can't open a vertical leak
+  // (water lands on the cell below), so tightness is preserved.
   // Latent fill is probed along the block's centre column (latent mass is
   // bulk column fill; edges thin by < 1 cell and the drawn crust skins them).
   let colMap = colMapF;
@@ -86,12 +93,30 @@ export function createParticleWater(ctx: PWaterCtx) {
   if (K > 1) {
     const t0k = performance.now();
     const m = new Map<string, Set<number>>();
+    const cnt = new Map<string, number>();
     for (const [key, set] of colMapF) {
       const c = key.indexOf(",");
       const ck = Math.floor(+key.slice(0, c) / K) + "," + Math.floor(+key.slice(c + 1) / K);
       let s = m.get(ck);
       if (!s) m.set(ck, (s = new Set()));
-      for (const y of set) s.add(Math.floor(y / K));
+      for (const y of set) {
+        const cy = Math.floor(y / K);
+        s.add(cy);
+        const bk = ck + "," + cy;
+        cnt.set(bk, (cnt.get(bk) ?? 0) + 1);
+      }
+    }
+    const TH = Math.ceil((K * K) / 2);
+    let culled = 0;
+    for (const [ck, s] of m) {
+      const orig = new Set(s);
+      for (const cy of orig) {
+        if (!orig.has(cy - 1)) continue;
+        if ((cnt.get(ck + "," + cy) ?? 0) >= TH) continue;
+        s.delete(cy);
+        culled++;
+      }
+      if (s.size === 0) m.delete(ck);
     }
     colMap = m;
     extraSolid = extraSolidF
@@ -115,7 +140,7 @@ export function createParticleWater(ctx: PWaterCtx) {
     origin = { x: Math.floor(originF.x / K), y: Math.floor(originF.y / K), z: Math.floor(originF.z / K) };
     console.log(
       `[pwater] sim cell = ${K}x voxel (${(cellV * 100).toFixed(1)} cm): ` +
-      `coarsened ${colMapF.size} -> ${colMap.size} cols in ${((performance.now() - t0k) | 0)}ms`,
+      `coarsened ${colMapF.size} -> ${colMap.size} cols, ${culled} spike cells culled (th ${TH}) in ${((performance.now() - t0k) | 0)}ms`,
     );
   }
 
@@ -234,7 +259,12 @@ export function createParticleWater(ctx: PWaterCtx) {
     // island's underside). World cell coords can be NEGATIVE (scan worlds
     // centre near 0), so the floor must not clamp at 0.
     const y0 = minSolidY - 6;
-    const y1 = Math.min(maxY + 4, Math.max(origin.y + 10, maxY + 2));
+    // Ceiling at spring height, not world height: the level rule only moves
+    // water down or level, so nothing can ever rest above the spring outlet.
+    // Sizing ny to the world's tallest solid lets one spire (tower, stair)
+    // inflate every column of the box, blow the cell budget, and shrink the
+    // XZ footprint until real pools get truncated mid-meadow.
+    const y1 = Math.min(maxY + 4, origin.y + 8);
     return { x0, x1, z0, z1, y0, y1 };
   };
   let box = clampBox();

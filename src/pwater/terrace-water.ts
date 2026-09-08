@@ -62,6 +62,8 @@ const RET_FREE = 0.997, RET_BED = 0.985, REFL = 0.3;
 const MAXD = 3000, DROP_MASS = 0.02, VSCALE = 6, G_DROP = 28, LAND_MASS = 0.35;
 const STEP_HZ = 120; // terrace runs 2 steps/frame at 60fps
 const ISO = 0.5;
+// Corner-lattice vote weight of a dry (air) cell relative to a wet cell.
+const AIR_W = 1 / 3;
 
 export function createTerraceWater(opts: TerraceOpts) {
   const { THREE, renderer, nx, ny, nz, solid, off, cellV } = opts;
@@ -830,7 +832,12 @@ export function createTerraceWater(opts: TerraceOpts) {
         if (y > 0 && !solid[i - LAYER] && dflow[i] > 0.5 * m) { raw[i] = -m; run = 0; cdepth[i] = 0; vol += m; wet++; continue; }
         if (m <= 0.04) { raw[i] = 0; cdepth[i] = 0; run = 0; if (m > VIS) { vol += m; wet++; } continue; }
         vol += m; wet++;
-        raw[i] = m > 1.1 ? 1.1 : m;
+        // Presence floor: a cell that passed the film cutoff holds real water,
+        // but a shallow apron (m 0.05-0.3) fed raw < ISO gets averaged away by
+        // the corner lattice and the mesh retreats from the true shoreline.
+        // Floor the iso density near ISO so wet-vs-dry sets the surface's
+        // extent and m keeps setting its height only above the floor.
+        raw[i] = m > 1.1 ? 1.1 : m < 0.45 ? 0.45 : m;
         if (m > 0.25) run++; else run = 0;
         cdepth[i] = run;
       }
@@ -1121,7 +1128,12 @@ export function createTerraceWater(opts: TerraceOpts) {
                   if (y + 1 < ny && !solid[i + LAYER] && dens[i + LAYER] > 0.03) { s += 1; c++; }
                   continue;
                 }
-                s += dens[i]; c++;
+                // Shore-aware weighting: air votes at 1/3 the weight of wet
+                // cells so a thin shoreline strip isn't averaged below ISO by
+                // its dry neighbours (which made lone puddle cells invisible
+                // and pulled the mesh a cell back from every true shore).
+                const d = dens[i];
+                if (d > 0.02) { s += d; c++; } else c += AIR_W;
                 fs += cfoam[i]; ds += cdepth[i]; qx += flowx[i]; qz += flowz[i]; c2++;
               }
             }
