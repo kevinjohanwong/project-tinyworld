@@ -137,6 +137,16 @@ export function createDynShadowRig(
     for (const mesh of _meshes) {
       const e = mesh.matrixWorld.elements;
       for (let i = 0; i < 16; i++) note(e[i], (i === 12 || i === 13 || i === 14) ? size / (2 * half) : 2048);
+      // Skinned casters deform without touching matrixWorld (bone animation
+      // changes the silhouette while the mesh node sits still) -- fold the
+      // live bone poses in so an animating-in-place mech still repaints.
+      const bones = mesh.isSkinnedMesh && mesh.skeleton ? mesh.skeleton.bones : null;
+      if (bones) for (let b = 0; b < bones.length; b++) {
+        const be = bones[b].matrixWorld.elements;
+        note(be[12], 512); note(be[13], 512); note(be[14], 512);
+        note(be[0], 1024); note(be[1], 1024); note(be[2], 1024);
+        note(be[5], 1024); note(be[6], 1024); note(be[10], 1024);
+      }
     }
     note(_meshes.length, 1);
     return h;

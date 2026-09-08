@@ -221,12 +221,12 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  col *= cloudRamp(ndl);\n" +
           // DAWN/DUSK two-tone: at a low sun, the shaded side is filled by cool sky
           // light → lavender-cool shadows against warm-lit tops (reference look).
-          "  float lowSun = smoothstep(0.55, 0.1, normalize(uSunDir).y);\n" +
+          "  float lowSun = 1.0 - smoothstep(0.1, 0.55, normalize(uSunDir).y);\n" +
           "  col *= mix(vec3(1.0), vec3(0.82,0.84,1.02), (1.0 - ndl) * lowSun * 0.7);\n" +
           "  float ndv = clamp(dot(N, normalize(vVDir)), 0.0, 1.0);\n" +
           // Lavender rim is a DAWN/DUSK phenomenon — gate it by sun elevation so a
           // high noon sun gives ~no lavender (day cumulus read white, not sunset).
-          "  float rimGate = smoothstep(0.55, 0.08, normalize(uSunDir).y);\n" +
+          "  float rimGate = 1.0 - smoothstep(0.08, 0.55, normalize(uSunDir).y);\n" +
           "  float rim = pow(1.0 - ndv, uParams.w) * uParams.x * rimGate;\n" +
           "  col = mix(col, uRimColor, rim);\n" +
           "  col *= (1.0 - uParams.y * ndv);\n" +
@@ -266,6 +266,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           // into irregular fluff (real cloud wisps), not a clean geometric fade.
           "  float edgeN = _fbm(vWPos * (nf * 1.6) + 61.0);\n" +
           "  gl_FragColor.a = smoothstep(0.0, 0.6, ndvRaw - (1.0 - ndvRaw) * (0.5 - edgeN) * 1.35);\n" +
+          // depthWrite is on: a fully-faded silhouette fragment must not
+          // occupy the depth buffer and invisibly occlude farther pieces.
+          "  if (gl_FragColor.a < 0.01) discard;\n" +
           "  #include <dithering_fragment>",
       );
   };
@@ -391,11 +394,11 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
           "  float _fuzz = (_sfbm(vSeaW * (uNoise.x / uSpanRef * 8.0)) - 0.5) * uNoise.y;\n" +
           "  float _ndl = clamp(dot(_N, normalize(uSunDir)) * 0.5 + 0.5 + _fuzz, 0.0, 1.0);\n" +
           "  _col *= _seaRamp(_ndl);\n" +
-          "  float _lowSun = smoothstep(0.55, 0.1, normalize(uSunDir).y);\n" +
+          "  float _lowSun = 1.0 - smoothstep(0.1, 0.55, normalize(uSunDir).y);\n" +
           "  _col *= mix(vec3(1.0), vec3(0.82,0.84,1.02), (1.0 - _ndl) * _lowSun * 0.7);\n" +
           "  vec3 _VD = normalize(cameraPosition - vSeaW);\n" +
           "  float _ndv = clamp(dot(_N, _VD), 0.0, 1.0);\n" +
-          "  float _rimGate = smoothstep(0.55, 0.08, normalize(uSunDir).y);\n" +
+          "  float _rimGate = 1.0 - smoothstep(0.08, 0.55, normalize(uSunDir).y);\n" +
           "  float _rim = pow(1.0 - _ndv, uParams.w) * uParams.x * _rimGate;\n" +
           "  _col = mix(_col, uRimColor, _rim);\n" +
           "  _col *= (1.0 - uParams.y * _ndv);\n" +

@@ -77,7 +77,7 @@ export function createSkyDome(opts: {
         float g = pow(smoothstep(-0.02, 0.62, h), 0.75);
         vec3 col = mix(uHorizon, uZenith, g);
         // Below the horizon line the dome darkens (seen past island edges).
-        col *= 1.0 - 0.35 * smoothstep(0.0, -0.35, h);
+        col *= 1.0 - 0.35 * (1.0 - smoothstep(-0.35, 0.0, h));
 
         // Horizon glow banked around the sun's azimuth. azFac concentrates it
         // toward the sun bearing; bank hugs the horizon and fades with height.
@@ -113,7 +113,7 @@ export function createSkyDome(opts: {
           if (hsh > 0.80) {
             vec3 spos = vec3(hash13(cell + 11.0), hash13(cell + 23.0), hash13(cell + 37.0));
             float d = length(f - spos);
-            float star = smoothstep(0.16, 0.02, d);
+            float star = 1.0 - smoothstep(0.02, 0.16, d);
             float tw = 0.72 + 0.28 * sin(uTime * (1.5 + hsh * 3.0) + hsh * 41.0);
             float mag = 0.35 + 0.65 * smoothstep(0.80, 0.995, hsh);
             col += vec3(0.90, 0.94, 1.00) * (star * tw * mag * starVis * 1.4);

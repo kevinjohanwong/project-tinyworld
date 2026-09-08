@@ -101,6 +101,7 @@ export function createTerraceWater(opts: TerraceOpts) {
   // then emits a parcel with the momentum-weighted launch velocity. Every
   // unit of mass is ledger-tracked: accumulator (airAcc) + flying (airFly).
   const dPos = new Float32Array(MAXD * 3), dVel = new Float32Array(MAXD * 3), dMass = new Float32Array(MAXD);
+  const dSeed = new Float32Array(MAXD);
   let dCount = 0, airAcc = 0, airFly = 0;
   const dAcc = new Map<number, { m: number; px: number; pz: number }>();
   const dropImpacts: Array<{ x: number; z: number; t: number }> = [];
@@ -119,6 +120,7 @@ export function createTerraceWater(opts: TerraceOpts) {
       dVel[j3 + 1] = (Math.random() - 0.35) * 1.4;
       dVel[j3 + 2] = mvz * VSCALE * (0.85 + Math.random() * 0.3);
       dMass[dCount] = DROP_MASS;
+      dSeed[dCount] = Math.random();
       dCount++;
       a.px -= DROP_MASS * mvx; a.pz -= DROP_MASS * mvz; a.m -= DROP_MASS;
       airAcc -= DROP_MASS; airFly += DROP_MASS;
@@ -188,7 +190,7 @@ export function createTerraceWater(opts: TerraceOpts) {
           const l = --dCount, l3 = l * 3;
           dPos[j3] = dPos[l3]; dPos[j3 + 1] = dPos[l3 + 1]; dPos[j3 + 2] = dPos[l3 + 2];
           dVel[j3] = dVel[l3]; dVel[j3 + 1] = dVel[l3 + 1]; dVel[j3 + 2] = dVel[l3 + 2];
-          dMass[j] = dMass[l];
+          dMass[j] = dMass[l]; dSeed[j] = dSeed[l];
           continue;
         }
         j++;
@@ -586,7 +588,7 @@ export function createTerraceWater(opts: TerraceOpts) {
       vec2 ruv = suv + nv.xy * 0.045 * clamp(thick, 0.15, 2.5);
       ruv = clamp(ruv, vec2(0.002), vec2(0.998));
       float rz = sceneViewZ(ruv);
-      if(rz > vViewZ + 0.02) ruv = suv;
+      if(rz > vViewZ + 0.02){ ruv = suv; rz = sceneViewZ(ruv); }
       float rth = max(0.0, vViewZ - rz);
       /* thickness is in WORLD units; absorption is tuned per CELL of water */
       float rthC = rth / uCell;
@@ -662,7 +664,7 @@ export function createTerraceWater(opts: TerraceOpts) {
         if(occluded(vViewZ)) discard;
         float t=vInfo.x, fall=vInfo.y;
         float u=vUv.x;
-        float edge = smoothstep(0.0,0.24,u)*smoothstep(1.0,0.76,u);
+        float edge = smoothstep(0.0,0.24,u)*(1.0-smoothstep(0.76,1.0,u));
         float v = vUv.y*1.7 + time*9.5;
         float across = vCell.x*1.9 + vCell.z*1.3;
         float n1 = noise(vec2(across, v));
@@ -704,7 +706,7 @@ export function createTerraceWater(opts: TerraceOpts) {
       uniform vec3 color; varying float vLife; varying float vViewZ;
       void main(){ if(occluded(vViewZ)) discard;
         vec2 p=gl_PointCoord-0.5; float d=length(p);
-        float a=smoothstep(0.5,0.12,d)*(1.0-vLife)*(1.0-vLife)*0.8; if(a<0.01) discard;
+        float a=(1.0-smoothstep(0.12,0.5,d))*(1.0-vLife)*(1.0-vLife)*0.8; if(a<0.01) discard;
         gl_FragColor=vec4(color,a); }`,
     transparent: true, depthWrite: false,
   });
@@ -720,22 +722,24 @@ export function createTerraceWater(opts: TerraceOpts) {
   const aDVel = new THREE.BufferAttribute(dVel, 3).setUsage(THREE.DynamicDrawUsage);
   dGeo.setAttribute("position", aDPos);
   dGeo.setAttribute("velocity", aDVel);
+  const aDSeed = new THREE.BufferAttribute(dSeed, 1).setUsage(THREE.DynamicDrawUsage);
+  dGeo.setAttribute("seed", aDSeed);
   dGeo.setDrawRange(0, 0);
   const dropMat = new THREE.ShaderMaterial({
     uniforms: { color: { value: new THREE.Color(0xeafaff) }, pr: { value: 1 }, uCell: { value: cellV }, ...occUniforms() },
     vertexShader: `
-      attribute vec3 velocity; varying float vViewZ; varying float vSeed;
+      attribute vec3 velocity; attribute float seed; varying float vViewZ; varying float vSeed;
       uniform float pr; uniform float uCell;
       void main(){
         vec4 mv=modelViewMatrix*vec4(position,1.0); vViewZ=mv.z; gl_Position=projectionMatrix*mv;
-        vSeed=fract(sin(dot(position.xz,vec2(12.9898,78.233)))*43758.5453);
+        vSeed=seed;
         gl_PointSize = (0.09 + 0.07*vSeed) * 1500.0 * uCell * pr / max(uCell,-mv.z);
       }`,
     fragmentShader: OCC_GLSL + `
       uniform vec3 color; varying float vViewZ; varying float vSeed;
       void main(){ if(occluded(vViewZ)) discard;
         vec2 p=gl_PointCoord-0.5; float d=length(p);
-        float a=smoothstep(0.5,0.10,d)*(0.45+0.25*vSeed);
+        float a=(1.0-smoothstep(0.10,0.5,d))*(0.45+0.25*vSeed);
         if(a<0.01) discard;
         gl_FragColor=vec4(color,a); }`,
     transparent: true, depthWrite: false,
@@ -1262,6 +1266,7 @@ export function createTerraceWater(opts: TerraceOpts) {
     const simMs = performance.now() - t0;
     aDPos.needsUpdate = true;
     aDVel.needsUpdate = true;
+    aDSeed.needsUpdate = true;
     dGeo.setDrawRange(0, dCount);
 
     camCell.x = camera.position.x / cellV - off.x;

@@ -70,6 +70,17 @@ import type { KnowledgeLibrary, WorkerKnowledge } from "@/tinyworld-learning";
 // a 467k-block world with a 31k re-scan taken 11.7 m away). Within this
 // radius a fresh upload is saved as a NEW world and the nearby world is
 // flagged as a merge candidate; fusion only happens via explicit merge.
+// three r154+ renamed the fragment output chunk <output_fragment> ->
+// <opaque_fragment>; the AO / tree-shade / leaf-glow / rim patches below were
+// authored against the old name and silently matched NOTHING on the pinned
+// three@0.165 (a .replace() with no match is a no-op). FRAG_OUT_ANCHOR targets
+// the real chunk; ?fxanchor=0 restores the dead anchor for an instant
+// on-device A/B against the unpatched look.
+const FRAG_OUT_ANCHOR =
+  typeof location !== "undefined" && new URLSearchParams(location.search).get("fxanchor") === "0"
+    ? "#include <output_fragment>"
+    : "#include <opaque_fragment>";
+
 const MERGE_CANDIDATE_RADIUS_M = 25;
 
 // Per-worker perception scales with growth tier (KJ 2026-07-05: "radius and
@@ -4941,17 +4952,18 @@ export default function TinyWorld() {
             .replace(
               "#include <normal_fragment_begin>",
               `#include <normal_fragment_begin>
-               normal = normalize(mix(normal, normalize(vec3(0.0, 1.0, 0.22)), 0.36));`
+               normal = normalize(mix(normal, normalize((viewMatrix * vec4(0.0, 1.0, 0.22, 0.0)).xyz), 0.36));`
             )
             .replace(
-              "#include <output_fragment>",
+              FRAG_OUT_ANCHOR,
               `float _rimLeaf = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 2.0);
                outgoingLight += diffuseColor.rgb * _rimLeaf * 0.16;
-               outgoingLight += diffuseColor.rgb * smoothstep(0.15, 0.95, normal.y) * 0.05;
-               #include <output_fragment>`
+               vec3 _upVLeaf = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+               outgoingLight += diffuseColor.rgb * smoothstep(0.15, 0.95, dot(normalize(normal), _upVLeaf)) * 0.05;
+               ${FRAG_OUT_ANCHOR}`
             );
         };
-        leafMat.customProgramCacheKey = () => "tinyworldLeavesSoftFoliageV1";
+        leafMat.customProgramCacheKey = () => "tinyworldLeavesSoftFoliageV2";
         leafMat.userData.isShaderLeaf = true;
         leafMat.userData.leafGlowWeak = 0.30;
         leafMat.userData.leafGlowStrong = 1.8;
@@ -4980,13 +4992,13 @@ export default function TinyWorld() {
                  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.18, 0.82, 0.54), smoothstep(0.82, 1.0, _warmKnot) * 0.35);`
               )
               .replace(
-                "#include <output_fragment>",
+                FRAG_OUT_ANCHOR,
                 `float _trunkRim = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 3.0);
                  outgoingLight += diffuseColor.rgb * _trunkRim * 0.06;
-                 #include <output_fragment>`
+                 ${FRAG_OUT_ANCHOR}`
               );
           };
-          stdMat.customProgramCacheKey = () => "tinyworldTrunkBarkV1";
+          stdMat.customProgramCacheKey = () => "tinyworldTrunkBarkV2";
         }
         if (layerName === "water") {
           // Liquid-surface treatment (shared with the runtime spring water via
@@ -5279,8 +5291,8 @@ export default function TinyWorld() {
             + (_isTreeLayer ? "varying float vTreeShade;\n" : "")
             + (_isLeaves ? "varying float vSuper;\nuniform float uLeafNight;\nuniform float uLeafGlowWeak;\nuniform float uLeafGlowStrong;\n" : "")
             + shader.fragmentShader.replace(
-              "#include <output_fragment>",
-              `#include <output_fragment>
+              FRAG_OUT_ANCHOR,
+              `${FRAG_OUT_ANCHOR}
                gl_FragColor.rgb *= mix(0.45, 1.0, vAoPerVert);
                ${_isTreeLayer ? "gl_FragColor.rgb *= vTreeShade;" : ""}
                ${_isLeaves ? "gl_FragColor.rgb += vec3(0.184, 0.365, 0.227) * uLeafNight * mix(uLeafGlowWeak, uLeafGlowStrong, vSuper);" : ""}`
@@ -21326,8 +21338,13 @@ export default function TinyWorld() {
           });
         }
         _pbM("greedy");
-        if (greedyWall) greedyWall.flushDirty(6);
-        if (greedyGround) greedyGround.flushDirty(4);
+        {
+          // Deferred remeshing can outlast the edit's 2-frame shadow window --
+          // re-arm the static maps whenever a flush actually rebuilt chunks.
+          const _remeshedNow = (greedyWall ? greedyWall.flushDirty(6) : 0)
+            + (greedyGround ? greedyGround.flushDirty(4) : 0);
+          if (_remeshedNow > 0) markShadowDirty(2);
+        }
         _pbM("blockphys");
         processSupportQueue(performance.now());
         animateFallingBlocks(performance.now());
