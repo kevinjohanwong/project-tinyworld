@@ -26,3 +26,4 @@ debug-shots/
 tools/__pycache__/
 --full-page
 .route-backups/*.tsx
+node_modules

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>TinyWorld cloud fidelity lab</title>
+<style>html,body{margin:0;background:#142535;color:#fff;font:14px system-ui}canvas{display:block}#hud{position:fixed;left:18px;top:15px;padding:12px 16px;background:#102030bb;border-radius:8px;pointer-events:none}</style>
+<script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/":"/vendor/addons/"}}</script></head>
+<body><div id="hud">Loading the production cloud geometry…</div>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
+renderer.setSize(1200,720); renderer.setPixelRatio(1); renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.1;
+document.body.append(renderer.domElement);
+const scene=new THREE.Scene(), span=30;
+const camera=new THREE.PerspectiveCamera(68,1200/720,0.1,2000);
+const sun=new THREE.DirectionalLight(0xffffff,1.35), hemi=new THREE.HemisphereLight(0xa8cbe6,0x54402f,0.6);
+scene.add(sun,hemi);
+const skyU={top:{value:new THREE.Color()},hor:{value:new THREE.Color()}};
+const sky=new THREE.Mesh(new THREE.SphereGeometry(1600,24,12),new THREE.ShaderMaterial({side:THREE.BackSide,depthWrite:false,uniforms:skyU,
+ vertexShader:'varying vec3 p; void main(){p=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+ fragmentShader:'uniform vec3 top,hor; varying vec3 p; void main(){gl_FragColor=vec4(mix(hor,top,smoothstep(-.10,.55,normalize(p).y)),1.);}' }));
+scene.add(sky);
+const settings={
+ day:{dir:[.4,.9,.25],color:[1,.99,.95],intensity:1.35,top:0x1f5a86,hor:0xa8cbe6,night:0},
+ dusk:{dir:[.95,.14,.1],color:[1,.68,.42],intensity:1.2,top:0x243a6e,hor:0xf0a060,night:0},
+ night:{dir:[.35,.6,.3],color:[.62,.74,1],intensity:.55,top:0x0a1730,hor:0x1c3357,night:1},
+};
+let ring, mode='new', time=0, phase='day', layer='all', yaw=0;
+const errors=[];
+window.addEventListener('error',e=>errors.push(e.message));
+renderer.debug.onShaderError=(gl,program,vs,fs)=>{errors.push(gl.getProgramInfoLog(program),gl.getShaderInfoLog(vs),gl.getShaderInfoLog(fs));console.error(errors);};
+function aim(view='all') {
+ layer=view;
+ camera.position.set(1.5,3.6,0);
+ const pitch=view==='sea'?-32:view==='sky'?42:2;
+ camera.lookAt(Math.cos(yaw)*150,pitch,Math.sin(yaw)*150);
+}
+function render() {
+ const t=settings[phase]; skyU.top.value.setHex(t.top);skyU.hor.value.setHex(t.hor);
+ sun.position.fromArray(t.dir).multiplyScalar(100);sun.color.fromArray(t.color);sun.intensity=t.intensity;
+ ring.update({elapsedSeconds:time,keyDirection:new THREE.Vector3(...t.dir).normalize(),keyColor:new THREE.Color(...t.color),keyIntensity:t.intensity,nightFactor:t.night});
+ for(const c of ring.mesh.children) if(c.name==='voxelCloudSea'||c.geometry?.type==='RingGeometry') c.visible=layer!=='sky';
+ renderer.render(scene,camera);
+ document.getElementById('hud').textContent=`${mode==='new'?'UPDATED':'BASELINE'} · ${phase} · ${layer} · ${time.toFixed(2)}s · ${renderer.info.render.calls} draws · ${renderer.info.render.triangles.toLocaleString()} triangles`;
+}
+async function load(next='new') {
+ if(ring) ring.dispose();
+ mode=next;time=0;
+ const mod=await import(next==='baseline'?'/baseline.js':'/module.js');
+ ring=mod.createVoxelCloudRing({THREE,scene,camera,span,gltfLoader:new GLTFLoader(),enabled:true});
+ for(let i=0;i<200&&!ring.mesh.children.length;i++) await new Promise(r=>setTimeout(r,50));
+ if(!ring.mesh.children.length)throw Error('Cloud asset did not load');
+ aim(layer);render();
+}
+window.lab={
+ load,
+ set({tod=phase,view=layer,angle=yaw}={}){phase=tod;yaw=angle;aim(view);render();},
+ advance(seconds=1,fps=60){for(let i=0;i<Math.round(seconds*fps);i++){time+=1/fps;ring.update({elapsedSeconds:time});}render();},
+ jump(seconds){time+=seconds;render();},
+ report(){return {mode,time,phase,layer,errors,angle:ring.mesh.rotation.y,state:ring.state,draws:renderer.info.render.calls,triangles:renderer.info.render.triangles,sea:ring.mesh.getObjectByName('voxelCloudSea')?.userData,programs:renderer.info.programs.map(p=>({name:p.name,runnable:p.diagnostics?.runnable}))};},
+};
+await load();window.ready=true;
+</script></body></html>

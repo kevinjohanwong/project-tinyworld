@@ -32,7 +32,7 @@ import { createParticleWater } from "@/pwater/tinyworld-pwater";
 import { installWaterSurface } from "@/water-surface-shader";
 import { createRayGI, RAYGI_COMPOSITE_SHADER, RAYGI_BOUNCE_STRENGTH } from "@/tw-raygi";
 import { createVolumetricCloudRing } from "@/tw-volumetric-clouds";
-import { createVoxelCloudRing } from "@/tw-voxel-cloud";
+import { createVoxelCloudRing } from "./tw-voxel-cloud";
 import { patchDynShadowChunk, createDynShadowRig } from "@/tw-shadow-split";
 import { createSkyDome } from "@/tw-sky";
 import type { DynShadowRig } from "@/tw-shadow-split";
@@ -3822,7 +3822,7 @@ export default function TinyWorld() {
     const _cloudTopParam = Number(__diagParams.get("cloudtop"));
     const _cloudMobile = isMobileRef.current;
     const _cloudCountParam = Number(__diagParams.get("cloudcount"));
-    const _cloudTowerFracParam = Number(__diagParams.get("towerfrac"));
+    const _cloudTowerFracParam = __diagParams.has("towerfrac") ? Number(__diagParams.get("towerfrac")) : NaN;
     const _cloudTowerLevelsParam = Number(__diagParams.get("towerlevels"));
     // NB: Number(null) === 0, so an ABSENT param must become NaN — otherwise the
     // finite-guards below accept the accidental 0 and force seaCount:0 (sea off)

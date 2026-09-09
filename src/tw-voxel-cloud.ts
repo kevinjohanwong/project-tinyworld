@@ -19,6 +19,9 @@
 // Public API mirrors createVolumetricCloudRing so it drops into the same call
 // site: { mesh, state, update(), configure(), dispose() }.
 
+import { createCloudClock, patchCloudShader } from "./tw-cloud-shading";
+import { createCloudSeaData } from "./tw-cloud-sea";
+
 export interface VoxelCloudOptions {
   THREE: any;
   scene: any;
@@ -122,8 +125,8 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     fuzzTiling: 0.55, // fuzzy noise scale
     backlight: 0.6, // "play to light": sun-through glow strength
     backSharp: 3.5, // backlight falloff sharpness
-    driftSpeed: 0.0035, // radians/sec of ring orbit (much slower drift)
-    bob: 0.6, // vertical bob amplitude (world units)
+    driftSpeed: 0.00012, // radians/sec of ring orbit (much slower drift)
+    bob: Math.max(1e-3, span) * 0.003, // vertical bob amplitude (world units)
   };
 
   const group = new THREE.Group();
@@ -157,121 +160,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     color: 0xffffff, roughness: 1, metalness: 0, vertexColors: true,
     transparent: true, depthWrite: true, // depthWrite keeps the opaque core sorted; only silhouette edges blend
   });
-  material.customProgramCacheKey = () => "tinyworldVoxelCloudVEinstBobGPU";
-  material.onBeforeCompile = (shader: any) => {
-    Object.assign(shader.uniforms, {
-      uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uBack, uSpanRef, uHaze, uCloudMotion, uNight,
-    });
-    shader.vertexShader =
-      "attribute float aY01;\nattribute vec2 aCloudBob;\nuniform vec2 uCloudMotion;\nvarying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\nvarying vec3 vWPos;\n" +
-      shader.vertexShader.replace(
-        "#include <begin_vertex>",
-        "#include <begin_vertex>\n#ifdef USE_INSTANCING\n  transformed.y += sin(uCloudMotion.x * aCloudBob.y + aCloudBob.x) * uCloudMotion.y;\n#endif",
-      ).replace(
-        "#include <project_vertex>",
-        "#include <project_vertex>\n" +
-          // INSTANCING: the per-piece transform now lives in instanceMatrix, so
-          // fold it in before modelMatrix — the product equals the old per-mesh
-          // modelMatrix exactly (bit-identical world pos/normal math).
-          "  vec4 _lp4 = vec4(transformed, 1.0);\n" +
-          "  vec3 _ln = objectNormal;\n" +
-          "#ifdef USE_INSTANCING\n" +
-          "  _lp4 = instanceMatrix * _lp4;\n" +
-          "  _ln = mat3(instanceMatrix) * _ln;\n" +
-          "#endif\n" +
-          "  vec3 _wp = (modelMatrix * _lp4).xyz;\n" +
-          "  vWN = normalize(mat3(modelMatrix) * _ln);\n" +
-          "  vVDir = normalize(cameraPosition - _wp);\n" +
-          "  vWPos = _wp;\n" +
-          "  vY01 = aY01;",
-      );
-    shader.fragmentShader =
-      "uniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec3 uRimColor;\nuniform vec4 uParams;\nuniform vec2 uGrad;\nuniform vec2 uNoise;\nuniform vec2 uBack;\nuniform float uSpanRef;\nuniform vec2 uHaze;\nuniform float uNight;\n" +
-      "varying float vY01;\nvarying vec3 vWN;\nvarying vec3 vVDir;\nvarying vec3 vWPos;\n" +
-      "vec3 cloudRamp(float t){\n" +
-      "  vec3 c0 = vec3(0.56,0.61,0.69); vec3 c1 = vec3(0.82,0.84,0.88); vec3 c2 = vec3(1.0,1.0,0.99);\n" +
-      "  t = clamp(t,0.0,1.0);\n" +
-      "  return t < 0.5 ? mix(c0, c1, smoothstep(0.05,0.5,t)) : mix(c1, c2, smoothstep(0.5,0.9,t));\n" +
-      "}\n" +
-      "float _h(vec3 p){ p = fract(p*0.3183099+0.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }\n" +
-      "float _vn(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);\n" +
-      "  return mix(mix(mix(_h(i+vec3(0,0,0)),_h(i+vec3(1,0,0)),f.x),mix(_h(i+vec3(0,1,0)),_h(i+vec3(1,1,0)),f.x),f.y),\n" +
-      "             mix(mix(_h(i+vec3(0,0,1)),_h(i+vec3(1,0,1)),f.x),mix(_h(i+vec3(0,1,1)),_h(i+vec3(1,1,1)),f.x),f.y),f.z); }\n" +
-      "float _fbm(vec3 x){ return 0.6*_vn(x)+0.3*_vn(x*2.03+11.1)+0.15*_vn(x*4.01+23.7); }\n" +
-      shader.fragmentShader.replace(
-        "#include <dithering_fragment>",
-        "  vec3 N = normalize(vWN);\n" +
-          // DE-BLOCK: perturb the flat cube-face normal with 3D noise so lighting
-          // varies smoothly ACROSS voxel faces/edges instead of a hard per-face
-          // plane — the single biggest 'reads soft not Minecraft' lever.
-          "  float nf = uNoise.x / uSpanRef * 6.0;\n" +
-          "  vec3 nz = vec3(_fbm(vWPos*nf+3.1), _fbm(vWPos*nf+9.7), _fbm(vWPos*nf+21.3)) - 0.5;\n" +
-          // finer octave: break the FLAT cube faces themselves into micro-variation
-          "  vec3 nz2 = vec3(_fbm(vWPos*nf*3.3+51.0), _fbm(vWPos*nf*3.3+63.0), _fbm(vWPos*nf*3.3+77.0)) - 0.5;\n" +
-          "  N = normalize(N + nz * 1.1 + nz2 * 0.55);\n" +
-          "  float ao = mix(1.0, clamp(vColor.r,0.0,1.0), uParams.z);\n" +
-          "  float g = clamp((vY01 + uGrad.y) * uGrad.x, 0.0, 1.0);\n" +
-          // large-scale billow: soft light/dark lobes so the mass has volume, not flat tone
-          "  float billow = _fbm(vWPos * (nf * 0.35) + 41.0);\n" +
-          "  vec3 col = mix(uSecColor, uBaseColor, clamp(g + (billow-0.5)*0.6, 0.0, 1.0));\n" +
-          // FUZZY: 3D value-noise (fbm) over world pos perturbs the shading value so
-          // the flat voxel faces get soft cloud-like variation instead of a hard tone.
-          "  float fuzz = (_fbm(vWPos * (uNoise.x / uSpanRef * 8.0)) - 0.5) * uNoise.y;\n" +
-          "  float ndl = clamp(dot(N, normalize(uSunDir)) * 0.5 + 0.5 + fuzz, 0.0, 1.0);\n" +
-          "  col *= cloudRamp(ndl);\n" +
-          // DAWN/DUSK two-tone: at a low sun, the shaded side is filled by cool sky
-          // light → lavender-cool shadows against warm-lit tops (reference look).
-          "  float lowSun = 1.0 - smoothstep(0.1, 0.55, normalize(uSunDir).y);\n" +
-          "  col *= mix(vec3(1.0), vec3(0.82,0.84,1.02), (1.0 - ndl) * lowSun * 0.7);\n" +
-          "  float ndv = clamp(dot(N, normalize(vVDir)), 0.0, 1.0);\n" +
-          // Lavender rim is a DAWN/DUSK phenomenon — gate it by sun elevation so a
-          // high noon sun gives ~no lavender (day cumulus read white, not sunset).
-          "  float rimGate = 1.0 - smoothstep(0.08, 0.55, normalize(uSunDir).y);\n" +
-          "  float rim = pow(1.0 - ndv, uParams.w) * uParams.x * rimGate;\n" +
-          "  col = mix(col, uRimColor, rim);\n" +
-          "  col *= (1.0 - uParams.y * ndv);\n" +
-          "  col *= ao;\n" +
-          "  vec3 skyFill = vec3(0.58,0.68,0.88);\n" +
-          "  float keyShare = ndl * (1.0 - 0.48 * lowSun);\n" +
-          "  col *= mix(mix(skyFill, uLight, 0.28), uLight, keyShare);\n" +
-          // PLAY TO LIGHT: sun BEHIND the cloud (toward viewer) → transmitted glow on
-          // the edges, using the real sun colour. Thin/edge parts (low ndv) glow most.
-          "  float back = pow(clamp(dot(normalize(uSunDir), -normalize(vVDir)), 0.0, 1.0), uBack.y);\n" +
-          "  back *= uBack.x * (0.35 + 0.65 * (1.0 - ndv));\n" +
-          "  col += uLight * back;\n" +
-          // TONAL VARIATION (not flat white): a very low-frequency field shifts
-          // tone mass-to-mass — some clouds brighter, some cooler blue-grey —
-          // like a real sky's varied cloud depths. Texture, not invented light.
-          "  float tone = smoothstep(0.42, 0.60, _fbm(vWPos * (0.4 / uSpanRef) + 7.7));\n" +
-          "  col *= mix(0.70, 1.10, tone);\n" +
-          "  col = mix(col, col * vec3(0.80, 0.88, 1.08), (1.0 - smoothstep(0.3, 0.7, tone)) * 0.6);\n" +
-          // AERIAL HAZE: with the sea reaching far out, distant clouds dissolve
-          // toward a sun-tinted horizon (real atmospherics — reads as scale, and
-          // kills the hard far edge). Colour-only; alpha keeps the solid horizon.
-          "  float hd = smoothstep(uHaze.x, uHaze.y, length(vWPos.xz));\n" +
-          "  vec3 hazeCol = mix(vec3(0.80, 0.87, 0.96), uLight, 0.4);\n" +
-          "  col = mix(col, hazeCol, hd * 0.85);\n" +
-          "  float cloudLuma = dot(col, vec3(0.2126,0.7152,0.0722));\n" +
-          "  vec3 moonCloud = mix(vec3(cloudLuma), col, 0.18) * vec3(0.085,0.14,0.27);\n" +
-          "  float moonFace = smoothstep(0.55, 0.92, ndl);\n" +
-          "  float moonRim = pow(1.0 - ndv, 2.4) * smoothstep(0.30, 0.82, ndl);\n" +
-          "  moonCloud += vec3(0.16,0.24,0.48) * (moonFace * 0.22 + moonRim * 0.18);\n" +
-          "  col = mix(col, moonCloud, uNight * 0.97);\n" +
-          "  gl_FragColor.rgb = col;\n" +
-          // SOFT SILHOUETTE: fade alpha at grazing angles (the outline) so the hard
-          // voxel edge feathers into the sky instead of a crisp Minecraft cube edge.
-          // uGrad.x reused? no — use a fixed feather; 'ndvRaw' is the un-perturbed view dot.
-          "  float ndvRaw = clamp(dot(normalize(vWN), normalize(vVDir)), 0.0, 1.0);\n" +
-          // NOISE-ERODED edge: subtract fbm near the silhouette so the outline breaks
-          // into irregular fluff (real cloud wisps), not a clean geometric fade.
-          "  float edgeN = _fbm(vWPos * (nf * 1.6) + 61.0);\n" +
-          "  gl_FragColor.a = smoothstep(0.0, 0.6, ndvRaw - (1.0 - ndvRaw) * (0.5 - edgeN) * 1.35);\n" +
-          // depthWrite is on: a fully-faded silhouette fragment must not
-          // occupy the depth buffer and invisibly occlude farther pieces.
-          "  if (gl_FragColor.a < 0.01) discard;\n" +
-          "  #include <dithering_fragment>",
-      );
-  };
+  material.customProgramCacheKey = () => "tinyworldCloudSharedV1Instanced";
+  const cloudUniforms = { uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uBack, uSpanRef, uHaze, uCloudMotion, uNight };
+  material.onBeforeCompile = (shader: any) => patchCloudShader(shader, cloudUniforms, true);
 
   const pieces: any[] = []; // template meshes from the GLB (geometry + aY01 baked)
   const pieceRadius: number[] = []; // conservative unit bounding radius per piece
@@ -289,141 +180,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   let bucketMeshes: any[] = []; // one InstancedMesh per piece geometry (or null)
   let ready = false;
   const seaDiscs: any[] = [];
-  // Sea-disc material — NOT flat white (KJ Aug 4): procedural cloud-ocean
-  // shading modulates the diffuse under the scene's real lights — bright
-  // rounded lobe tops against blue-grey crevices, two fbm scales, drifting
-  // slowly via uSeaTime. Texture only (no invented light — the sun/hemi still
-  // do all the lighting through the Lambert path).
-  const uSeaTime = { value: 0 };
-  const uSeaSpan = { value: Math.max(1e-3, span) };
-  // KJ Sep 5 (floating-palace reference, round 2): the sea floor is no longer a
-  // FLAT plane with painted-on lumps — the disc is now a DISPLACED HEIGHTFIELD.
-  // The vertex shader lifts vertices into rounded cumulus domes using the SAME
-  // fbm field the fragment colour samples (so lit lobes sit exactly on the
-  // geometric mounds), and builds real normals by finite differences — the sun
-  // then models bright dome tops against shadowed crevices for free, and the
-  // horizon silhouette turns bumpy instead of ruler-flat.
-  const uSeaAmp = { value: Math.max(1e-3, span) * 0.5 }; // mound height (world units)
-  const uSeaInner = { value: Math.max(1e-3, span) * 1.35 }; // amplitude taper start (set at scatter)
-  // KJ Sep 5 round 3: "voxelfy these cloud hills" — the mounds quantize into
-  // discrete cube cells (flat tops, vertical walls) so the sea speaks the same
-  // blocky language as the voxel cloud pieces above it.
-  const uSeaCell = { value: Math.max(1e-3, span) * 0.09 }; // voxel cell size (world units)
-  // Shared noise chunk (vertex + fragment must sample the identical field).
-  const SEA_NOISE_GLSL =
-    "float _sh(vec3 p){ p = fract(p*0.3183099+0.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }\n" +
-    "float _svn(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);\n" +
-    "  return mix(mix(mix(_sh(i+vec3(0,0,0)),_sh(i+vec3(1,0,0)),f.x),mix(_sh(i+vec3(0,1,0)),_sh(i+vec3(1,1,0)),f.x),f.y),\n" +
-    "             mix(mix(_sh(i+vec3(0,0,1)),_sh(i+vec3(1,0,1)),f.x),mix(_sh(i+vec3(0,1,1)),_sh(i+vec3(1,1,1)),f.x),f.y),f.z); }\n" +
-    "float _sfbm(vec3 x){ return 0.6*_svn(x)+0.3*_svn(x*2.03+11.1)+0.15*_svn(x*4.01+23.7); }\n" +
-    // Mound field: two dome scales shaped by smoothstep so tops read as round
-    // cauliflower lobes separated by real crevices (not soft airbrushed swell).
-    "float _seaMound(vec2 wxz, float t, float spanRef){\n" +
-    "  float k1 = 1.1 / spanRef;\n" +
-    "  float lump = _sfbm(vec3(wxz.x * k1, t * 0.014, wxz.y * k1));\n" +
-    "  float dome = smoothstep(0.34, 0.76, lump);\n" +
-    "  float k2 = 2.7 / spanRef;\n" +
-    "  float lump2 = _sfbm(vec3(wxz.x * k2 + 17.0, t * 0.02, wxz.y * k2));\n" +
-    "  float dome2 = smoothstep(0.36, 0.80, lump2);\n" +
-    "  return dome * 0.72 + dome2 * 0.28;\n" +
-    "}\n";
-  // flatShading: the base Lambert lighting derives per-face normals from screen
-  // derivatives, so quantized terraces shade as crisp cube faces for free.
-  const seaDiscMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-  seaDiscMat.customProgramCacheKey = () => "tinyworldSeaDiscV6VoxelCloudMatch";
-  seaDiscMat.onBeforeCompile = (shader: any) => {
-    Object.assign(shader.uniforms, { uSeaTime, uSeaSpan, uSeaAmp, uSeaInner, uSeaCell, uNight, uSunDir, uLight, uBaseColor, uSecColor, uRimColor, uParams, uGrad, uNoise, uSpanRef, uHaze, uBack });
-    shader.vertexShader =
-      "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uSeaAmp;\nuniform float uSeaInner;\nuniform float uSeaCell;\nvarying vec3 vSeaW;\nvarying float vSeaH01;\n" +
-      SEA_NOISE_GLSL +
-      // Radial amplitude taper: flat under the island (nothing pokes up at the
-      // rim), full mounds from ~1.6× the clearance radius outward.
-      "float _seaAmpAt(vec2 wxz){ return uSeaAmp * smoothstep(uSeaInner * 0.85, uSeaInner * 1.6, length(wxz)); }\n" +
-      // Voxelized mound height: the field samples at the CELL CENTER (every
-      // vertex in a cell shares one height) and the height snaps to whole cell
-      // multiples — flat tops, vertical walls, stepped silhouette.
-      "float _seaHQ(vec2 wxz){\n" +
-      "  vec2 q = (floor(wxz / uSeaCell) + 0.5) * uSeaCell;\n" +
-      "  float h = _seaMound(q, uSeaTime, uSeaSpan) * _seaAmpAt(q);\n" +
-      "  return floor(h / uSeaCell + 0.5) * uSeaCell;\n" +
-      "}\n" +
-      shader.vertexShader
-        .replace(
-          "#include <begin_vertex>",
-          "#include <begin_vertex>\n" +
-            // Local plane coords (x, y) map to world (x, -z) after the mesh's
-            // rotation.x = -PI/2; local +z is world up. Displace by the
-            // quantized cell height; flatShading derives the face normals.
-            "  vec3 _sw0 = (modelMatrix * vec4(position, 1.0)).xyz;\n" +
-            "  float _shq = _seaHQ(_sw0.xz);\n" +
-            "  transformed.z += _shq;\n" +
-            "  vSeaW = (modelMatrix * vec4(transformed, 1.0)).xyz;\n" +
-            // height within the mound range → the clouds' vY01 gradient input
-            "  vSeaH01 = clamp(_shq / max(uSeaAmp, 1e-4), 0.0, 1.0);",
-        );
-    shader.fragmentShader =
-      "uniform float uSeaTime;\nuniform float uSeaSpan;\nuniform float uSeaCell;\nuniform float uNight;\nuniform vec3 uSunDir;\nuniform vec3 uLight;\nuniform vec3 uBaseColor;\nuniform vec3 uSecColor;\nuniform vec3 uRimColor;\nuniform vec4 uParams;\nuniform vec2 uGrad;\nuniform vec2 uNoise;\nuniform float uSpanRef;\nuniform vec2 uHaze;\nuniform vec2 uBack;\nvarying vec3 vSeaW;\nvarying float vSeaH01;\n" +
-      SEA_NOISE_GLSL +
-      // SAME toon ramp as the voxel swell pieces — the sea must speak the same
-      // tonal language as the clouds above it (KJ: "floor should match").
-      "vec3 _seaRamp(float t){\n" +
-      "  vec3 c0 = vec3(0.56,0.61,0.69); vec3 c1 = vec3(0.82,0.84,0.88); vec3 c2 = vec3(1.0,1.0,0.99);\n" +
-      "  t = clamp(t,0.0,1.0);\n" +
-      "  return t < 0.5 ? mix(c0, c1, smoothstep(0.05,0.5,t)) : mix(c1, c2, smoothstep(0.5,0.9,t));\n" +
-      "}\n" +
-      // KJ Sep 5 round 3, step 2: the sea's colour is a VERBATIM PORT of the
-      // voxel-cloud fragment path (same constants, same order, same post-
-      // tonemap direct write). The old sea-only grading (separate night
-      // multipliers, lowSun 0.55 tint, Lambert double-lighting, vertex-colour
-      // fade) is what made the floor indigo/red while the clouds went pink —
-      // the two materials could never match across two different pipelines.
-      shader.fragmentShader.replace(
-        "#include <dithering_fragment>",
-        // flat per-face normal from screen derivatives — walls shade as cube
-        // sides, tops as cube tops; then the clouds' de-block noise perturbation
-        // so faces get the same soft variation as the voxel cloud pieces.
-        "  vec3 _N = normalize(cross(dFdx(vSeaW), dFdy(vSeaW)));\n" +
-          "  if (_N.y < 0.0) _N = -_N;\n" +
-          "  float _nf = uNoise.x / uSpanRef * 6.0;\n" +
-          "  vec3 _nz = vec3(_sfbm(vSeaW*_nf+3.1), _sfbm(vSeaW*_nf+9.7), _sfbm(vSeaW*_nf+21.3)) - 0.5;\n" +
-          "  vec3 _nz2 = vec3(_sfbm(vSeaW*_nf*3.3+51.0), _sfbm(vSeaW*_nf*3.3+63.0), _sfbm(vSeaW*_nf*3.3+77.0)) - 0.5;\n" +
-          "  _N = normalize(_N + _nz * 1.1 + _nz2 * 0.55);\n" +
-          "  float _g = clamp((vSeaH01 + uGrad.y) * uGrad.x, 0.0, 1.0);\n" +
-          "  float _billow = _sfbm(vSeaW * (_nf * 0.35) + 41.0);\n" +
-          "  vec3 _col = mix(uSecColor, uBaseColor, clamp(_g + (_billow-0.5)*0.6, 0.0, 1.0));\n" +
-          "  float _fuzz = (_sfbm(vSeaW * (uNoise.x / uSpanRef * 8.0)) - 0.5) * uNoise.y;\n" +
-          "  float _ndl = clamp(dot(_N, normalize(uSunDir)) * 0.5 + 0.5 + _fuzz, 0.0, 1.0);\n" +
-          "  _col *= _seaRamp(_ndl);\n" +
-          "  float _lowSun = 1.0 - smoothstep(0.1, 0.55, normalize(uSunDir).y);\n" +
-          "  _col *= mix(vec3(1.0), vec3(0.82,0.84,1.02), (1.0 - _ndl) * _lowSun * 0.7);\n" +
-          "  vec3 _VD = normalize(cameraPosition - vSeaW);\n" +
-          "  float _ndv = clamp(dot(_N, _VD), 0.0, 1.0);\n" +
-          "  float _rimGate = 1.0 - smoothstep(0.08, 0.55, normalize(uSunDir).y);\n" +
-          "  float _rim = pow(1.0 - _ndv, uParams.w) * uParams.x * _rimGate;\n" +
-          "  _col = mix(_col, uRimColor, _rim);\n" +
-          "  _col *= (1.0 - uParams.y * _ndv);\n" +
-          "  vec3 _skyFill = vec3(0.58,0.68,0.88);\n" +
-          "  float _keyShare = _ndl * (1.0 - 0.48 * _lowSun);\n" +
-          "  _col *= mix(mix(_skyFill, uLight, 0.28), uLight, _keyShare);\n" +
-          "  float _back = pow(clamp(dot(normalize(uSunDir), -_VD), 0.0, 1.0), uBack.y);\n" +
-          "  _back *= uBack.x * (0.35 + 0.65 * (1.0 - _ndv));\n" +
-          "  _col += uLight * _back;\n" +
-          "  float _tone = smoothstep(0.42, 0.60, _sfbm(vSeaW * (0.4 / uSpanRef) + 7.7));\n" +
-          "  _col *= mix(0.70, 1.10, _tone);\n" +
-          "  _col = mix(_col, _col * vec3(0.80, 0.88, 1.08), (1.0 - smoothstep(0.3, 0.7, _tone)) * 0.6);\n" +
-          "  float _hd = smoothstep(uHaze.x, uHaze.y, length(vSeaW.xz));\n" +
-          "  vec3 _hazeCol = mix(vec3(0.80, 0.87, 0.96), uLight, 0.4);\n" +
-          "  _col = mix(_col, _hazeCol, _hd * 0.85);\n" +
-          "  float _luma = dot(_col, vec3(0.2126,0.7152,0.0722));\n" +
-          "  vec3 _moon = mix(vec3(_luma), _col, 0.18) * vec3(0.085,0.14,0.27);\n" +
-          "  float _moonFace = smoothstep(0.55, 0.92, _ndl);\n" +
-          "  float _moonRim = pow(1.0 - _ndv, 2.4) * smoothstep(0.30, 0.82, _ndl);\n" +
-          "  _moon += vec3(0.16,0.24,0.48) * (_moonFace * 0.22 + _moonRim * 0.18);\n" +
-          "  _col = mix(_col, _moon, uNight * 0.97);\n" +
-          "  gl_FragColor.rgb = _col;\n" +
-          "#include <dithering_fragment>",
-      );
-  };
+  const seaDiscMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  seaDiscMat.customProgramCacheKey = () => "tinyworldCloudSharedV1Sea";
+  seaDiscMat.onBeforeCompile = (shader: any) => patchCloudShader(shader, cloudUniforms, false);
 
   // Record one rendered sub-piece as an instance (replaces piece.clone(true)).
   // Same transform semantics as the old scene-graph clones: group-local
@@ -625,7 +384,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
         record(s.pieceIdx, cloudIdx, s.px + ox, s.py + oy, s.pz + oz, s.rotY, s.sx, s.sy, s.sz);
       cloudsMeta.push({
         bobPhase: rnd() * Math.PI * 2,
-        bobRate: 0.04 + rnd() * 0.07, // much slower vertical bob
+        bobRate: 0.008 + rnd() * 0.006, // much slower vertical bob
       });
     }
 
@@ -638,38 +397,28 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     // without thousands of meshes). Inner disc solid; outer ring fades its
     // vertex colour toward the horizon haze so the far edge dissolves. Lit by
     // the scene's real sun/hemi (plain Lambert — doctrine-clean).
-    for (const d of seaDiscs) group.remove(d);
+    for (const d of seaDiscs) {
+      group.remove(d);
+      d.geometry.dispose();
+    }
     seaDiscs.length = 0;
     if (state.seaCount > 0) {
-      // ONE dense ring (not flat circle + coarse ring): ~240×96 segments give
-      // the vertex shader enough resolution to displace rounded dome mounds in
-      // the near/mid field. Vertex colour keeps the old horizon fade.
-      uSeaInner.value = seaInnerR;
-      uSeaAmp.value = span * 0.5;
-      uSeaCell.value = span * 0.09;
-      const midR = seaOuterR * 0.55;
-      // Denser than the smooth heightfield needed: voxel steps only read as
-      // vertical walls when quads are smaller than a cell in the near/mid field.
-      const ringGeo = new THREE.RingGeometry(seaInnerR * 0.02, seaOuterR, 360, 144);
-      const rPos = ringGeo.getAttribute("position");
-      const ringCols: number[] = [];
-      for (let i = 0; i < rPos.count; i++) {
-        const rr = Math.hypot(rPos.getX(i), rPos.getY(i));
-        const f = Math.min(1, Math.max(0, (rr - midR) / Math.max(1e-3, seaOuterR - midR)));
-        const e = f * f;
-        ringCols.push(0.92 + (0.70 - 0.92) * e, 0.94 + (0.81 - 0.94) * e, 0.98 + (0.93 - 0.98) * e);
-      }
-      ringGeo.setAttribute("color", new THREE.Float32BufferAttribute(ringCols, 3));
-      const ring = new THREE.Mesh(ringGeo, seaDiscMat);
-      ring.rotation.x = -Math.PI / 2;
-      ring.position.y = seaY - span * 0.05;
-      ring.castShadow = false;
-      ring.receiveShadow = false;
-      // displaced mounds rise ~0.5 span above the base plane — grow the cull
-      // bounds so the heightfield never vanishes at glancing camera angles
-      ring.frustumCulled = false;
-      group.add(ring);
-      seaDiscs.push(ring);
+      const data = createCloudSeaData(span, seaInnerR, seaOuterR);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
+      geo.setAttribute("normal", new THREE.BufferAttribute(data.normals, 3));
+      geo.setAttribute("color", new THREE.BufferAttribute(data.colors, 3));
+      geo.setAttribute("aY01", new THREE.BufferAttribute(data.y01, 1));
+      geo.setIndex(new THREE.BufferAttribute(data.indices, 1));
+      geo.computeBoundingSphere();
+      const sea = new THREE.Mesh(geo, seaDiscMat);
+      sea.name = "voxelCloudSea";
+      sea.position.y = seaY - span * 0.05;
+      sea.castShadow = false;
+      sea.receiveShadow = false;
+      sea.userData.cloudSea = { cells: data.cells, cell: data.cell, triangles: data.indices.length / 3 };
+      group.add(sea);
+      seaDiscs.push(sea);
     }
     for (let i = 0; i < state.seaCount; i++) {
       const angle = rnd() * Math.PI * 2;
@@ -691,7 +440,7 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       );
       cloudsMeta.push({
         bobPhase: rnd() * Math.PI * 2,
-        bobRate: 0.02 + rnd() * 0.04, // the sea heaves even slower than the sky
+        bobRate: 0.005 + rnd() * 0.004, // the sea heaves even slower than the sky
       });
     }
     // aerial-haze band tracks the sea's reach (far clouds dissolve to horizon)
@@ -746,8 +495,10 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
   const _lastCullQuat = new THREE.Quaternion();
   let _lastCullAngle = Infinity;
   let _lastCullMs = -Infinity;
+  const clock = createCloudClock();
 
   const update = (input: VoxelCloudUpdate) => {
+    const motion = clock.step(input.elapsedSeconds, state.driftSpeed, state.enabled && ready);
     if (!state.enabled || !ready) return;
     // Drive the toon shading from the world's REAL sun/moon (doctrine).
     if (input.keyDirection) uSunDir.value.copy(input.keyDirection).normalize();
@@ -758,10 +509,9 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
         uLight.value.multiplyScalar(Math.min(1.5, Math.max(0.06, input.keyIntensity)));
     }
     uNight.value = Math.max(0, Math.min(1, input.nightFactor ?? 0));
-    const t = input.elapsedSeconds;
-    uSeaTime.value = t;
+    const t = motion.seconds;
     uCloudMotion.value.set(t, state.bob);
-    group.rotation.y = t * state.driftSpeed;
+    group.rotation.y = motion.angle;
     group.updateMatrixWorld(true);
     const angle = group.rotation.y;
     const nowMs = t * 1000;
@@ -843,7 +593,10 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
       (next.seaFlat !== undefined && next.seaFlat !== state.seaFlat);
     Object.assign(state, next);
     applyState();
-    if (needsScatter) scatter();
+    if (needsScatter) {
+      scatter();
+      _lastCullMs = -Infinity;
+    }
     return { ...state };
   };
 
@@ -858,6 +611,8 @@ export function createVoxelCloudRing(opts: VoxelCloudOptions) {
     isVoxel: true,
     dispose() {
       for (const bm of bucketMeshes) if (bm) bm.dispose();
+      for (const sea of seaDiscs) sea.geometry.dispose();
+      seaDiscMat.dispose();
       scene.remove(group);
       material.dispose();
     },
