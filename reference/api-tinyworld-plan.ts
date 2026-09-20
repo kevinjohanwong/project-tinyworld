@@ -51,7 +51,7 @@ const PLAN_SCHEMA = {
 };
 
 export default async function handler(c: Context) {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.Gemini_API_key_v2;
+  const apiKey = process.env.Gemini_API_key_v3 || process.env.Gemini_API_key_v2 || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return c.json({ ok: false, error: "GEMINI_API_KEY not set" }, 500);
   }
