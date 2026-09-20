@@ -35,6 +35,7 @@ import { createVolumetricCloudRing } from "@/tw-volumetric-clouds";
 import { createVoxelCloudRing } from "./tw-voxel-cloud";
 import { patchDynShadowChunk, createDynShadowRig } from "@/tw-shadow-split";
 import { createSkyDome } from "@/tw-sky";
+import { initTunePanel } from "./tw-tune-panel";
 import type { DynShadowRig } from "@/tw-shadow-split";
 import type { GreedyWall } from "@/wall-greedy";
 import { WARSHIP_DIMS, warshipBlocks } from "@/tw-warship-vox";
@@ -3244,6 +3245,34 @@ export default function TinyWorld() {
       (_hourNow < 6 ? "night" : _hourNow < 9 ? "dawn" : _hourNow < 17 ? "day" : _hourNow < 20 ? "dusk" : "night");
     const tp = paletteAt(_hourNow);
 
+    // ── Live tuning state (mobile tune panel) ──
+    // _todLiveHour pins the palette hour at RUNTIME (no reload, unlike ?tod=)
+    // and drives the synthetic _overrideSunDir arc; null = follow the real
+    // clock (or the static ?tod= preview if that param is set). _expMult is a
+    // presentation-only exposure multiplier on top of the per-phase palette
+    // exposure. Both are applied by the ~1s TOD tick; _todDirty short-circuits
+    // the 1s gate so slider drags feel immediate.
+    let _todLiveHour: number | null = null;
+    let _todDirty = false;
+    let _expMult = 1;
+    const _effectiveHour = () => {
+      if (_todLiveHour != null) return _todLiveHour;
+      if (_todOv && _todOv in _todToHour) return _todToHour[_todOv];
+      const _ea = (anchorRef as any)?.current || anchor;
+      return _solarVirtualHour(worldNow(), _ea.lat, _ea.lon);
+    };
+    ((window as any).__tw ||= {}).tod = (h: any) => {
+      const n = h == null || h === "" ? null : Number(h);
+      _todLiveHour = n == null || !isFinite(n) ? null : ((n % 24) + 24) % 24;
+      _todDirty = true;
+      return _todLiveHour;
+    };
+    (window as any).__tw.exposure = (m: any) => {
+      const n = Number(m);
+      if (isFinite(n) && n > 0) { _expMult = Math.min(4, Math.max(0.25, n)); _todDirty = true; }
+      return _expMult;
+    };
+
     const aerialTintAt = (hour: number) => new THREE.Color(paletteAt(hour).fog);
     const fogCompletionFar = (near: number, maxBlend: number) => {
       const y = Math.max(0.001, Math.min(0.999, maxBlend));
@@ -3358,7 +3387,7 @@ export default function TinyWorld() {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = tp.exp;
+    renderer.toneMappingExposure = tp.exp * _expMult;
     rendererRef.current = renderer;
     mountRef.current!.appendChild(renderer.domElement);
     renderer.domElement.style.width = "100%";
@@ -3809,6 +3838,10 @@ export default function TinyWorld() {
       }
       skyDome.frame(camera.position, performance.now() / 1000);
     }
+
+    // On-device tune panel (gear button). Idempotent across world reloads;
+    // reads live handles (__tw.*, __twPWater) lazily at interaction time.
+    try { initTunePanel(); } catch { /* panel is never load-bearing */ }
 
     // Cloud raymarch cost is per-fragment GPU (a 132-step march full-screen).
     // On iOS that can trip the GPU watchdog and lose the WebGL context, so
@@ -10782,7 +10815,7 @@ export default function TinyWorld() {
       return null;
     };
     const isNightNow = (): boolean => {
-      const h = (_todOv && _todOv in _todToHour) ? _todToHour[_todOv] : _solarVirtualHour(worldNow(), anchor.lat, anchor.lon);
+      const h = _effectiveHour();
       return h < 6 || h >= 18;
     };
     // Enclosure check via 6-connectivity flood fill from the column's air
@@ -21367,30 +21400,39 @@ export default function TinyWorld() {
         // stalling until 60 frames accrue.
         // Sky dome follows the camera every frame; time drives star twinkle.
         if (skyDome) skyDome.frame(camera.position, performance.now() / 1000);
-        if (!_todOv && performance.now() - _lastTodApplyMs >= 1000) {
+        if ((!_todOv || _todLiveHour != null) && (_todDirty || performance.now() - _lastTodApplyMs >= 1000)) {
+          const _todWasDirty = _todDirty; _todDirty = false;
           _lastTodApplyMs = performance.now();
           const _a = anchorRef.current;
           const _vt = worldNow();
-          const liveTp = paletteAt(_solarVirtualHour(_vt, _a.lat, _a.lon));
-          renderer.toneMappingExposure = liveTp.exp;
+          const _liveHour = _effectiveHour();
+          // Under a live tune-panel hour the sun rides the same synthetic arc
+          // as the static ?tod= preview, so the sky/lights/shadows all agree.
+          const _ovSd = _todLiveHour != null ? _overrideSunDir(_todLiveHour) : null;
+          const liveTp = paletteAt(_liveHour);
+          renderer.toneMappingExposure = liveTp.exp * _expMult;
           // Sky dome: gradient/glow/stars track the live palette; the glow
           // banks at the RAW sun azimuth (no altitude floor).
           if (skyDome) {
-            skyDome.update(liveTp, _solarDirectionRaw(_vt, _a.lat, _a.lon), _moonDirection(_vt, _a.lat, _a.lon));
+            if (_ovSd) {
+              skyDome.update(liveTp, _ovSd, { x: -_ovSd.x, y: Math.max(0.14, -_ovSd.y), z: -_ovSd.z });
+            } else {
+              skyDome.update(liveTp, _solarDirectionRaw(_vt, _a.lat, _a.lon), _moonDirection(_vt, _a.lat, _a.lon));
+            }
           }
           // Sky dome.
           if (scene.background && (scene.background as any).isColor) {
             (scene.background as THREE.Color).setHex(liveTp.bg);
           }
           if (scene.fog && (scene.fog as any).isFog) {
-            (scene.fog as THREE.Fog).color.copy(aerialTintAt(_solarVirtualHour(_vt, _a.lat, _a.lon)));
+            (scene.fog as THREE.Fog).color.copy(aerialTintAt(_liveHour));
           }
           // Sun<->moon crossfade. daylight = 1 with the sun well up, 0 well below
           // the horizon, smooth through civil twilight (~±5.7°). The warm SUN keys
           // the day and fades to 0 as it sets; the cool MOON keys the night on the
           // anti-solar arc. Both are real scene lights, so all voxel materials pick
           // up whichever key is lit (warm+sun-shadow by day, cool+moon-shadow at night).
-          const sunAlt = _solarPosition(_vt, _a.lat, _a.lon).alt; // radians
+          const sunAlt = _ovSd ? Math.asin(_ovSd.y) : _solarPosition(_vt, _a.lat, _a.lon).alt; // radians
           const daylight = _smoothstep(-0.10, 0.10, sunAlt);
           // BASE values only — _applyInteriorMix() below maps base → lights
           // (identity when the interior mix is 0, so outdoor behavior is
@@ -21427,11 +21469,22 @@ export default function TinyWorld() {
           // COMMIT them on the quantized step (default 45s). Between commits
           // the directions hold bit-identical, so the deadband never sees a
           // "light moved" edge and idle repaints drop ~2/sec → ~1/45s.
-          if (SUN_STEP_MS <= 0 || _sunCommitMs < 0 || performance.now() - _sunCommitMs >= SUN_STEP_MS) {
+          if (_todWasDirty || SUN_STEP_MS <= 0 || _sunCommitMs < 0 || performance.now() - _sunCommitMs >= SUN_STEP_MS) {
             _sunCommitMs = performance.now();
-            const dir = _solarDirection(_vt, _a.lat, _a.lon);
+            let dir: { x: number; y: number; z: number }, mdir: { x: number; y: number; z: number };
+            if (_ovSd) {
+              // Clamped versions of the synthetic arc for the shadow lights
+              // (same 8° altitude floor as the real-geometry paths).
+              const _alt = Math.asin(_ovSd.y), _az = Math.atan2(_ovSd.x, -_ovSd.z);
+              const _cA = Math.max(_alt, 8 * Math.PI / 180), _cc = Math.cos(_cA);
+              dir = { x: _cc * Math.sin(_az), y: Math.sin(_cA), z: -_cc * Math.cos(_az) };
+              const _mA = Math.max(-_alt, 8 * Math.PI / 180), _mAz = _az + Math.PI, _mc = Math.cos(_mA);
+              mdir = { x: _mc * Math.sin(_mAz), y: Math.sin(_mA), z: -_mc * Math.cos(_mAz) };
+            } else {
+              dir = _solarDirection(_vt, _a.lat, _a.lon);
+              mdir = _moonDirection(_vt, _a.lat, _a.lon);
+            }
             if (!_sunDirLocked) sunDir.set(dir.x, dir.y, dir.z).normalize();
-            const mdir = _moonDirection(_vt, _a.lat, _a.lon);
             moonDir.set(mdir.x, mdir.y, mdir.z).normalize();
             _shadowStats.sunCommits++;
             markShadowDirty(2); // sun/moon direction stepped → repaint the shadow map
@@ -21454,11 +21507,13 @@ export default function TinyWorld() {
           // Under a ?tod= override the tint loop is gated off — drive the
           // super-tree glow light on this same day/night edge instead (hard
           // flip is fine for previews).
-          if (_todOv && superGlowCell && (superGlowLight.visible || _placeSuperGlow())) {
+          if (_todOv && _todLiveHour == null && superGlowCell && (superGlowLight.visible || _placeSuperGlow())) {
             superGlowLight.intensity = _leafGlowOn ? SUPER_GLOW_PEAK : 0;
           }
           // Same hard flip for the pooled canopy lights under a ?tod= preview.
-          if (_todOv) _updateGlowPool(_leafGlowOn ? 1 : 0);
+          // (A live tune-panel hour runs the full tick instead, which already
+          // drives both glow systems on its daylight ramp.)
+          if (_todOv && _todLiveHour == null) _updateGlowPool(_leafGlowOn ? 1 : 0);
         }
         // ── Interior-state detector (~4×/s): the mech standing in a covered
         // pocket (carved room / under un-dug latent mass / real or built
@@ -22542,9 +22597,7 @@ export default function TinyWorld() {
         }
         if (volumetricClouds.state.enabled) {
           const _cloudKey = moon.intensity > sun.intensity ? moon : sun;
-          const _cloudHour = (_todOv && _todOv in _todToHour)
-            ? _hourNow
-            : _solarVirtualHour(worldNow(), anchorRef.current.lat, anchorRef.current.lon);
+          const _cloudHour = _effectiveHour();
           _cloudKeyDir.copy(_cloudKey.position).sub(_cloudKey.target.position).normalize();
           if (scene.background && (scene.background as any).isColor) _cloudSkyColor.copy(scene.background as any);
           volumetricClouds.update({
