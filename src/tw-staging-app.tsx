@@ -1,3 +1,4 @@
+import { buildLatentFillGeometry } from "./latent-fill-geometry";
 // build-id: 20260630-greedy-default-on-rehash
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { 
@@ -28,7 +29,7 @@ import {
 } from "@/compiled-world-cache";
 import { solveWaterFlow } from "@/water-flow";
 import { createSpring } from "@/water-spring-runtime";
-import { createParticleWater } from "@/pwater/tinyworld-pwater";
+import { createParticleWater } from "./pwater/tinyworld-pwater";
 import { installWaterSurface } from "@/water-surface-shader";
 import { createRayGI, RAYGI_COMPOSITE_SHADER, RAYGI_BOUNCE_STRENGTH } from "@/tw-raygi";
 import { createVolumetricCloudRing } from "@/tw-volumetric-clouds";
@@ -6980,6 +6981,7 @@ export default function TinyWorld() {
     // a latent cell is materialized or spent so a dug cell cannot remain as a
     // visually-present phantom block.
     let refreshLatentFillPrisms: () => void = () => undefined;
+    let flushLatentFill: () => void = () => undefined;
     const renderLatentFillPrisms = (() => {
       if (!latentRef.current) return null;
       let on = true;
@@ -6989,7 +6991,6 @@ export default function TinyWorld() {
       } catch { /* ignore */ }
       if (!on) return null;
       const lat = latentRef.current;
-      const maxColsPerMesh = 60000;
       const _latFillLayer = ((worldDataRef.current?.meta as any)?.latentLayer as string) || "wall";
       const mat = new THREE.MeshStandardMaterial({
         color: (PAL as any)[_latFillLayer] ?? PAL.wall,
@@ -7008,7 +7009,7 @@ export default function TinyWorld() {
           const z = Number(key.slice(comma + 1));
           let start: number | null = null;
           for (let y = r[0]; y <= r[1]; y++) {
-            const spent = lat.spent.has(x + "," + y + "," + z);
+            const spent = lat.spent.has(x + "," + y + "," + z) || (colMap.get(key)?.has(y) ?? false);
             if (!spent && start === null) start = y;
             if ((spent || y === r[1]) && start !== null) {
               const end = spent ? y - 1 : y;
@@ -7017,28 +7018,26 @@ export default function TinyWorld() {
             }
           }
         }
+        for (const child of group.children) child.geometry?.dispose();
         group.clear();
         group.userData.ranges = ranges.length;
-        for (let off = 0; off < ranges.length; off += maxColsPerMesh) {
-          const chunk = ranges.slice(off, off + maxColsPerMesh);
-          const mesh = new THREE.InstancedMesh(box, mat, chunk.length);
-          mesh.castShadow = false;
-          mesh.receiveShadow = true;
-          mesh.userData = { layer: "latentFill", metricVisualFill: true };
-          for (let i = 0; i < chunk.length; i++) {
-            const r = chunk[i];
-            const h = Math.max(1, r.y1 - r.y0 + 1);
-            dummy.position.set((r.x - cxRound) * voxel, ((r.y0 + r.y1) * 0.5) * voxel, (r.z - czRound) * voxel);
-            dummy.rotation.set(0, 0, 0);
-            dummy.scale.set(0.92, h * 0.98, 0.92);
-            dummy.updateMatrix();
-            mesh.setMatrixAt(i, dummy.matrix);
-          }
-          mesh.instanceMatrix.needsUpdate = true;
-          group.add(mesh);
-        }
+        const data = buildLatentFillGeometry(ranges);
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
+        geometry.setAttribute("normal", new THREE.BufferAttribute(data.normals, 3));
+        geometry.setIndex(new THREE.BufferAttribute(data.indices, 1));
+        geometry.computeBoundingSphere();
+        const mesh = new THREE.Mesh(geometry, mat);
+        mesh.position.set(-cxRound * voxel, 0, -czRound * voxel);
+        mesh.scale.setScalar(voxel);
+        mesh.castShadow = false;
+        mesh.receiveShadow = true;
+        mesh.userData = { layer: "latentFill", metricVisualFill: true };
+        group.add(mesh);
       };
-      refreshLatentFillPrisms = rebuild;
+      let dirty = false;
+      refreshLatentFillPrisms = () => { dirty = true; };
+      flushLatentFill = () => { if (dirty) { dirty = false; rebuild(); } };
       scene.add(group);
       meshesRef.current.push(group);
       rebuild();
@@ -12324,7 +12323,7 @@ export default function TinyWorld() {
     let machineBeamPhase: MachineBeamPhase = "off";
     let machineBeamPhaseStart = 0;
     let machineBeamLastCharge = 0;
-    const BEAM_COLLAPSE_MS = 320;
+    const BEAM_COLLAPSE_MS = 160;
     // Cache of the last rendered beam so carve can ride through the 90ms
     // recharge gap and collapse can replay the beam after chargeState is gone.
     let lastBeamSnap: {
@@ -12633,7 +12632,7 @@ export default function TinyWorld() {
       if (!hit) return;
       const mesh = hit.mesh;
       const layer = (mesh.userData?.layer as string) || "block";
-      const hardMs = (sentinelModeRef.current === "large" || sentinelModeRef.current === "drone") ? 850 : (MOVE_MS[layer] ?? 500);
+      const hardMs = (sentinelModeRef.current === "large" || sentinelModeRef.current === "drone") ? 425 : (MOVE_MS[layer] ?? 500);
       if (!isFinite(hardMs)) return; // water, etc.
       chargeState = { startMs: performance.now(), mesh, idx: hit.slot, hardMs, vx: hit.vx, vy: hit.vy, vz: hit.vz, color: mesh.material.color.clone() };
     };
@@ -12906,7 +12905,7 @@ export default function TinyWorld() {
       },
     };
 
-    const HOPPER_CAPACITY = { drone: 256, sentinel: 1024, titan: 4096 } as const;
+    const HOPPER_CAPACITY = { drone: 1024, sentinel: 4096, titan: 4096 } as const;
     const hopperCapacity = () => sentinelModeRef.current === "drone" ? HOPPER_CAPACITY.drone : HOPPER_CAPACITY.sentinel;
     const hopperTotal = () => Object.values(hopperByLayerRef.current).reduce((sum, n) => sum + n, 0);
     const hopperLayers = () => Object.keys(hopperByLayerRef.current).filter((layer) => (hopperByLayerRef.current[layer] || 0) > 0);
@@ -21374,6 +21373,7 @@ export default function TinyWorld() {
         {
           // Deferred remeshing can outlast the edit's 2-frame shadow window --
           // re-arm the static maps whenever a flush actually rebuilt chunks.
+          flushLatentFill();
           const _remeshedNow = (greedyWall ? greedyWall.flushDirty(6) : 0)
             + (greedyGround ? greedyGround.flushDirty(4) : 0);
           if (_remeshedNow > 0) markShadowDirty(2);

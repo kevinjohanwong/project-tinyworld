@@ -15,6 +15,8 @@
 // tinyworld-pwater.ts). The render group carries the cell→world transform,
 // so the ported geometry/shaders keep terrace-spring's tuning verbatim.
 
+import { surfaceDensity, smoothUnit, responseAlpha, standingFraction } from "./surface-continuity";
+
 export type TerraceOpts = {
   THREE: any;
   renderer: any;
@@ -92,6 +94,8 @@ export function createTerraceWater(opts: TerraceOpts) {
     if (springI < 0) springI = idx(x, Math.max(0, Math.min(ny - 1, opts.spring.y)), z);
   }
   let springOn = true;
+  let paused = false;
+  let simulatedSteps = 0;
   let springRate = opts.springRate;
   let inAcc = 0, outAcc = 0, displacedAcc = 0;
   let inTotal = 0, outTotal = 0;
@@ -435,7 +439,7 @@ export function createTerraceWater(opts: TerraceOpts) {
   // ledger so conservation stays exact. Opened cells need nothing — water
   // levels into them on the next steps.
   function onCellSolidified(i: number) {
-    if (mass[i] > 0) { displacedAcc += mass[i]; outTotal += mass[i]; mass[i] = 0; }
+    if (mass[i] > 0) { displacedAcc += mass[i]; mass[i] = 0; }
   }
 
   /* ══════════════════════ renderer (cell space) ══════════════════════ */
@@ -832,16 +836,11 @@ export function createTerraceWater(opts: TerraceOpts) {
         const i = y * LAYER + z * nx + x;
         if (solid[i]) { raw[i] = 0; cdepth[i] = 0; run = 0; continue; }
         const m = mass[i];
+        vol += m;
+        if (m > VIS) wet++;
         if (m <= 0.0012) { raw[i] = 0; cdepth[i] = 0; run = 0; continue; }
-        if (y > 0 && !solid[i - LAYER] && dflow[i] > 0.5 * m) { raw[i] = -m; run = 0; cdepth[i] = 0; vol += m; wet++; continue; }
-        if (m <= 0.04) { raw[i] = 0; cdepth[i] = 0; run = 0; if (m > VIS) { vol += m; wet++; } continue; }
-        vol += m; wet++;
-        // Presence floor: a cell that passed the film cutoff holds real water,
-        // but a shallow apron (m 0.05-0.3) fed raw < ISO gets averaged away by
-        // the corner lattice and the mesh retreats from the true shoreline.
-        // Floor the iso density near ISO so wet-vs-dry sets the surface's
-        // extent and m keeps setting its height only above the floor.
-        raw[i] = m > 1.1 ? 1.1 : m < 0.45 ? 0.45 : m;
+        if (y > 0 && !solid[i - LAYER] && dflow[i] > 0.5 * m) { raw[i] = -m; run = 0; cdepth[i] = 0; continue; }
+        raw[i] = surfaceDensity(m);
         if (m > 0.25) run++; else run = 0;
         cdepth[i] = run;
       }
@@ -849,7 +848,7 @@ export function createTerraceWater(opts: TerraceOpts) {
     volume = vol; wetCount = wet;
 
     /* 2. temporal smoothing of the fields */
-    const k = Math.min(1, dt * 13), kf = Math.min(1, dt * 9), ks = Math.min(1, dt * 18);
+    const k = responseAlpha(13, dt), kf = responseAlpha(9, dt), ks = responseAlpha(18, dt);
     let nx0 = nx, nx1 = -1, ny0 = ny, ny1 = -1, nz0v = nz, nz1 = -1;
     for (let y = vy0; y <= vy1; y++) {
       const yb = y * LAYER;
@@ -858,7 +857,8 @@ export function createTerraceWater(opts: TerraceOpts) {
         for (let x = vx0; x <= vx1; x++) {
           const i = zb + x;
           const r = raw[i];
-          const ri = r > 0 ? r : 0, rs = r < 0 ? -r : 0;
+          const ri = surfaceDensity(mass[i]) * standingFraction(mass[i], dflow[i], y === 0 || !!solid[i - LAYER]);
+          const rs = r < 0 ? -r : 0;
           let d = dens[i]; d += (ri - d) * k; if (d < 0.002) d = 0; dens[i] = d;
           let sd = sdens[i]; sd += (rs - sd) * ks; if (sd < 0.0008) sd = 0; sdens[i] = sd;
           const up = i + LAYER;
@@ -1129,7 +1129,10 @@ export function createTerraceWater(opts: TerraceOpts) {
                 const i = b + x;
                 if (solid[i]) {
                   // the bed of a pool is part of the water body; bare rock is not
-                  if (y + 1 < ny && !solid[i + LAYER] && dens[i + LAYER] > 0.03) { s += 1; c++; }
+                  if (y + 1 < ny && !solid[i + LAYER]) {
+                    const support = smoothUnit(dens[i + LAYER] / 0.04);
+                    s += support; c += support;
+                  }
                   continue;
                 }
                 // Shore-aware weighting: air votes at 1/3 the weight of wet
@@ -1137,7 +1140,8 @@ export function createTerraceWater(opts: TerraceOpts) {
                 // its dry neighbours (which made lone puddle cells invisible
                 // and pulled the mesh a cell back from every true shore).
                 const d = dens[i];
-                if (d > 0.02) { s += d; c++; } else c += AIR_W;
+                s += d;
+                c += AIR_W + (1 - AIR_W) * smoothUnit(d / 0.02);
                 fs += cfoam[i]; ds += cdepth[i]; qx += flowx[i]; qz += flowz[i]; c2++;
               }
             }
@@ -1253,7 +1257,8 @@ export function createTerraceWater(opts: TerraceOpts) {
     lastMs = now;
 
     let n = 0;
-    if (warmLeft > 0) { n = Math.min(45, warmLeft); warmLeft -= n; }
+    if (paused) { stepAcc = 0; }
+    else if (warmLeft > 0) { n = Math.min(45, warmLeft); warmLeft -= n; }
     else {
       stepAcc += dt * STEP_HZ;
       n = Math.min(5, Math.floor(stepAcc));
@@ -1261,6 +1266,7 @@ export function createTerraceWater(opts: TerraceOpts) {
     }
     const t0 = performance.now();
     for (let s = 0; s < n; s++) step();
+    simulatedSteps += n;
     // Droplets integrate over the same span of sim time the steps advanced.
     if (n > 0) stepDroplets(n / STEP_HZ);
     const simMs = performance.now() - t0;
@@ -1368,7 +1374,7 @@ export function createTerraceWater(opts: TerraceOpts) {
       },
       inRate: flushIn, outRate: flushOut,
       emitted: inTotal, drained: outTotal, displaced: displacedAcc,
-      warmLeft, springOn, springRate,
+      warmLeft, springOn, springRate, paused, simulatedSteps,
       box: { x0: bx0, x1: bx1, y0: by0, y1: by1, z0: bz0, z1: bz1 },
       tris: (wGeo.drawRange.count / 3) | 0,
     };
@@ -1377,6 +1383,7 @@ export function createTerraceWater(opts: TerraceOpts) {
   function knob(o: any = {}) {
     if (o.springRate !== undefined) springRate = Math.max(0, Number(o.springRate) || 0);
     if (o.running !== undefined) springOn = !!o.running;
+    if (o.paused !== undefined) paused = !!o.paused;
     if (o.drain) drainAll();
     if (o.warm !== undefined) warmLeft += Math.max(0, Number(o.warm) | 0);
     if (o.ribNorm !== undefined && Number(o.ribNorm) > 0) ribNorm = Number(o.ribNorm);

@@ -422,6 +422,8 @@ export function createParticleWater(ctx: PWaterCtx) {
       box: { x0: box.x0, x1: box.x1, y1: box.y1, z0: box.z0, z1: box.z1 },
       source: { mode: "spring-cell", basinY: origin.y, roofY: null, emitY: origin.y },
       settings: { springRate: s.springRate, warmSecs, stepHz: STEP_HZ },
+      paused: s.paused,
+      simulatedSteps: s.simulatedSteps,
       warmupLeft: Math.round((s.warmLeft / STEP_HZ) * 10) / 10,
       maxN: 0,
       gpuActive: false,
@@ -451,6 +453,7 @@ export function createParticleWater(ctx: PWaterCtx) {
   function knob(o: any = {}) {
     if (o.springRate !== undefined) water.knob({ springRate: o.springRate });
     if (o.emitRate !== undefined) water.knob({ springRate: Number(o.emitRate) > 2 ? 0.09 : Number(o.emitRate) });
+    if (o.paused !== undefined) water.knob({ paused: o.paused });
     if (o.running !== undefined) water.knob({ running: o.running });
     if (o.reset || o.drain) water.knob({ drain: true });
     if (o.warm !== undefined) water.knob({ warm: Math.round(Number(o.warm) * STEP_HZ) });
