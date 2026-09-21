@@ -83,6 +83,15 @@ const FRAG_OUT_ANCHOR =
     ? "#include <output_fragment>"
     : "#include <opaque_fragment>";
 
+// Sep 21: void raids/ships/islands are PARKED (KJ) — the whole system is
+// opt-in via ?void=1. Same for incidental UI toasts via ?toasts=1. Default
+// build spends zero frames on either; persisted void state is preserved
+// untouched (voidStatePersistRef stays null → save falls back to prior meta).
+const VOID_SYSTEMS_ON =
+  typeof location !== "undefined" && new URLSearchParams(location.search).get("void") === "1";
+const UI_TOASTS_ON =
+  typeof location !== "undefined" && new URLSearchParams(location.search).get("toasts") === "1";
+
 const MERGE_CANDIDATE_RADIUS_M = 25;
 
 // Per-worker perception scales with growth tier (KJ 2026-07-05: "radius and
@@ -3453,6 +3462,29 @@ export default function TinyWorld() {
       markStatic("all", frames);
     };
     (window as any).__twMarkShadowDirty = markShadowDirty;
+    // Sep 21 carve-stutter fix: block EDITS debounce the static-map repaint.
+    // Continuous lasering (an edit every ~160–425 ms) used to trigger a full
+    // static shadow re-render on every carve tick. Edits now repaint once when
+    // they pause for SETTLE_MS, with a MAX_WAIT cap so shadows never lag a
+    // long unbroken carve by more than ~1.2 s. Sun steps, caster swaps, and
+    // feature toggles keep the immediate markShadowDirty path.
+    const SHADOW_EDIT_SETTLE_MS = 350;
+    const SHADOW_EDIT_MAX_WAIT_MS = 1200;
+    let _shadowEditLastMs = -1;
+    let _shadowEditFirstMs = -1;
+    const markShadowDirtyFromEdit = () => {
+      const t = performance.now();
+      _shadowEditLastMs = t;
+      if (_shadowEditFirstMs < 0) _shadowEditFirstMs = t;
+    };
+    const flushShadowEditDebounce = (now: number) => {
+      if (_shadowEditLastMs < 0) return;
+      if (now - _shadowEditLastMs >= SHADOW_EDIT_SETTLE_MS || now - _shadowEditFirstMs >= SHADOW_EDIT_MAX_WAIT_MS) {
+        _shadowEditLastMs = -1;
+        _shadowEditFirstMs = -1;
+        markShadowDirty(2);
+      }
+    };
 
     const composer = new EffectComposer(renderer);
     const renderPass = new RenderPass(scene, camera);
@@ -7591,7 +7623,7 @@ export default function TinyWorld() {
       if (rmLayer === "grass" || rmLayer === "dryGrass") markGrassDirty(vx, vz);
       raygiEditHooks.remove?.(vx, vy, vz);
       pwaterEditHook.edit?.(vx, vy, vz, false);
-      markShadowDirty(2); // carved block → repaint the static shadow maps
+      markShadowDirtyFromEdit(); // carved block → debounced static-map repaint
       terrainEdits.ver++;
       return true;
     };
@@ -8273,7 +8305,7 @@ export default function TinyWorld() {
         let actualVoidLoss = 0;
         let riftPos = null;
 
-        if (est.voidLoss > 0) {
+        if (VOID_SYSTEMS_ON && est.voidLoss > 0) {
           // weakestFrontier is declared later in this effect and is not yet
           // initialized when catch-up runs at load — inline the frontier pick.
           const perim: Array<{ vx: number; vz: number }> = [];
@@ -10901,6 +10933,7 @@ export default function TinyWorld() {
     // unclaimed ones re-qualify the next time someone digs there.
     const carvedRooms = new Map<string, { vx: number; vy: number; vz: number; volume: number; claimedBy: string | null }>();
     const flashRoomToast = (txt: string) => {
+      if (!UI_TOASTS_ON) return; // toasts parked Sep 21 — opt back in via ?toasts=1
       if (typeof document === "undefined") return;
       let el = document.getElementById("room-toast") as any;
       if (!el) {
@@ -13013,7 +13046,7 @@ export default function TinyWorld() {
       addCol(vx, vy, vz);
       raygiEditHooks.add?.(vx, vy, vz, (PAL as any)[carryState.layer] ?? 0x8a8a8a, RAYGI_BOUNCE_STRENGTH[carryState.layer] ?? 0.5);
       pwaterEditHook.edit?.(vx, vy, vz, true);
-      markShadowDirty(2); // placed block → repaint the static shadow maps
+      markShadowDirtyFromEdit(); // placed block → debounced static-map repaint
       terrainEdits.ver++;
       protAdd(vx, vz, carryState.layer, 1);
       const cGrade = (carryState as any).grade || "raw";
@@ -14880,7 +14913,10 @@ export default function TinyWorld() {
 
     // ── Island init: restore + merge. Runs once, synchronously, AFTER the
     // ledger recount above so the clamp sees the final void pool. ──
-    {
+    // Void parked (Sep 21): skipped entirely unless ?void=1. Skipping is
+    // persistence-safe — voidStatePersistRef stays null, so saves carry the
+    // prior meta.voidState forward verbatim (see the save assembly).
+    if (VOID_SYSTEMS_ON) {
       const savedVoid = (((worldDataRef.current?.meta as any)?.voidState) || null) as any;
       // Conversions are permanent (#19): the count survives reloads and keeps
       // shrinking the dark allotment. Stranded strays return where they stood.
@@ -21376,8 +21412,9 @@ export default function TinyWorld() {
           flushLatentFill();
           const _remeshedNow = (greedyWall ? greedyWall.flushDirty(6) : 0)
             + (greedyGround ? greedyGround.flushDirty(4) : 0);
-          if (_remeshedNow > 0) markShadowDirty(2);
+          if (_remeshedNow > 0) markShadowDirtyFromEdit();
         }
+        flushShadowEditDebounce(performance.now());
         _pbM("blockphys");
         processSupportQueue(performance.now());
         animateFallingBlocks(performance.now());
@@ -21717,11 +21754,13 @@ export default function TinyWorld() {
           _shadowStats.dynPaints = dynShadow.stats.dynPaints;
         }
         _pbM("fx");
-        if (now - lastVoidTickMs > VOID_TICK_MS) {
-          tickVoidNight(now);
-          lastVoidTickMs = now;
+        if (VOID_SYSTEMS_ON) {
+          if (now - lastVoidTickMs > VOID_TICK_MS) {
+            tickVoidNight(now);
+            lastVoidTickMs = now;
+          }
+          renderVoidNight(now);
         }
-        renderVoidNight(now);
         tickEatFx(now);
         tickSpeech(now);
         tickPickFx(now);
