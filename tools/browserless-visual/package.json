@@ -1,0 +1,11 @@
+{
+  "name": "tinyworld-browserless-visual",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "verify-camera": "bun run verify-camera.ts"
+  },
+  "dependencies": {
+    "puppeteer-core": "^25.3.0"
+  }
+}

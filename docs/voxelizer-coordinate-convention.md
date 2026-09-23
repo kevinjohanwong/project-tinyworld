@@ -29,11 +29,16 @@ carries no geo metadata. Convention: GLB origin = that anchor.
   real-meter GLBs (government 3D data, map tiles). Trusts geometry directly: true
   street heights (no plane snap), per-column heightfield solid fill, latent-interior
   emission, no hills/cliffs synthesis.
-- `VOXEL_M=auto` — **scan mode**, for COLMAP/OpenMVS reconstructions. Normalizes
+- `VOXEL_M=auto` — **scan mode**, for COLMAP/OpenMVS reconstructions ONLY (those
+  meshes are scale-ambiguous, so there is no metric truth to preserve). Normalizes
   span to `TARGET_DIVS` (690 since 2026-07-11; was 345 — fidelity bump targeting
   ~5cm voxels, 1.5cm floor) and runs the shell-repair machinery (normal
   classification bands, dominant-plane floor snap, footprint fill, rolling hills,
   rim cliffs).
+- **Route GLB uploads** (client-side worker in `src/tinyworld-route.tsx`) use a
+  fixed metric `VOXEL_METERS = 0.025` since 2026-07-11 — space translates: a 2x
+  bigger scan is a proportionally 2x bigger world. (Previously span/690, which
+  squeezed every upload into the same world extent.) No block-count cap by design.
 - Open-data / map tiles must ALWAYS run metric. Scan merges must ALWAYS pass
   `VOXEL_M=auto` (a leak here crashed joint-recon merges — fixed Jul 9 in
   `merge_capture_into_world.py`).

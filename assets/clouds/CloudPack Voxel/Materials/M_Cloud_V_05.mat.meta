@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: a42c79ab38dd5414d9f507914cf643d0
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 151003
+  packageName: Stylized Voxel Clouds
+  packageVersion: 1.01
+  assetPath: Assets/CloudPack Voxel/Materials/M_Cloud_V_05.mat
+  uploadId: 368782

@@ -4,16 +4,17 @@ A persistent, cloud-based augmented reality world simulation for iPhone.
 
 ## Concept
 
-Users scan their physical environment with iPhone LiDAR. That scan becomes a living "tiny world" — a scaled-down Minecraft-like voxel space populated by semi-autonomous AI characters called Tiny People, under constant threat from an ambient force called The Void.
+Users scan their physical environment with phone video. The canonical finalizer runs COLMAP/OpenMVS, aligns the resulting GLB to gravity, and converts that GLB into a living voxel "tiny world" populated by semi-autonomous AI characters called Tiny People, under constant threat from an ambient force called The Void.
 
 Every world is always-on, cloud-hosted, and geographically anchored. Two users can connect their worlds by physically scanning the path between them. Tiny People persist, travel, and die independently — but respond to verbal commands from their user.
 
 ## Core Mechanics
 
-- **LiDAR → Voxel World** — iPhone ARKit scan converts real space to a 12×12 block-per-square-foot voxel grid
+- **Video → OpenMVS/GLB → Voxel World** — phone video becomes a gravity-aligned GLB, then a voxel grid
 - **Geographic Biome** — GPS location determines block palette, seasonal behavior, and void hostility (see `docs/`)
 - **The Void** — hostile force that consumes undefended scanned land; stronger at night, amplified by winter
 - **Tiny People** — semi-autonomous AI characters; commandable but not fully controllable; personality-typed (MBTI-based archetypes); persistent across sessions
+- **Worker knowledge** — personal beliefs, practiced skills, bounded construction experiments, teaching, and a settlement library; inspection—not authority—is the source of truth
 - **World Bridging** — users physically scan a path between two locations to create a persistent connection between worlds
 - **Pocket Dimension** — Tiny People can be carried on-device and deployed in new scanned environments
 - **Turn-based action cycle** — action/pause loop accommodates cloud latency; user plans during pause windows
@@ -22,9 +23,9 @@ Every world is always-on, cloud-hosted, and geographically anchored. Two users c
 
 | Layer | Technology |
 |---|---|
-| iPhone LiDAR capture | ARKit (Swift) |
-| Mesh → voxel conversion | Rust + dda-voxelize |
-| World generation engine | Rust (based on Arnis architecture) |
+| Capture | Phone web video capture |
+| Mesh → voxel conversion | COLMAP/OpenMVS aligned GLB + TinyWorld GLB voxelizer |
+| World generation engine | TypeScript/Three.js prototype on Zo Space |
 | World persistence | Cloud (always-on virtual machines per world region) |
 | Biome / weather data | ESA WorldCover + Open-Meteo API |
 | Tiny People AI | Custom behavior simulation (Rust) |
@@ -34,8 +35,9 @@ Every world is always-on, cloud-hosted, and geographically anchored. Two users c
 
 ```
 project-tinyworld/
-  src/              # Rust backend — world generation, void rules, biome
-  ios/              # Swift ARKit app — LiDAR capture, rendering, commands
+  tools/            # OpenMVS/GLB finalizer tools
+  src/              # Shared simulation, construction, settlement, tree, and worker-learning modules
+  ios/              # Sunset legacy placeholder
   docs/             # Design specs and biome definitions
 ```
 
@@ -43,9 +45,15 @@ project-tinyworld/
 
 - [NYC Temperate](docs/biome-nyc-temperate.md)
 
+## Worker Simulation
+
+- [Worker knowledge and experimentation](docs/worker-knowledge-and-experimentation.md)
+- [Settlement planner](docs/settlement-planner.md)
+- [Building reference portfolio](docs/building-reference-portfolio.md)
+
 ## Status
 
-Early design / pre-prototype. Weekend project.
+Playable Zo Space prototype. Active scan finalizer is OpenMVS/GLB only; the old Depth/RGB-D TSDF path has been removed from the active project.
 
 ## Attribution
 

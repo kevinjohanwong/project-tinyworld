@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: a5602a3b25e0bd749bda5434f7f39ef5
+TextScriptImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 151003
+  packageName: Stylized Voxel Clouds
+  packageVersion: 1.01
+  assetPath: Assets/CloudPack Voxel/Shaders/Documentation CloudShading.txt
+  uploadId: 368782

@@ -1,0 +1,247 @@
+{
+  "comment": "E 75th St block facade specs (south/even side, 3rd->2nd Ave). Batch 1: 202-210 from 1940 NYC tax photos (B&W - masonry colors are assumed period-plausible, not measured) + prototype 216-218 (CityRealty photo). Batch 2: 222 from single ANGLED color photo (grid partly assumed; balconies at east corner not representable); 226-232 from 1940 tax photos (226 had LAUNDRY storefront; 232 ground hidden by cars - east door assumed). a_enu/b_enu = street-facing footprint edge in raw anchor-frame ENU (x=east, z=south, anchor 40.7711699786543/-73.9584271690282), a = EAST corner (image-left seen from E 75th St). u = meters along facade from corner a, v = meters above street. Edges extracted by tools/facades/extract_facade_edges.py (verified: prototype edge reproduces hand-cased values exactly). 210-214: entrance position assumed center (1940 photo angle hides it); footprint has street-edge jogs, longest edge used.",
+  "buildings": [
+    {
+      "name": "202 E 75th St",
+      "a_enu": [-30.55, -27.84],
+      "b_enu": [-35.41, -30.55],
+      "window_cols": [
+        {"c": 0.93, "w": 0.85},
+        {"c": 2.78, "w": 0.85},
+        {"c": 4.63, "w": 0.85}
+      ],
+      "window_rows": [
+        {"sill": 0.3, "head": 0.9, "skip": [0]},
+        {"sill": 1.6, "head": 3.5, "skip": [0]},
+        {"sill": 5.0, "head": 6.9},
+        {"sill": 8.2, "head": 10.1},
+        {"sill": 11.4, "head": 13.3}
+      ],
+      "cornice": {"base": 15.2, "top": 16.6, "bracket_base": 14.6},
+      "door": {"c": 0.93, "w": 1.3, "base": 0.9, "head": 3.3},
+      "stoop": {"c": 0.93, "w": 1.7, "top": 0.9, "steps": 4, "tread": 0.28},
+      "colors": {"masonry": "8f8070", "trim": "6f6152", "glass": "232a33", "door": "35302a"}
+    },
+    {
+      "name": "204 E 75th St",
+      "a_enu": [-25.23, -24.89],
+      "b_enu": [-30.55, -27.84],
+      "window_cols": [
+        {"c": 1.0, "w": 0.9},
+        {"c": 3.05, "w": 0.9},
+        {"c": 5.09, "w": 0.9}
+      ],
+      "window_rows": [
+        {"sill": 0.3, "head": 0.9, "skip": [0]},
+        {"sill": 1.6, "head": 3.4, "skip": [0]},
+        {"sill": 4.5, "head": 6.3},
+        {"sill": 7.3, "head": 9.0},
+        {"sill": 10.0, "head": 11.7}
+      ],
+      "cornice": {"base": 12.6, "top": 14.0, "bracket_base": 12.0},
+      "door": {"c": 1.0, "w": 1.25, "base": 0.9, "head": 3.3},
+      "stoop": {"c": 1.0, "w": 1.6, "top": 0.9, "steps": 4, "tread": 0.28},
+      "colors": {"masonry": "9a8a70", "trim": "70604e", "glass": "232a33", "door": "3d2f26"}
+    },
+    {
+      "name": "206 E 75th St",
+      "a_enu": [-20.06, -22.02],
+      "b_enu": [-25.23, -24.89],
+      "window_cols": [
+        {"c": 0.98, "w": 0.95},
+        {"c": 2.96, "w": 0.95},
+        {"c": 4.93, "w": 0.95}
+      ],
+      "window_rows": [
+        {"sill": 0.3, "head": 1.0, "skip": [0]},
+        {"sill": 1.7, "head": 3.6, "skip": [0]},
+        {"sill": 4.8, "head": 6.9},
+        {"sill": 7.9, "head": 9.8},
+        {"sill": 10.8, "head": 12.5}
+      ],
+      "cornice": {"base": 13.1, "top": 13.9},
+      "door": {"c": 0.98, "w": 1.3, "base": 1.0, "head": 3.6},
+      "stoop": {"c": 0.98, "w": 1.8, "top": 1.0, "steps": 5, "tread": 0.28},
+      "colors": {"masonry": "958872", "trim": "6d5f4d", "glass": "232a33", "door": "3a3028"}
+    },
+    {
+      "name": "208 E 75th St",
+      "a_enu": [-14.17, -19.85],
+      "b_enu": [-19.6, -22.86],
+      "window_cols": [
+        {"c": 1.03, "w": 0.95},
+        {"c": 3.1, "w": 0.95},
+        {"c": 5.17, "w": 0.95}
+      ],
+      "window_rows": [
+        {"sill": 0.3, "head": 0.9, "skip": [0]},
+        {"sill": 1.6, "head": 3.4, "skip": [0]},
+        {"sill": 4.6, "head": 6.5},
+        {"sill": 7.5, "head": 9.3},
+        {"sill": 10.3, "head": 12.0}
+      ],
+      "cornice": {"base": 12.3, "top": 13.5, "bracket_base": 11.8},
+      "door": {"c": 1.03, "w": 1.3, "base": 0.8, "head": 3.3},
+      "stoop": {"c": 1.03, "w": 1.7, "top": 0.8, "steps": 4, "tread": 0.28},
+      "colors": {"masonry": "5e3a2e", "trim": "6a4136", "glass": "232a33", "door": "2e2620"}
+    },
+    {
+      "name": "210-214 E 75th St",
+      "a_enu": [1.32, -11.26],
+      "b_enu": [-14.17, -19.85],
+      "window_cols": [
+        {"c": 1.7, "w": 1.05},
+        {"c": 4.5, "w": 1.05},
+        {"c": 7.3, "w": 1.05},
+        {"c": 10.1, "w": 1.05},
+        {"c": 12.9, "w": 1.05},
+        {"c": 15.7, "w": 1.05}
+      ],
+      "window_rows": [
+        {"sill": 1.0, "head": 2.7},
+        {"sill": 4.2, "head": 5.9},
+        {"sill": 7.2, "head": 8.9},
+        {"sill": 10.2, "head": 11.9},
+        {"sill": 13.2, "head": 14.9},
+        {"sill": 15.9, "head": 17.4}
+      ],
+      "bands": [{"v0": 3.35, "v1": 3.6}],
+      "cornice": {"base": 17.9, "top": 18.6},
+      "door": {"c": 8.7, "w": 1.6, "base": 0.4, "head": 3.0},
+      "stoop": {"c": 8.7, "w": 2.0, "top": 0.4, "steps": 2, "tread": 0.3},
+      "colors": {"masonry": "8a7454", "trim": "9c8d76", "glass": "232a33", "door": "3a3430"}
+    },
+    {
+      "name": "216-218 E 75th St",
+      "a_enu": [11.91, -5.38],
+      "b_enu": [1.32, -11.26],
+      "window_cols": [
+        {"c": 1.01, "w": 1.0},
+        {"c": 3.03, "w": 1.0},
+        {"c": 5.05, "w": 1.0},
+        {"c": 7.06, "w": 1.0},
+        {"c": 9.08, "w": 1.0},
+        {"c": 11.10, "w": 1.0}
+      ],
+      "window_rows": [
+        {"sill": 0.3, "head": 1.1, "skip": [3]},
+        {"sill": 2.0, "head": 4.2, "skip": [3]},
+        {"sill": 5.6, "head": 7.4},
+        {"sill": 8.6, "head": 10.4},
+        {"sill": 11.6, "head": 13.4}
+      ],
+      "bands": [{"v0": 1.3, "v1": 1.55}],
+      "cornice": {"base": 14.9, "top": 16.3, "bracket_base": 14.2},
+      "door": {"c": 7.06, "w": 1.4, "base": 1.2, "head": 3.5},
+      "stoop": {"c": 7.06, "w": 2.2, "top": 1.2, "steps": 6, "tread": 0.3},
+      "awning": {"c": 7.06, "w": 1.8, "v": 3.55, "proj": 1.4, "drop": 0.03},
+      "colors": {"masonry": "82503f", "trim": "6a4136", "glass": "232a33", "door": "7a1f1f"}
+    },
+    {
+      "name": "222 E 75th St",
+      "a_enu": [27.2, 3.1],
+      "b_enu": [11.91, -5.38],
+      "window_cols": [
+        {"c": 2.0, "w": 1.8},
+        {"c": 5.4, "w": 1.4},
+        {"c": 8.8, "w": 1.4},
+        {"c": 12.2, "w": 1.4},
+        {"c": 15.5, "w": 1.4}
+      ],
+      "window_rows": [
+        {"sill": 1.3, "head": 2.3, "skip": [0]},
+        {"sill": 4.1, "head": 5.6},
+        {"sill": 6.9, "head": 8.4},
+        {"sill": 9.7, "head": 11.2},
+        {"sill": 12.5, "head": 14.0},
+        {"sill": 15.3, "head": 16.8}
+      ],
+      "cornice": {"base": 17.5, "top": 18.3},
+      "door": {"c": 2.0, "w": 1.6, "base": 0.2, "head": 2.9},
+      "stoop": {"c": 2.0, "w": 2.0, "top": 0.2, "steps": 1, "tread": 0.3},
+      "awning": {"c": 2.0, "w": 1.9, "v": 3.1, "proj": 2.6, "drop": 0.05},
+      "colors": {"masonry": "d3cfc6", "trim": "3c3a36", "glass": "27303a", "door": "26241f"}
+    },
+    {
+      "name": "226 E 75th St",
+      "a_enu": [32.58, 6.09],
+      "b_enu": [27.2, 3.1],
+      "window_cols": [
+        {"c": 1.1, "w": 0.95},
+        {"c": 3.08, "w": 0.95},
+        {"c": 5.05, "w": 0.95}
+      ],
+      "window_rows": [
+        {"sill": 0.5, "head": 2.9, "skip": [2]},
+        {"sill": 4.3, "head": 6.1},
+        {"sill": 7.1, "head": 8.9},
+        {"sill": 9.9, "head": 11.7},
+        {"sill": 12.6, "head": 14.3}
+      ],
+      "bands": [{"v0": 2.95, "v1": 3.45}],
+      "cornice": {"base": 14.7, "top": 15.8, "bracket_base": 14.2},
+      "door": {"c": 5.15, "w": 1.0, "base": 0.0, "head": 2.9},
+      "colors": {"masonry": "83513f", "trim": "5f4a3c", "glass": "232a33", "door": "2f2a24"}
+    },
+    {
+      "name": "228 E 75th St",
+      "a_enu": [38.12, 9.16],
+      "b_enu": [32.58, 6.09],
+      "window_cols": [
+        {"c": 1.55, "w": 1.25},
+        {"c": 4.55, "w": 1.25}
+      ],
+      "window_rows": [
+        {"sill": 0.3, "head": 1.1, "skip": [0]},
+        {"sill": 1.2, "head": 3.3, "skip": [0]},
+        {"sill": 4.7, "head": 6.5},
+        {"sill": 7.5, "head": 9.2},
+        {"sill": 10.1, "head": 11.8}
+      ],
+      "cornice": {"base": 12.8, "top": 14.2, "bracket_base": 12.3},
+      "door": {"c": 1.55, "w": 1.25, "base": 0.4, "head": 3.4},
+      "stoop": {"c": 1.55, "w": 1.6, "top": 0.4, "steps": 2, "tread": 0.3},
+      "colors": {"masonry": "b7ac9a", "trim": "978c7a", "glass": "232a33", "door": "2e2a26"}
+    },
+    {
+      "name": "230 E 75th St",
+      "a_enu": [43.57, 12.19],
+      "b_enu": [38.12, 9.16],
+      "window_cols": [
+        {"c": 1.25, "w": 1.15},
+        {"c": 4.2, "w": 1.15}
+      ],
+      "window_rows": [
+        {"sill": 0.3, "head": 1.0, "skip": [0]},
+        {"sill": 1.5, "head": 3.6, "skip": [0]},
+        {"sill": 5.0, "head": 6.9},
+        {"sill": 7.9, "head": 9.7},
+        {"sill": 10.6, "head": 12.3}
+      ],
+      "cornice": {"base": 13.0, "top": 14.2, "bracket_base": 12.5},
+      "door": {"c": 1.25, "w": 1.3, "base": 0.6, "head": 3.4},
+      "stoop": {"c": 1.25, "w": 1.7, "top": 0.6, "steps": 3, "tread": 0.28},
+      "colors": {"masonry": "745a4a", "trim": "5a463c", "glass": "232a33", "door": "31281f"}
+    },
+    {
+      "name": "232 E 75th St",
+      "a_enu": [49.3, 15.36],
+      "b_enu": [43.57, 12.19],
+      "window_cols": [
+        {"c": 1.15, "w": 1.1},
+        {"c": 3.27, "w": 1.1},
+        {"c": 5.4, "w": 1.1}
+      ],
+      "window_rows": [
+        {"sill": 0.9, "head": 3.4, "skip": [0]},
+        {"sill": 4.4, "head": 6.3},
+        {"sill": 7.2, "head": 9.0},
+        {"sill": 9.9, "head": 11.6}
+      ],
+      "cornice": {"base": 12.6, "top": 14.0, "bracket_base": 12.0},
+      "door": {"c": 1.15, "w": 1.25, "base": 0.5, "head": 3.2},
+      "stoop": {"c": 1.15, "w": 1.6, "top": 0.5, "steps": 3, "tread": 0.28},
+      "colors": {"masonry": "804a38", "trim": "5c4638", "glass": "232a33", "door": "332a22"}
+    }
+  ]
+}

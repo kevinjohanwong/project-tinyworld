@@ -1,0 +1,67 @@
+{
+  "hash": "ac9d0fea",
+  "configHash": "b2d6ae92",
+  "lockfileHash": "c052170d",
+  "browserHash": "8b8296bc",
+  "optimized": {
+    "react/jsx-dev-runtime": {
+      "src": "../../../../../__substrate/space/node_modules/react/jsx-dev-runtime.js",
+      "file": "react_jsx-dev-runtime.js",
+      "fileHash": "bf726ac3",
+      "needsInterop": true
+    },
+    "@hugeicons/core-free-icons": {
+      "src": "../../../../../__substrate/space/node_modules/@hugeicons/core-free-icons/dist/esm/index.js",
+      "file": "@hugeicons_core-free-icons.js",
+      "fileHash": "a79b359c",
+      "needsInterop": false
+    },
+    "@hugeicons/react": {
+      "src": "../../../../../__substrate/space/node_modules/@hugeicons/react/dist/esm/index.js",
+      "file": "@hugeicons_react.js",
+      "fileHash": "e7109a28",
+      "needsInterop": false
+    },
+    "hono": {
+      "src": "../../../../../__substrate/space/node_modules/hono/dist/index.js",
+      "file": "hono.js",
+      "fileHash": "37c102b8",
+      "needsInterop": false
+    },
+    "lucide-react": {
+      "src": "../../../../../__substrate/space/node_modules/lucide-react/dist/esm/lucide-react.js",
+      "file": "lucide-react.js",
+      "fileHash": "53b0e59b",
+      "needsInterop": false
+    },
+    "react": {
+      "src": "../../../../../__substrate/space/node_modules/react/index.js",
+      "file": "react.js",
+      "fileHash": "71077a6e",
+      "needsInterop": true
+    },
+    "react-dom/client": {
+      "src": "../../../../../__substrate/space/node_modules/react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "7302b3f9",
+      "needsInterop": true
+    },
+    "react-router-dom": {
+      "src": "../../../../../__substrate/space/node_modules/react-router-dom/dist/index.mjs",
+      "file": "react-router-dom.js",
+      "fileHash": "61434a8a",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "chunk-RCM5JFRZ": {
+      "file": "chunk-RCM5JFRZ.js"
+    },
+    "chunk-CKKQQFWY": {
+      "file": "chunk-CKKQQFWY.js"
+    },
+    "chunk-G3PMV62Z": {
+      "file": "chunk-G3PMV62Z.js"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "tinyworld-trees",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Procedural voxel trees for TinyWorld: deterministic genome -> voxels (L-trees + super tree).",
+  "module": "index.ts",
+  "scripts": {
+    "test": "bun test"
+  }
+}

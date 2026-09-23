@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: e79deb2e6d4a5b142a0efa22234d22f5
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 151003
+  packageName: Stylized Voxel Clouds
+  packageVersion: 1.01
+  assetPath: Assets/CloudPack Voxel/Materials/Skybox_Mat.mat
+  uploadId: 368782

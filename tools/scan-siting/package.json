@@ -1,0 +1,15 @@
+{
+  "name": "scan-siting",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "three": "0.165.0"
+  }
+}

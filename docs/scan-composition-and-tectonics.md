@@ -78,3 +78,9 @@ This implies a schema migration: `world_blocks` rows gain a `scan_id` foreign ke
 2. **Cross-scan worker AI pathing:** do Tiny Workers naturally path across seams once geometry is unified? Likely yes via the existing A* on `groundMap`, since groundMap will now span chunks.
 3. **Geo resolution of the heatmap:** what's the minimum cell size for the risk overlay? Room-sized (~10m) probably right.
 4. **Multi-player tectonic visibility:** if KJ is in his apartment and someone scans an adjacent street, does KJ see the seam shift in real time? Server-pushed animation event — yes, but bandwidth implications.
+
+## Machine shaping pipeline (approved Jul 21)
+
+Sentinel and Drone are wide-beam terrain tools, not 4×4×4 block carriers. The first operation is capsule carving: a beam removes a cylindrical volume through the unified block resolver and ordinary removal path. The next operation is supported area placement: the machine deposits a wall or floor volume from material loaded in its physical stockpile/hopper, using the ordinary add path and rejecting unsupported placement unless the operation explicitly creates a scaffold or frame. Advanced shaping follows later: planar cuts, channels, terraces, reservoirs, curved tunnels, and automated construction paths.
+
+The hopper is an invisible machine inventory. Counters show its material contents, with four-times prior capacities: Drone 64, Sentinel 128, Titan 384 block-equivalents. The wide beam defines the affected volume; it is not a visible 4×4×4 carry cube.

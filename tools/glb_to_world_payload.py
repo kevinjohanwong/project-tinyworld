@@ -844,9 +844,51 @@ def prune_floating(layers, floor_band=(-2,2), min_grounded=8):
             if tuple(p) in keep: pruned[name].append(p)
     return pruned
 
-def decorate_vegetation(layers, floor, occupied, wall_cols):
+def prune_tiny_components(layers, min_size=None):
+    """Strict isolated-voxel / tiny-clump removal (KJ 2026-07-19).
+
+    Independent of grounding: any 6-connected solid component with fewer than
+    `min_size` voxels (default 3, override via TINY_CLUMP_MIN) is deleted
+    outright — a lone speck (0 neighbours) or a 2-block scatter. Runs on
+    structural mass ONLY; call it BEFORE vegetation so real tree trunks and the
+    deliberately-sparse canopy leaves authored later are never touched. This is
+    an explicit belt-and-suspenders guarantee on top of prune_floating (which is
+    a heuristic keyed on the largest component + grounded mass); the two compose.
+    """
+    if min_size is None:
+        min_size=int(os.environ.get("TINY_CLUMP_MIN", "3"))
+    if min_size<=1:
+        return layers
+    solid=set()
+    for pts in layers.values():
+        for p in pts: solid.add(tuple(p))
+    if not solid:
+        return layers
+    remain=set(solid)
+    dirs=[(1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1)]
+    keep=set()
+    while remain:
+        start=remain.pop(); comp=[start]; q=deque([start])
+        while q:
+            x,y,z=q.popleft()
+            for dx,dy,dz in dirs:
+                nb=(x+dx,y+dy,z+dz)
+                if nb in remain:
+                    remain.remove(nb); q.append(nb); comp.append(nb)
+        if len(comp)>=min_size:
+            keep.update(comp)
+    pruned=defaultdict(list)
+    for name, pts in layers.items():
+        for p in pts:
+            if tuple(p) in keep: pruned[name].append(p)
+    return pruned
+
+def decorate_vegetation(layers, floor, occupied, wall_cols, avoid_tree=None):
+    # avoid_tree(x,z)->bool vetoes TREE sites only (shrubs/ground cover still
+    # allowed) — used to keep a clearing around the super tree so it reads as
+    # the differentiated landmark (KJ 2026-07-14).
     if not floor:
-        return {"trees": 0, "shrubs": 0, "ground": 0}
+        return {"trees": 0, "shrubs": 0, "ground": 0, "treeRecords": []}
 
     xs=[x for x,_ in floor.keys()]
     zs=[z for _,z in floor.keys()]
@@ -876,91 +918,180 @@ def decorate_vegetation(layers, floor, occupied, wall_cols):
         return True
 
     n=len(floor_items)
-    # blocky-brooke-v3: ~2x denser/varied than v2 but still mobile-safe (capped).
     tree_budget=max(14, min(110, n//140))
     shrub_budget=max(40, min(260, n//28))
     ground_budget=max(200, min(1500, n//9))
+    species={
+        'nyc_honeylocust': {'height':(8,12),'crown':(4.2,2.8),'spacing':7.0,'shade':0.58,'moisture':0.48,'slope':0.72,'branches':5,'angle':0.66},
+    }
+    dirs=((1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1))
+    min_y=min(y for _,y in floor_items); max_y=max(y for _,y in floor_items)
+    relief=max(1,max_y-min_y)
 
-    tree_candidates=[]
-    for (x,z), y in floor_items:
-        if not open_floor(x,z,1):
-            continue
+    def site_metrics(x,z,y):
+        local=[]
+        for dx in range(-2,3):
+            for dz in range(-2,3):
+                yy=floor.get((x+dx,z+dz))
+                if yy is not None: local.append(yy)
+        if len(local)<18:
+            return None
+        slope=max(local)-min(local)
+        flatness=math.exp(-0.48*slope)
+        gx=(floor.get((x+2,z),y)-floor.get((x-2,z),y))/4.0
+        gz=(floor.get((x,z+2),y)-floor.get((x,z-2),y))/4.0
+        gl=math.hypot(gx,gz) or 1.0
+        soil=sum((x+dx,z+dz) in floor for dx in range(-2,3) for dz in range(-2,3))/25.0
+        open_dirs=[]
+        for dx,dz in dirs:
+            reach=12
+            for step in range(1,13):
+                k=(x+dx*step,z+dz*step)
+                fy=floor.get(k)
+                if k in wall_cols or (fy is not None and fy>y+3):
+                    reach=step-1; break
+                if fy is None:
+                    reach=max(0,step-2); break
+            open_dirs.append(reach/12.0)
+        sunlight=sum(open_dirs)/len(open_dirs)
+        available=sum(1 for v in open_dirs if v>=0.45)/len(open_dirs)
+        elevation=(y-min_y)/relief
+        basin=1.0-elevation
+        moisture=max(0.0,min(1.0,0.18+0.62*basin+0.20*((hash2(x//7,z//7)&255)/255.0)))
+        sx=sum(dirs[i][0]*open_dirs[i] for i in range(len(dirs)))
+        sz=sum(dirs[i][1]*open_dirs[i] for i in range(len(dirs)))
+        sl=math.hypot(sx,sz) or 1.0
+        return {'sunlight':sunlight,'flatness':flatness,'soil':soil,'available':available,
+                'moisture':moisture,'elevation':elevation,'slope':slope,
+                'lightDir':(sx/sl,sz/sl),'slopeDir':(gx/gl,gz/gl),'openDirs':open_dirs}
+
+    def species_fit(name,m):
+        p=species[name]
+        shade_fit=1.0-abs(m['sunlight']-p['shade'])*0.62
+        moisture_fit=1.0-abs(m['moisture']-p['moisture'])*0.78
+        slope_fit=max(0.2,1.0-m['slope']*(1.0-p['slope'])*0.45)
+        return max(0.01,shade_fit*moisture_fit*slope_fit)
+
+    candidates=[]
+    sample_mod=max(5,min(45,n//max(1,tree_budget*18)))
+    for (x,z),y in floor_items:
         h=hash2(x,z)
-        # Prefer visual edges and corners so the middle of a scanned room remains walkable.
-        edge_score=min(abs(x-min(xs)), abs(x-max(xs)), abs(z-min(zs)), abs(z-max(zs)))
-        if edge_score > max(3, span//5) and (h % 100) > 22:
+        if h%sample_mod or not open_floor(x,z,1):
             continue
-        if (h % 1000) < 150:
-            tree_candidates.append((h, x, y, z))
-    tree_candidates.sort()
+        m=site_metrics(x,z,y)
+        if not m:
+            continue
+        base=(0.12+0.88*m['sunlight'])*(0.20+0.80*m['soil'])*(0.18+0.82*m['flatness'])*(0.20+0.80*m['available'])
+        variation=0.72+0.56*((hash2(x+91,z-47)&0xffff)/65535.0)
+        weight=max(0.001,base*variation)
+        u=max(1e-6,((hash2(x-311,z+719)&0xffffff)+1)/16777217.0)
+        candidates.append((-math.log(u)/weight,h,x,y,z,m))
+    candidates.sort(key=lambda row:row[0])
 
-    planted=[]
-    cacti=0
-    min_spacing=max(4, span//22)
-    for h,x,y,z in tree_candidates:
+    planted=[]; records=[]
+    now_ms=int(time.time()*1000)
+
+    def line(a,b,layer='trunks',radius=0):
+        ax,ay,az=a; bx,by,bz=b
+        steps=max(1,int(math.ceil(max(abs(bx-ax),abs(by-ay),abs(bz-az))*1.5)))
+        for i in range(steps+1):
+            t=i/steps; px=round(ax+(bx-ax)*t); py=round(ay+(by-ay)*t); pz=round(az+(bz-az)*t)
+            for rx in range(-radius,radius+1):
+                for rz in range(-radius,radius+1):
+                    if rx*rx+rz*rz<=radius*radius: add(layer,px+rx,py,pz+rz)
+
+    def grow_tree(name,seed,x,y,z,m,competition):
+        p=species[name]; r01=(seed&0xffff)/65535.0
+        stress=max(0.58,min(1.08,0.72+0.30*m['sunlight']+0.16*m['soil']-0.18*competition))
+        height=max(5,round((p['height'][0]+(p['height'][1]-p['height'][0])*r01)*stress))
+        lean=(0.10+0.28*(1.0-m['sunlight']))
+        lx,lz=m['lightDir']; top=(x+lx*height*lean,y+height,z+lz*height*lean)
+        line((x,y+1,z),top,'trunks',1 if height>=11 else 0)
+        tips=[]
+        levels=2
+        queue=[]
+        # Honey locusts form open, ascending crowns from limbs that emerge at
+        # different heights. A shared branch origin made every terminal lobe
+        # land in one horizontal band, reading as a clipped, flat canopy.
+        primary_count=p['branches']
+        for k in range(primary_count):
+            hh=hash2(seed+k*977,x-z)
+            angle=2*math.pi*((k/primary_count)+((hh&255)/255.0-0.5)*0.22)
+            light_bias=0.22+0.30*(1.0-m['sunlight'])
+            dx=math.cos(angle)*(1-light_bias)+lx*light_bias
+            dz=math.sin(angle)*(1-light_bias)+lz*light_bias
+            dl=math.hypot(dx,dz) or 1.0; dx/=dl; dz/=dl
+            emerge=0.48+0.40*((hh>>8&255)/255.0)
+            origin=(x+(top[0]-x)*emerge,y+1+height*emerge,z+(top[2]-z)*emerge)
+            branch_len=p['crown'][0]*(0.68+0.42*((hh>>16&255)/255.0))
+            rise=branch_len*(0.30+0.46*((hh>>24&255)/255.0))
+            end=(origin[0]+dx*branch_len,origin[1]+rise,origin[2]+dz*branch_len)
+            line(origin,end,'trunks',0)
+            queue.append((end,(dx,rise/max(1,branch_len),dz),0))
+        for level in range(levels):
+            nxt=[]
+            for origin,parent_dir,_ in queue:
+                count=2 if level == 0 else 1
+                for k in range(count):
+                    hh=hash2(seed+k*977+level*131+round(origin[1])*31,x-z)
+                    angle=math.atan2(parent_dir[2],parent_dir[0]) + (k-0.5)*(0.72+0.32*((hh&255)/255.0))
+                    dx=math.cos(angle)*0.78+parent_dir[0]*0.22
+                    dz=math.sin(angle)*0.78+parent_dir[2]*0.22
+                    dl=math.hypot(dx,dz) or 1.0; dx/=dl; dz/=dl
+                    branch_len=p['crown'][0]*(0.52-level*0.16)*(0.72+0.42*((hh>>8&255)/255.0))
+                    rise=branch_len*(0.18+0.48*((hh>>16&255)/255.0))
+                    end=(origin[0]+dx*branch_len,origin[1]+rise,origin[2]+dz*branch_len)
+                    line(origin,end,'trunks',0)
+                    nxt.append((end,(dx,rise/max(1,branch_len),dz),level+1))
+            queue=nxt; tips.extend(o for o,_,_ in queue)
+        crown_x=max(1.8,p['crown'][0]*(0.72+0.34*m['sunlight'])*(1-0.20*competition))
+        crown_y=max(1.8,p['crown'][1]*(1.12-0.22*m['sunlight']))
+        crown_z=crown_x*(0.88+0.18*((seed>>16&255)/255.0))
+        for lobe_i,(tx,ty,tz) in enumerate(tips or [top]):
+            lh=hash2(seed+lobe_i*1597,round(tx)*31+round(tz))
+            lobe_x=crown_x*(0.38+0.18*((lh&255)/255.0))
+            lobe_y=crown_y*(0.46+0.28*((lh>>8&255)/255.0))
+            lobe_z=crown_z*(0.38+0.18*((lh>>16&255)/255.0))
+            ty += ((lh>>24&255)/255.0-0.35)*1.4
+            for dx in range(-math.ceil(lobe_x),math.ceil(lobe_x)+1):
+                for dy in range(-math.ceil(lobe_y),math.ceil(lobe_y)+1):
+                    for dz in range(-math.ceil(lobe_z),math.ceil(lobe_z)+1):
+                        q=(dx/lobe_x)**2+(dy/lobe_y)**2+(dz/lobe_z)**2
+                        noise=((hash2(round(tx)+dx+seed,round(tz)+dz-dy*17)&255)/255.0-0.5)*0.34
+                        # Perforated, irregular leaf masses preserve the fine,
+                        # airy honey-locust silhouette instead of a solid cap.
+                        pore=((hash2(round(tx)+dx*13,round(tz)+dz*17+seed)&1023)/1023.0)
+                        if q+noise<=1.0 and not (q>0.38 and pore<0.10):
+                            add('leaves',round(tx)+dx,round(ty)+dy,round(tz)+dz)
+        root_reach=max(2,round(p['spacing']*0.45))
+        for dx,dz in dirs[:4]:
+            rr=root_reach if floor.get((x+dx*root_reach,z+dz*root_reach),y)>=y-1 else max(1,root_reach-1)
+            line((x,y,z),(x+dx*rr,y-(1 if m['slope'] else 0),z+dz*rr),'trunks',0)
+        return height,stress
+
+    for _,h,x,y,z,m in candidates:
         if len(planted)>=tree_budget:
             break
-        if any((x-px)**2+(z-pz)**2 < min_spacing*min_spacing for px,pz in planted):
+        if avoid_tree and avoid_tree(x,z):
             continue
-        planted.append((x,z))
-        archetype=h % 6
-        height=4 + (h % 5)
-        if archetype == 0:
-            # Big tiered conifer / cypress (the prominent reference trees).
-            for i in range(1, height+2): add('trunks', x, y+i, z)
-            for level, radius in ((height-2,3),(height-1,3),(height,2),(height+1,2),(height+2,1),(height+3,1)):
-                for dx in range(-radius, radius+1):
-                    for dz in range(-radius, radius+1):
-                        if abs(dx)+abs(dz) <= radius+1:
-                            add('leaves', x+dx, y+level, z+dz)
-        elif archetype == 1:
-            # Rounded full deciduous canopy.
-            for i in range(1, height+1): add('trunks', x, y+i, z)
-            for dy,radius in ((height-2,2),(height-1,3),(height,3),(height+1,2)):
-                for dx in range(-radius, radius+1):
-                    for dz in range(-radius, radius+1):
-                        if dx*dx + dz*dz + (dy-height)**2 <= radius*radius+1:
-                            add('leaves', x+dx, y+dy, z+dz)
-            for k in range(3):
-                hh=hash2(x+k*7, z-k*5)
-                add('fruit', x+(hh%3)-1, y+height, z+((hh>>4)%3)-1)
-        elif archetype == 2:
-            # Palm / umbrella silhouette.
-            for i in range(1, height+3): add('trunks', x, y+i, z)
-            top=y+height+3
-            add('leaves', x, top, z)
-            for dx,dz in ((2,0),(-2,0),(0,2),(0,-2),(1,1),(-1,1),(1,-1),(-1,-1),(3,0),(-3,0),(0,3),(0,-3)):
-                add('leaves', x+dx, top-1, z+dz)
-                if abs(dx)+abs(dz)>2:
-                    add('leaves', x+dx, top-2, z+dz)
-        elif archetype == 3:
-            # Small street-tree / bonsai shape.
-            for i in range(1, height): add('trunks', x, y+i, z)
-            for dx in (-1,0,1):
-                for dz in (-1,0,1):
-                    if abs(dx)+abs(dz) <= 2:
-                        add('leaves', x+dx, y+height, z+dz)
-            add('leaves', x, y+height+1, z)
-            if h % 4 == 0:
-                add('fruit', x, y+height+1, z)
-        elif archetype == 4:
-            # Cactus: narrow tall green column with arm nubs + a bloom on top.
-            ch=3 + (h % 4)
-            for i in range(1, ch+1): add('leaves', x, y+i, z)
-            arm_y=y+max(2, ch-1)
-            add('leaves', x+1, arm_y, z); add('leaves', x+1, arm_y+1, z)
-            add('leaves', x-1, arm_y-1, z); add('leaves', x-1, arm_y, z)
-            add('fruit', x, y+ch+1, z)  # cactus flower
-            cacti += 1
-        else:
-            # Flowering bush: low leaf mound studded with blossoms.
-            for dx in range(-1,2):
-                for dz in range(-1,2):
-                    add('leaves', x+dx, y+1, z+dz)
-            add('leaves', x, y+2, z)
-            for dx,dz in ((1,0),(-1,0),(0,1),(0,-1)):
-                if (hash2(x+dx, z+dz) % 3) == 0:
-                    add('fruit', x+dx, y+1, z+dz)
+        nearest=min((math.hypot(x-t['x'],z-t['z'])/t['spacing'] for t in planted),default=99.0)
+        competition=max(0.0,1.0-nearest/2.2) if planted else 0.0
+        name=max(species,key=lambda candidate:species_fit(candidate,m))
+        spacing=species[name]['spacing']*(0.84+0.28*((h>>8&255)/255.0))
+        if any((x-t['x'])**2+(z-t['z'])**2 < ((spacing+t['spacing'])*0.5)**2 for t in planted):
+            continue
+        seed=hash2(h^0x6d2b79f5,x+z)
+        height,stress=grow_tree(name,seed,x,y,z,m,competition)
+        planted.append({'x':x,'z':z,'spacing':spacing})
+        age_hours=5.0+10.0*((seed>>5&0xffff)/65535.0)
+        records.append({'type':'ltree','species':name,'seed':seed,'plantedAtMs':now_ms-round(age_hours*3600000),
+                        'ageHours':round(age_hours,3),'origin':[x,y,z],'growthStage':3 if age_hours>=12 else 2,
+                        'lightScore':round(m['sunlight'],4),'moistureScore':round(m['moisture'],4),
+                        'flatnessScore':round(m['flatness'],4),'soilDepthScore':round(m['soil'],4),
+                        'elevationScore':round(m['elevation'],4),'competition':round(competition,4),
+                        'lightDirection':[round(m['lightDir'][0],4),round(m['lightDir'][1],4)],
+                        'slopeDirection':[round(m['slopeDir'][0],4),round(m['slopeDir'][1],4)],
+                        'matureHeight':height,'growthStress':round(stress,4),'pruningHistory':[]})
 
     shrubs=0
     ground=0
@@ -985,7 +1116,9 @@ def decorate_vegetation(layers, floor, occupied, wall_cols):
             if (h % 11) == 0 and add('fruit', x, y+1, z):
                 ground += 1
 
-    return {"trees": len(planted), "shrubs": shrubs, "ground": ground, "cacti": cacti}
+    return {"trees": len(planted), "shrubs": shrubs, "ground": ground,
+            "species": dict(Counter(r['species'] for r in records)),
+            "model": "environmental-nyc-v1", "treeRecords": records}
 
 def convert(path):
     tris, mn, mx = load_triangles(path)
@@ -1216,7 +1349,13 @@ def convert(path):
         for p in cliff_stone: final['stone'].append(p)
         for p in rubble: final['stone'].append(p)
         final['wall']=solid_wall
-        vegetation_stats={"trees":0,"shrubs":0,"ground":0}
+        if os.environ.get("NO_VEG", "0")=="1":
+            vegetation_stats={"trees":0,"shrubs":0,"ground":0,"treeRecords":[]}
+        else:
+            occupied=set()
+            for pts in final.values():
+                occupied.update(tuple(p) for p in pts)
+            vegetation_stats=decorate_vegetation(final, floor, occupied, keep_cols)
         if ORTHO_ENABLED:
             anchor=parse_glb_anchor(path)
             if anchor:
@@ -1246,22 +1385,33 @@ def convert(path):
                 if p in occupied: continue
                 occupied.add(p); uniq.append(p)
             layers[name]=uniq
-        if os.environ.get("NO_VEG", "0")=="1":
-            vegetation_stats={"trees":0,"shrubs":0,"ground":0}
-        else:
-            vegetation_stats=decorate_vegetation(layers, floor, occupied, keep_cols)
         # Preserve non-structural surface details as stone/metal accents when not
-        # colliding.
+        # colliding. These remain part of the structural scan pass.
         for x,y,z in set(allsurf):
             if y<=0 or (x,y,z) in occupied: continue
             if (x,z) in keep_cols: continue
             if len(layers['stone']) < 6000:
                 layers['stone'].append((x,y,z)); occupied.add((x,y,z))
-        # Drop floating-island scatter before culling so coherence wins.
+        # Remove unsupported scan noise before authoring vegetation. Regular
+        # trees are deliberately added after this pass, so real trunks and
+        # canopy branches can never be mistaken for scan floaters. Vegetation
+        # is not part of this structural cleanup: it is authored below.
         layers=prune_floating(layers)
+        # Strict follow-up: nuke isolated specks / <3-block scatter that the
+        # connected-component heuristic above is not built to target (KJ
+        # 2026-07-19). Still before vegetation, so trees stay safe.
+        layers=prune_tiny_components(layers)
         occupied=set()
         for pts in layers.values():
             for p in pts: occupied.add(tuple(p))
+        # Structural scan cleanup is complete before vegetation is authored.
+        # Generated trees/plants are intentionally added afterward, so the
+        # support-connected floater pass removes scan noise without deleting
+        # legitimate tree trunks or overhanging canopies.
+        if os.environ.get("NO_VEG", "0")=="1":
+            vegetation_stats={"trees":0,"shrubs":0,"ground":0}
+        else:
+            vegetation_stats=decorate_vegetation(layers, floor, occupied, keep_cols)
         # Visibility cull with hidden_dirt for solid interiors.
         dirs=[(1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1)]
         final=defaultdict(list); hidden=[]
@@ -1299,11 +1449,16 @@ def convert(path):
                        'method': 'value-noise-edge', 'seed': int(cliff_seed)},
             'rotated_deg': int(rot_deg),
             'vegetation': {
-                'style': 'blocky-brooke-v3',
+                'style': 'environmental-nyc-v1',
                 **vegetation_stats,
             },
         },
         'savedAt': int(time.time()*1000),
+        # Regular trees are authored exactly once by this voxelization pass.
+        # Runtime clients must preserve the emitted voxels and records verbatim.
+        'treesUpgraded': True,
+        'treeUpgradeVersion': 3,
+        'treeRecords': vegetation_stats.get('treeRecords', []),
     }
     if latent_total:
         meta['latentCols']=b64_i32(latent_quads)

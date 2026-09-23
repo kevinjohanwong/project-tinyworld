@@ -1,0 +1,210 @@
+{
+  "202 East 75th Street": {
+    "way": "266876455",
+    "a_enu": [
+      -30.55,
+      -27.84
+    ],
+    "b_enu": [
+      -35.41,
+      -30.55
+    ],
+    "frontage_m": 5.56,
+    "n_street_edges": 1
+  },
+  "204 East 75th Street": {
+    "way": "266876462",
+    "a_enu": [
+      -25.23,
+      -24.89
+    ],
+    "b_enu": [
+      -30.55,
+      -27.84
+    ],
+    "frontage_m": 6.09,
+    "n_street_edges": 1
+  },
+  "206 East 75th Street": {
+    "way": "266876466",
+    "a_enu": [
+      -20.06,
+      -22.02
+    ],
+    "b_enu": [
+      -25.23,
+      -24.89
+    ],
+    "frontage_m": 5.91,
+    "n_street_edges": 1
+  },
+  "208 East 75th Street": {
+    "way": "266876471",
+    "a_enu": [
+      -14.17,
+      -19.85
+    ],
+    "b_enu": [
+      -19.6,
+      -22.86
+    ],
+    "frontage_m": 6.2,
+    "n_street_edges": 1
+  },
+  "210 East 75th Street": {
+    "way": "266876474",
+    "a_enu": [
+      1.32,
+      -11.26
+    ],
+    "b_enu": [
+      -14.17,
+      -19.85
+    ],
+    "frontage_m": 17.72,
+    "n_street_edges": 3
+  },
+  "216-218 East 75th Street": {
+    "way": "266876477",
+    "a_enu": [
+      11.91,
+      -5.38
+    ],
+    "b_enu": [
+      1.32,
+      -11.26
+    ],
+    "frontage_m": 12.11,
+    "n_street_edges": 1
+  },
+  "222 East 75th Street": {
+    "way": "266876481",
+    "a_enu": [
+      27.2,
+      3.1
+    ],
+    "b_enu": [
+      11.91,
+      -5.38
+    ],
+    "frontage_m": 17.49,
+    "n_street_edges": 1
+  },
+  "226 East 75th Street": {
+    "way": "266876487",
+    "a_enu": [
+      32.58,
+      6.09
+    ],
+    "b_enu": [
+      27.2,
+      3.1
+    ],
+    "frontage_m": 6.15,
+    "n_street_edges": 1
+  },
+  "228 East 75th Street": {
+    "way": "266876489",
+    "a_enu": [
+      38.12,
+      9.16
+    ],
+    "b_enu": [
+      32.58,
+      6.09
+    ],
+    "frontage_m": 6.33,
+    "n_street_edges": 1
+  },
+  "230 East 75th Street": {
+    "way": "266876491",
+    "a_enu": [
+      43.57,
+      12.19
+    ],
+    "b_enu": [
+      38.12,
+      9.16
+    ],
+    "frontage_m": 6.24,
+    "n_street_edges": 1
+  },
+  "232 East 75th Street": {
+    "way": "266876494",
+    "a_enu": [
+      49.3,
+      15.36
+    ],
+    "b_enu": [
+      43.57,
+      12.19
+    ],
+    "frontage_m": 6.54,
+    "n_street_edges": 1
+  },
+  "234 East 75th Street": {
+    "way": "266876496",
+    "a_enu": [
+      54.22,
+      18.1
+    ],
+    "b_enu": [
+      49.3,
+      15.36
+    ],
+    "frontage_m": 5.63,
+    "n_street_edges": 1
+  },
+  "236 East 75th Street": {
+    "way": "266876498",
+    "a_enu": [
+      60.63,
+      21.66
+    ],
+    "b_enu": [
+      54.22,
+      18.1
+    ],
+    "frontage_m": 7.33,
+    "n_street_edges": 1
+  },
+  "238 East 75th Street": {
+    "way": "266876499",
+    "a_enu": [
+      67.43,
+      25.42
+    ],
+    "b_enu": [
+      60.63,
+      21.66
+    ],
+    "frontage_m": 7.77,
+    "n_street_edges": 1
+  },
+  "240 East 75th Street": {
+    "way": "266876500",
+    "a_enu": [
+      73.81,
+      28.96
+    ],
+    "b_enu": [
+      67.43,
+      25.42
+    ],
+    "frontage_m": 7.29,
+    "n_street_edges": 1
+  },
+  "242 East 75th Street": {
+    "way": "266876501",
+    "a_enu": [
+      80.88,
+      32.89
+    ],
+    "b_enu": [
+      73.81,
+      28.96
+    ],
+    "frontage_m": 8.09,
+    "n_street_edges": 1
+  }
+}

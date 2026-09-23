@@ -1,0 +1,288 @@
+{
+  "comment": "Persistent facade photo store for the OSM barren-city build (E 75th St between 2nd & 3rd Ave, south/even side). One straight-on facade photo per building, sourced from CityRealty/StreetEasy building pages (NEVER Google Street View). Images live in images/ and are never re-sourced once status >= sourced. Status ladder: pending -> sourced (photo on disk) -> inferred (window-grid spec written) -> built (in world payload). ENU anchor for all specs: lat 40.77117 lon -73.95843 (baked in osm-ues.glb).",
+  "anchor": {
+    "lat": 40.77117,
+    "lon": -73.95843,
+    "glb": "osm-ues.glb"
+  },
+  "buildings": [
+    {
+      "address": "202 East 75th Street",
+      "osm_way": "266876455",
+      "bin": "1044054",
+      "osm_height_m": 16.6,
+      "status": "built",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0145.jpg",
+      "image": "images/202_e75_1940_lot0145.jpg",
+      "note": "CityRealty page has no real photo (Street View embed only)",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "145.00",
+      "api_matched_address": "202 East 75 Street",
+      "spec": "../facade_e75_block.json"
+    },
+    {
+      "address": "204 East 75th Street",
+      "osm_way": "266876462",
+      "bin": "1044043",
+      "osm_height_m": 14.0,
+      "status": "built",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0044.jpg",
+      "image": "images/204_e75_1940_lot0044.jpg",
+      "note": "CityRealty page has no real photo (Street View embed only)",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "44.00",
+      "api_matched_address": "204 East 75 Street",
+      "spec": "../facade_e75_block.json"
+    },
+    {
+      "address": "206 East 75th Street",
+      "osm_way": "266876466",
+      "bin": "1044053",
+      "osm_height_m": 13.9,
+      "status": "built",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0143.jpg",
+      "image": "images/206_e75_1940_lot0143.jpg",
+      "note": "CityRealty page has no real photo (Street View embed only)",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "143.00",
+      "api_matched_address": "206 East 75 Street",
+      "spec": "../facade_e75_block.json"
+    },
+    {
+      "address": "208 East 75th Street",
+      "osm_way": "266876471",
+      "bin": "1044042",
+      "osm_height_m": 13.5,
+      "status": "built",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0043.jpg",
+      "image": "images/208_e75_1940_lot0043.jpg",
+      "note": "CityRealty page has no real photo (Street View embed only)",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "43.00",
+      "api_matched_address": "208 East 75 Street",
+      "spec": "../facade_e75_block.json"
+    },
+    {
+      "address": "210 East 75th Street",
+      "osm_way": "266876474",
+      "bin": "1044041",
+      "osm_height_m": 18.6,
+      "status": "built",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0041.jpg",
+      "image": "images/210_e75_1940_lot0041.jpg",
+      "note": "CityRealty page has no real photo (Street View embed only)",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "41.00",
+      "api_matched_address": "210-214 East 75 Street",
+      "spec": "../facade_e75_block.json"
+    },
+    {
+      "address": "216-218 East 75th Street",
+      "osm_way": "266876477",
+      "bin": "1076310",
+      "osm_height_m": 16.3,
+      "status": "built",
+      "source_url": "CityRealty building page (pre-store; photo not persisted)",
+      "image": "images/216_218_e75_00.jpg",
+      "spec": "../facade_216e75.json",
+      "note": "prototype building; spec inferred pre-store from CityRealty photo; photos now persisted (modern + 1940)",
+      "photos": [
+        {
+          "file": "images/216_218_e75_00.jpg",
+          "url": "CityRealty building page 5884"
+        },
+        {
+          "file": "images/216_218_e75_01.jpg",
+          "url": "CityRealty building page 5884"
+        },
+        {
+          "file": "images/216_218_e75_02.jpg",
+          "url": "CityRealty building page 5884"
+        },
+        {
+          "file": "images/216_218_e75_03.jpg",
+          "url": "CityRealty building page 5884"
+        },
+        {
+          "file": "images/216_218_e75_04.jpg",
+          "url": "CityRealty building page 5884"
+        },
+        {
+          "file": "images/216_218_e75_05.jpg",
+          "url": "CityRealty building page 5884"
+        },
+        {
+          "file": "images/216_218_e75_06.jpg",
+          "url": "CityRealty building page 5884"
+        },
+        {
+          "file": "images/216_218_e75_1940_lot0039.jpg",
+          "url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0039.jpg"
+        }
+      ]
+    },
+    {
+      "address": "222 East 75th Street",
+      "osm_way": "266876481",
+      "bin": "1044039",
+      "osm_height_m": 18.4,
+      "status": "inferred",
+      "source_url": "https://www.cityrealty.com/nyc/lenox-hill/222-east-75th-street/2053",
+      "image": "images/222_e75_05.jpg",
+      "photos": [
+        {
+          "file": "images/222_e75_00.jpg",
+          "url": "https://thumbs.cityrealty.com/assets/smart/x424/webp/2/2a/2a2b9a77ac821d17e7f8fef8e234418a022d8677/222-east-75th-street-01.jpg"
+        },
+        {
+          "file": "images/222_e75_01.jpg",
+          "url": "https://thumbs.cityrealty.com/assets/smart/x424/webp/a/a2/a267caf7f9af71a6e829043e38592d825672f365/222-east-75th-street-02.jpg"
+        },
+        {
+          "file": "images/222_e75_02.jpg",
+          "url": "https://thumbs.cityrealty.com/assets/smart/x424/webp/5/50/50db0634b679e0e3a87a09c534d282ddfd945788/222-east-75th-street-03.jpg"
+        },
+        {
+          "file": "images/222_e75_03.jpg",
+          "url": "https://thumbs.cityrealty.com/assets/smart/x424/webp/6/63/63d77287485cb4cf13d7f7b06c420b70ae25fcb2/222-east-75th-street-04.jpg"
+        },
+        {
+          "file": "images/222_e75_04.jpg",
+          "url": "https://thumbs.cityrealty.com/assets/smart/x424/webp/1/13/13218acd88edd02b25c38a05503f838dad36caf7/222-east-75th-street-05.jpg"
+        },
+        {
+          "file": "images/222_e75_05.jpg",
+          "url": "https://thumbs.cityrealty.com/assets/smart/x424/webp/c/cf/cfcd9ea75bdda2ba2189fc2951698170715015f7/222-east-75th-street-00.jpg"
+        }
+      ],
+      "note": "only exterior photo is angled (not straight-on); white-brick apt bldg, awning reads 'Two Hundred Twenty Two'",
+      "spec": "../facade_e75_block.json",
+      "infer_note": "inferred from single ANGLED photo: entrance EAST end w/ blue sidewalk canopy, barred ground windows W of entrance, balcony stack at E corner NOT representable -> regular grid assumed; white glazed brick"
+    },
+    {
+      "address": "226 East 75th Street",
+      "osm_way": "266876487",
+      "bin": "1044038",
+      "osm_height_m": 15.8,
+      "status": "inferred",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0036.jpg",
+      "image": "images/226_e75_1940_lot0036.jpg",
+      "note": "CityRealty page has no real photo (Street View embed only)",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "36.00",
+      "api_matched_address": "226 East 75 Street",
+      "spec": "../facade_e75_block.json",
+      "infer_note": "5-story 3-bay red-brick tenement; 1940 ground floor = LAUNDRY storefront -> modeled as glazed shopfront + sign band, door at W end of shopfront, no stoop"
+    },
+    {
+      "address": "228 East 75th Street",
+      "osm_way": "266876489",
+      "bin": "1044037",
+      "osm_height_m": 14.6,
+      "status": "inferred",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0035.jpg",
+      "image": "images/228_e75_1940_lot0035.jpg",
+      "note": "CityRealty page has no real photo (Street View embed only)",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "35.00",
+      "api_matched_address": "228 East 75 Street",
+      "spec": "../facade_e75_block.json",
+      "infer_note": "4-story 2-bay light-painted rowhouse; door E bay w/ transom+lanterns, low stoop; laundry drapes hid basement -> assumed"
+    },
+    {
+      "address": "230 East 75th Street",
+      "osm_way": "266876491",
+      "bin": "1044052",
+      "osm_height_m": 14.6,
+      "status": "inferred",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0134.jpg",
+      "image": "images/230_e75_1940_lot0134.jpg",
+      "note": "CityRealty page has no real photo (Street View embed only)",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "134.00",
+      "api_matched_address": "230 East 75 Street",
+      "spec": "../facade_e75_block.json",
+      "infer_note": "4-story 2-bay brownstone; bracketed door hood E bay, low stoop; basement hidden by cars -> assumed"
+    },
+    {
+      "address": "232 East 75th Street",
+      "osm_way": "266876494",
+      "bin": "1044036",
+      "osm_height_m": 14.6,
+      "status": "inferred",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0034.jpg",
+      "image": "images/232_e75_1940_lot0034.jpg",
+      "note": "CityRealty page has no real photo (Street View embed only)",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "34.00",
+      "api_matched_address": "232 East 75 Street",
+      "spec": "../facade_e75_block.json",
+      "infer_note": "4-story 3-bay red brick, tall parlor windows; GROUND HIDDEN by parked cars -> east-bay grade door ASSUMED; had '2-3 room apartments' rent sign in 1940"
+    },
+    {
+      "address": "234 East 75th Street",
+      "osm_way": "266876496",
+      "bin": "1044035",
+      "osm_height_m": 14.5,
+      "status": "sourced",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0033.jpg",
+      "image": "images/234_e75_1940_lot0033.jpg",
+      "note": "CityRealty page has no real photo (Street View embed only)",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "33.00",
+      "api_matched_address": "234 East 75 Street"
+    },
+    {
+      "address": "236 East 75th Street",
+      "osm_way": "266876498",
+      "bin": "1083897",
+      "osm_height_m": 15.1,
+      "status": "sourced",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0032.jpg",
+      "image": "images/236_e75_1940_lot0032.jpg",
+      "note": "no CityRealty building page found",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "32.00",
+      "api_matched_address": "236 East 75 Street"
+    },
+    {
+      "address": "238 East 75th Street",
+      "osm_way": "266876499",
+      "bin": "1085192",
+      "osm_height_m": 15.0,
+      "status": "sourced",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0031.jpg",
+      "image": "images/238_e75_1940_lot0031.jpg",
+      "note": "no CityRealty building page found",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "31.00",
+      "api_matched_address": "238 East 75 Street"
+    },
+    {
+      "address": "240 East 75th Street",
+      "osm_way": "266876500",
+      "bin": "1044034",
+      "osm_height_m": 14.9,
+      "status": "sourced",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0030.jpg",
+      "image": "images/240_e75_1940_lot0030.jpg",
+      "note": "CityRealty page has no real photo (Street View embed only)",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "30.00",
+      "api_matched_address": "240 East 75 Street"
+    },
+    {
+      "address": "242 East 75th Street",
+      "osm_way": "266876501",
+      "bin": "1044033",
+      "osm_height_m": 15.4,
+      "status": "sourced",
+      "source_url": "https://photos.1940s.nyc/jpg/nynyma_rec0040_1_01429_0029.jpg",
+      "image": "images/242_e75_1940_lot0029.jpg",
+      "note": "no CityRealty building page found",
+      "source_vintage": "1940 tax photo (NYC Municipal Archives via 1940s.nyc)",
+      "tax_lot_1940": "29.00",
+      "api_matched_address": "242 East 75 Street"
+    }
+  ]
+}

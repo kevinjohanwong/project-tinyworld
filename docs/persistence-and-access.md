@@ -138,6 +138,13 @@ the *worlds are data* decision extends planet-wide:
   unscanned planet IS the void — one dark ocean of it. Scanning carves
   islands of perceived existence out of the antagonist. The empty globe
   isn't missing; it's the enemy's territory, and the map shows the war.
+- **Photorealistic 3D Tiles are only a phantom substrate.** Google tiles may
+  be fetched once for an area, cached, and rendered as ghosted terrain or
+  building silhouettes so the dead globe feels geographically real. They do
+  not create rows in the world ledger, do not grant access, and do not count
+  as scanned matter. Until a player scans/reclaims the same space, tile
+  geometry is non-reactive: at most it is visual reference and coarse
+  collision/walking support, never harvestable/buildable world mass.
 
 Schema delta: `worlds` gains `geocell` TEXT (indexed); a
 `GET /api/tinyworld-worlds?globe=1` aggregate returns `{cell, worldCount,

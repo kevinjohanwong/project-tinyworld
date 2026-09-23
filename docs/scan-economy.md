@@ -113,6 +113,22 @@ Rule: lenses never fork the simulation. All clients read/write the
 same ledger and the same block_events log; a Quest player and a
 Safari player visiting the same world see the same blocks.
 
+## Map tiles are not a scanner
+
+Google Photorealistic 3D Tiles can be used as a cached visual lens for
+unscanned Earth, but never as an origin of land. Downloading a tile once
+for a region is acceptable; after that it can sit under the world as a
+dead, phantom layer that gives geographic context. It does not react to
+workers, does not satisfy scan-second spending, and does not add mass to
+the baseline.
+
+Gameplay rule: a tile building can look present, and may even provide a
+coarse walking/collision surface for traversal readability, but it remains
+void territory until scanned or reclaimed. The moment the player scans that
+space, the canonical LiDAR/photogrammetry/OpenMVS payload replaces the
+phantom surface with real voxel matter that can be defended, mined, built
+on, and counted by the ledger.
+
 ## Press structure (chunk 4 remainder)
 
 Compression (`4 pure → 1 raw` next tier) must move from debug call to

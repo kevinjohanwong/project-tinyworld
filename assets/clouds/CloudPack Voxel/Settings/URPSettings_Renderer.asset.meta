@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 784e43d4286d4b84895f4d763a5b4d2b
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 151003
+  packageName: Stylized Voxel Clouds
+  packageVersion: 1.01
+  assetPath: Assets/CloudPack Voxel/Settings/URPSettings_Renderer.asset
+  uploadId: 368782

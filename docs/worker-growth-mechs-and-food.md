@@ -1,6 +1,6 @@
 # Worker Growth, Food Sources & Mech Piloting
 
-**Status:** Draft spec — KJ + Claude, 2026-07-02
+**Status:** Draft spec — KJ + Claude, 2026-07-02; shared-fleet expansion, 2026-07-13
 **Depends on:** `tiny-people.md`, `scan-economy.md` (conservation ledger), `sentinel-supplier.md`, the live worker loop in staging (`tw-staging-app.tsx`).
 
 ## 1. Problem
@@ -53,17 +53,17 @@ Zero new rendering: the 5-frame expression atlas (open/half/closed/happy/focused
 
 ## 4. Food Sources
 
-Constraints: conservation ledger (`WORLD + STOCKPILE + BUILT + VOID === baseline`), decision #11 (stockpile is visible matter, no hidden inventories), and the existing organic lifecycle (leaf → fruit → drop → rot → seed → sapling → tree; fruit layer is deliberately outside strict conservation).
+Constraints: conservation ledger (`WORLD + CARRIED + STOCKPILE + BUILT + VOID === baseline`), decision #11 (stockpile is visible matter, no hidden inventories), and the tree-bound organic lifecycle. Fruit occupies deterministic sockets directly beneath supporting leaves, stays attached until harvested, and regrows at that same class of socket after a season-scaled delay. The retired random-bud → forced-drop → ground-rot loop must not return.
 
 ### 4.1 Fruit — the staple
 
-- Workers gain an **Eat** behavior: when hungry (satiation timer expired) and GP-gated, a mote walks to the **visible stockpile**, takes 1 fruit, eats it. Ledger: `STOCKPILE → VOID` — *identical* to the player-eat path at tw-staging-app.tsx:6314, so no new ledger math.
-- Workers can already carry fruit (`SOFT_WORKER_LAYERS`); harvesting fruit to the stockpile becomes a standard chore alongside blocks.
+- Workers gain an **Eat** behavior: when hungry (satiation timer expired) and GP-gated, a mote walks to the **visible stockpile**, takes 1 fruit, eats it. Ledger: `STOCKPILE → VOID`, so no new ledger math.
+- Workers carry harvested fruit through the physical ferry path (`WORLD → CARRIED → STOCKPILE`). The depot renders fruit, seed, and nectar inside a raised open produce crate rather than as loose cubes on the ground; building matter remains on the adjacent pallet.
 - This creates deliberate **competition for fruit** between three sinks: player satiation, refine press (1 fruit/grade-step, already "starves" and waits), and now worker growth. Scarcity is the point — it drives orcharding.
 
 ### 4.2 Orcharding — closing the loop
 
-- New worker chore: **plant seeds**. Motes carry dropped seeds to open dirt/grass and plant them (seed → sapling → tree via the existing lifecycle). More mouths → need more trees → workers plant trees.
+- New worker chore: **plant seeds**. Motes carry available seeds from the larder to open dirt/grass and plant them (seed → sapling → tree via the existing lifecycle). More mouths → need more trees → workers plant trees.
 - This is the on-ramp to KJ's **super-tree** idea: one tree per island can be nurtured into the island's "engine" — a fruit-abundance anchor and the organic counterforce to the Void. Super-tree gets its own spec; this doc only reserves the hook (a tree that receives N sustained seasons of worker tending flags as super-tree candidate).
 
 ### 4.3 Forage graze — the survival trickle
@@ -96,11 +96,48 @@ Baseline on foot: carry 1 soft-layer block (`SOFT_WORKER_LAYERS`: grass, dryGras
 
 1. **Bulk & hard matter.** Motes can only lift soft layers. Mechs grip **stone, metal, wall** — and carry bundles: Drone 4 blocks, Sentinel 8, Titan 24 (one HUT_COST per trip). Terraforming, moving scan rubble, clearing collapsed walls: mech-only.
 2. **Construction at scale.** Huts stay mote-built. Mechs place *blueprint-scale* structures — watchtowers, perimeter walls, bridges between scan islands — feasible because a Titan places 24-block bundles.
-3. **Void work (the exclusive).** Only a mech can operate at the void frontier. Two verbs:
+3. **Void work (the exclusive).** Only a mech can operate at the void frontier. Three verbs:
    - **Hold** (Sentinel): patrol the frontier, stop void encroachment on world edges.
    - **Reclaim** (Titan): mine matter back out of the void — `VOID → STOCKPILE`. Every eaten fruit, press-burn, and consumed block flows one-way into the void; reclamation is the only counter-flow, making mechs the sole engine of net world growth besides new scans. Conservation holds exactly — nothing minted, matter pulled back from the reservoir.
+   - **Sculpt** (Elder-crewed, endgame): shape captured void substance into player-designed mechs — full spec in `void-motes-ship-and-moon.md` §8.
 
 Thematic pairing with the super-tree: the tree fights the void *organically* (growth, fruit, seeds), mechs fight it *mechanically* (hold the line, reclaim mass). Island health = both working. This also resolves the opportunity cost: an Elder leaves the orchard economy because reclaimed void-matter is worth more than what its hands could harvest.
+
+### 5.2 The mech collection is a shared fleet
+
+Drone, Sentinel, and Titan describe **capability bands**, not the complete roster. The long-term collection contains many frames within and between those bands: walkers, crawlers, rollers, diggers, lifters, orchard tenders, salvage rigs, scouts, patrol bodies, ship-repair frames, and stranger designs recovered through slipspace.
+
+The core loop is:
+
+**discover a blueprint or wreck → recover matter and parts → experiment with a build → fabricate the frame → park it in the settlement → watch different motes learn it → repair, upgrade, trade, lose, or replace it.**
+
+- A mech belongs to the **settlement fleet**, not permanently to one mote. Crew assignment is temporary and task-based.
+- When work appears, the colony chooses among available frames using task fit, crew-point requirement, condition, power/fuel, terrain compatibility, travel distance, and current crew availability.
+- Motes also have preferences and learned proficiency. A cautious mote may favor a stable crawler; an adventurous mote may volunteer for a fast scout. Familiarity improves handling and efficiency, but never creates an exclusive ownership lock.
+- A single frame can be piloted by different motes across different days. A single mote may master several frames over its life.
+- Multi-mote frames form temporary crews. Compatibility and shared experience affect coordination, making a good crew a relationship rather than a loadout bonus.
+- Early frames should feel handmade, repaired, and slightly awkward. Advanced frames may be elegant, alien, or incomplete artifacts recovered through slipspace. The settlement's parked silhouettes become a readable history of its progress.
+
+The collection is therefore not an abstract menu. Every operational mech must exist somewhere in the world as a parked frame, active machine, damaged wreck, or transported expedition asset.
+
+### 5.3 Physical parking, workshops, and the hangar
+
+Mech storage becomes part of settlement architecture:
+
+- A small house may grow a tiny driveway, lean-to, charging pad, or one-frame shed.
+- A workshop provides repair, part swapping, and experimental fabrication space.
+- A communal parking lot lets workers find and dispatch shared utility frames efficiently.
+- The hangar is the settlement-scale showcase: parked frames, empty bays, damaged returns, spare limbs, recovered blueprints, and expedition staging are all visible.
+
+Parking is functional rather than decorative. A frame must have a reachable bay or valid outdoor pad; blocked or buried machines cannot be dispatched. Returning motes park the frame, unload visible cargo, and only then release it for another task. Houses do not imply one mech per resident: residential parking is distributed infrastructure for the same shared fleet.
+
+### 5.4 Parts, loss, and expedition loadouts
+
+Frames are modular across movement systems, tools, armor, cargo, power, and cockpit capacity. Parts can be fabricated from conserved matter, salvaged from wrecks, traded, or recovered from other domains. Swapping a drill for a manipulator changes what the frame can do; it is not a cosmetic inventory slot.
+
+Before opening slipspace, the colony assembles an expedition by choosing motes, frames, tools, spare parts, cargo capacity, and possibly the Sentinel or its drone. Smaller ships may carry only a few compact frames; upgraded ships unlock heavier and more specialized machinery. Excavation, salvage, ship repair, and return hauling can therefore require different mechs on the same expedition.
+
+Recovered matter and parts enter the conservation ledger only when physically unloaded after return. A destroyed mech leaves recoverable matter or a wreck in place. If its mote survives or bails out, the character persists and remembers the loss; losing the machine is painful without treating the character as disposable equipment.
 
 ## 6. Materials: Warmth vs Resilience
 
@@ -188,4 +225,4 @@ Extend `window.__tw`:
 9. **Erosion scope:** is void erosion frontier-only (influence radius), or also a slow global trickle that makes *all* soft structures need upkeep?
 10. **Lens requirement:** must the cap be pure-grade, or does raw metal work as a weak early-game lens (pure = radius multiplier)? Pure-only makes the press mandatory before any tower exists.
 11. **Beam at night:** does the beam double as actual light at night (safe outdoor zone — unsheltered motes in a beam go dormant but don't lose comfort)?
-12. **Comfort floor:** can low comfort ever do more than slow growth (e.g., a deeply miserable mote refuses to pilot mechs), or is growth-rate the only lever?
+12. ~~**Comfort floor:**~~ — **Resolved (KJ 2026-07-03, via void spec #29): yes — deeply miserable motes can defect to the void**, up to and including piloting away a docked sculpted mech. Comfort is loyalty, not just a growth multiplier. Conversion is bidirectional (kindness converts dark motes in, neglect converts yours out). See `void-motes-ship-and-moon.md` §8.5/#29 and the defection ceremony in §10.

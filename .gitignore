@@ -27,3 +27,10 @@ tools/__pycache__/
 --full-page
 .route-backups/*.tsx
 node_modules
+
+# Live world DB + backups (runtime data, not code)
+data/tinyworld.db.bak*
+data/tinyworld.backup-*
+data/*.db-wal
+data/*.db-shm
+shot1.png
