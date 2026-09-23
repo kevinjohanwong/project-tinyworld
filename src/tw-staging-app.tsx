@@ -1876,6 +1876,10 @@ export default function TinyWorld() {
   const touchLookRef = useRef({ id: -1, lastX: 0, lastY: 0, active: false });
   const mobileActionsRef = useRef({ jump: false, action: false, eat: false, droneAscend: false, droneDescend: false });
   const machineBeamInputRef = useRef<{ start: () => void; stop: () => void }>({ start: () => {}, stop: () => {} });
+  // Test-harness sticks (__tw.input). Same shape/convention as the mobile
+  // joysticks (x right, y down, unit circle); read by the game loop on every
+  // platform so an agent can play through the real input paths.
+  const testInputRef = useRef({ stick: { x: 0, y: 0, active: false }, look: { x: 0, y: 0, active: false } });
   const walkingRef = useRef(false);
   const isMobileRef = useRef(false);
   const targetLookRef = useRef({ x: 0, y: 0 });
@@ -15985,6 +15989,120 @@ export default function TinyWorld() {
     };
     (window as any).__tw = {
       ...((window as any).__tw || {}),
+      // ── Test input API (Sep 23) ─────────────────────────────────────────
+      // Lets an agent PLAY through the real input paths instead of
+      // teleporting the camera or faking screen taps (which mis-hit on
+      // emulated/offset pointers and cannot pointer-lock in embedded panes).
+      // Sticks feed the same refs the mobile joysticks feed; buttons call
+      // the exact handlers the HUD buttons call. Works on desktop and mobile.
+      //   move(x,y) / look(x,y)  hold a stick (unit circle, -y = forward/up)
+      //   walk(x,y,ms) / turn(x,y,ms)  push, wait, let go; resolve with deltas
+      //   hold(name) / release(name?) / tap(name, ms)  buttons (see .holds/.taps)
+      //   stop()  release everything;  state()  snapshot for assertions
+      input: (() => {
+        const T = testInputRef.current;
+        const clamp1 = (v: number) => Math.max(-1, Math.min(1, Number(v) || 0));
+        const setStick = (st: { x: number; y: number; active: boolean }, x: number, y: number) => {
+          st.x = clamp1(x); st.y = clamp1(y); st.active = st.x !== 0 || st.y !== 0;
+        };
+        const HOLD: Record<string, { down: () => void; up: () => void }> = {
+          fire: { down: () => machineBeamInputRef.current.start(), up: () => machineBeamInputRef.current.stop() },
+          jump: { down: () => { mobileActionsRef.current.jump = true; }, up: () => { mobileActionsRef.current.jump = false; } },
+          climb: { down: () => { mobileActionsRef.current.droneAscend = true; }, up: () => { mobileActionsRef.current.droneAscend = false; } },
+          dive: { down: () => { mobileActionsRef.current.droneDescend = true; }, up: () => { mobileActionsRef.current.droneDescend = false; } },
+          talk: { down: () => { void startVoice(); }, up: () => stopVoice() },
+        };
+        const TAP: Record<string, () => void> = {
+          embody: () => enterWalkRef.current(),
+          exit: () => {
+            setWalking(false);
+            walkingRef.current = false;
+            orbit.enabled = true;
+            if (fp.isLocked) { try { fp.unlock(); } catch {} }
+          },
+          drone: () => {
+            if (sentinelModeRef.current === "drone") droneReturnReqRef.current = true;
+            else { setSentinelMode("drone"); sentinelModeRef.current = "drone"; }
+          },
+          aim: () => { const next = !aimModeRef.current; aimModeRef.current = next; setAimMode(next); },
+          build: () => { const next = !laserBuildModeRef.current; laserBuildModeRef.current = next; setLaserBuildMode(next); },
+          view: () => { const next = viewModeRef.current === "third" ? "cockpit" : "third"; viewModeRef.current = next; setViewMode(next); },
+          structures: () => setShowActions((v) => !v),
+          buildTap: () => { const c = buildCursorScreen(); handleBuildTap(c.x, c.y); },
+          buildExit: () => buildExitRef.current(),
+          "tool:place": () => { buildToolRef.current = "place"; setBuildTool("place"); },
+          "tool:pick": () => { buildToolRef.current = "pick"; setBuildTool("pick"); },
+          "tool:erase": () => { buildToolRef.current = "erase"; setBuildTool("erase"); },
+        };
+        const held = new Set<string>();
+        const timers: Record<string, number> = {};
+        const state = () => ({
+          phase: phaseRef.current,
+          walking: walkingRef.current,
+          mobile: isMobileRef.current,
+          pointerLocked: !!fp.isLocked,
+          sentinelMode: sentinelModeRef.current,
+          viewMode: viewModeRef.current,
+          aim: aimModeRef.current,
+          laserBuild: laserBuildModeRef.current,
+          buildMode: buildModeRef.current,
+          buildTool: buildToolRef.current,
+          stick: { ...T.stick },
+          look: { ...T.look },
+          held: Array.from(held),
+          actions: { ...mobileActionsRef.current },
+          pos: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+          body: { ...bodyPosRef.current },
+          yaw: targetLookRef.current.y,
+          pitch: targetLookRef.current.x,
+          velocityY: velocityYRef.current,
+        });
+        const unknown = (kind: string, name: string) => ({ error: `unknown ${kind} '${name}'`, holds: Object.keys(HOLD), taps: Object.keys(TAP) });
+        const hold = (name: string) => {
+          const h = HOLD[name];
+          if (!h) return unknown("hold", name);
+          if (timers[name]) { clearTimeout(timers[name]); delete timers[name]; }
+          if (!held.has(name)) { held.add(name); h.down(); }
+          return state();
+        };
+        const release = (name?: string) => {
+          for (const n of name ? [name] : Array.from(held)) {
+            if (timers[n]) { clearTimeout(timers[n]); delete timers[n]; }
+            if (held.has(n)) { held.delete(n); HOLD[n].up(); }
+          }
+          return state();
+        };
+        const tap = (name: string, ms = 120) => {
+          if (TAP[name]) { TAP[name](); return state(); }
+          if (!HOLD[name]) return unknown("tap", name);
+          hold(name);
+          timers[name] = window.setTimeout(() => { delete timers[name]; release(name); }, ms);
+          return state();
+        };
+        const move = (x: number, y: number) => { setStick(T.stick, x, y); return state(); };
+        const look = (x: number, y: number) => { setStick(T.look, x, y); return state(); };
+        const stop = () => { setStick(T.stick, 0, 0); setStick(T.look, 0, 0); release(); return state(); };
+        const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+        const where = (st: ReturnType<typeof state>) => (st.body.set ? st.body : st.pos);
+        const walk = async (x: number, y: number, ms = 1000) => {
+          const before = state();
+          move(x, y);
+          await wait(ms);
+          move(0, 0);
+          const after = state();
+          const from = where(before), to = where(after);
+          return { ms, from: { x: from.x, y: from.y, z: from.z }, to: { x: to.x, y: to.y, z: to.z }, dist: Math.hypot(to.x - from.x, to.z - from.z), after };
+        };
+        const turn = async (x: number, y: number, ms = 500) => {
+          const before = state();
+          look(x, y);
+          await wait(ms);
+          look(0, 0);
+          const after = state();
+          return { ms, dYaw: after.yaw - before.yaw, dPitch: after.pitch - before.pitch, after };
+        };
+        return { move, look, stop, hold, release, tap, walk, turn, state, holds: Object.keys(HOLD), taps: Object.keys(TAP) };
+      })(),
       cameraOrbit: (pitch: number, yaw?: number) => {
         const limit = activePitchLimit();
         targetLookRef.current.x = Math.max(-limit, Math.min(limit, Number(pitch) || 0));
@@ -21867,6 +21985,27 @@ export default function TinyWorld() {
           setDroneTetherUi(null);
         }
 
+        // Test-harness look stick (__tw.input.look): mobile look-joystick
+        // sensitivity, platform-agnostic. Desktop outside the chase rig is
+        // driven by pointer-lock writing camera.rotation directly, so mirror
+        // that; inside chase (and on mobile) only the orbit target moves,
+        // because the chase override re-derives camera.rotation from it.
+        if (testInputRef.current.look.active && walkingRef.current) {
+          const tl = testInputRef.current.look;
+          const lookSensitivity = 2.5 * dt;
+          const pitchLimit = activePitchLimit();
+          const chaseNow = (viewModeRef.current === "third" && sentinelModeRef.current === "large") || sentinelModeRef.current === "drone";
+          if (!isMobileRef.current && !chaseNow) {
+            camera.rotation.order = "YXZ";
+            camera.rotation.y -= tl.x * lookSensitivity;
+            camera.rotation.x = Math.max(-pitchLimit, Math.min(pitchLimit, camera.rotation.x - tl.y * lookSensitivity));
+            targetLookRef.current = { x: camera.rotation.x, y: camera.rotation.y };
+          } else {
+            targetLookRef.current.y -= tl.x * lookSensitivity;
+            targetLookRef.current.x = Math.max(-pitchLimit, Math.min(pitchLimit, targetLookRef.current.x - tl.y * lookSensitivity));
+          }
+        }
+
         if (isMobileRef.current && walkingRef.current) {
           if (lookJoystickRef.current.active) {
             const lookSensitivity = 2.5 * dt;
@@ -21884,7 +22023,7 @@ export default function TinyWorld() {
           camera.rotation.x += (targetLookRef.current.x - camera.rotation.x) * lookLerp;
         }
 
-        if (!isDrone && isMobileRef.current && mobileActionsRef.current.jump && Math.abs(velocityYRef.current) < 0.01) {
+        if (!isDrone && mobileActionsRef.current.jump && Math.abs(velocityYRef.current) < 0.01) {
           velocityYRef.current = JUMP_VELOCITY;
           mobileActionsRef.current.jump = false;
         }
@@ -21902,6 +22041,13 @@ export default function TinyWorld() {
           if (k["KeyS"] || k["ArrowDown"]) inF -= 1;
           if (k["KeyD"] || k["ArrowRight"]) inR += 1;
           if (k["KeyA"] || k["ArrowLeft"]) inR -= 1;
+        }
+        // Test-harness move stick (__tw.input.move), joystick convention
+        // (-y = forward), added on either platform. Analog, so the gait
+        // walk->run ramp below applies exactly as it does for a thumb.
+        if (testInputRef.current.stick.active) {
+          inF += -testInputRef.current.stick.y;
+          inR += testInputRef.current.stick.x;
         }
         // During the auto return-to-base flight the player has no control.
         if (droneRTB) { inF = 0; inR = 0; }
@@ -21937,7 +22083,7 @@ export default function TinyWorld() {
             // being swept (look-stick OR drag-to-look) so turning the view no
             // longer curves the walk path. When not looking, the heading tracks
             // the camera yaw, preserving the old camera-relative feel.
-            const lookActive = isMobileRef.current && (lookJoystickRef.current.active || touchLookRef.current.active);
+            const lookActive = (isMobileRef.current && (lookJoystickRef.current.active || touchLookRef.current.active)) || testInputRef.current.look.active;
             if (!lookActive) moveYawRef.current = camera.rotation.y;
             moveDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), moveYawRef.current);
             moveDir.y = 0;
@@ -21993,10 +22139,9 @@ export default function TinyWorld() {
         if (isDrone && !droneRTB) {
           const thrust = MOVE_SPEED * dt * 1.4;
           let vert = 0;
-          if (isMobileRef.current) {
-            if (mobileActionsRef.current.droneAscend || mobileActionsRef.current.jump) vert += 1;
-            if (mobileActionsRef.current.droneDescend) vert -= 1;
-          } else {
+          if (mobileActionsRef.current.droneAscend || mobileActionsRef.current.jump) vert += 1;
+          if (mobileActionsRef.current.droneDescend) vert -= 1;
+          if (!isMobileRef.current) {
             if (keysRef.current["Space"]) vert += 1;
             if (keysRef.current["ShiftLeft"] || keysRef.current["ShiftRight"]) vert -= 1;
           }
